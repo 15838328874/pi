@@ -189,9 +189,11 @@ policy file the server still runs with `path_sandbox + redact` on. Every tool ca
 | Observability | JSON access log with request id + latency; `/healthz`, `/readyz`; full audit trail; per-run execution traces in MySQL (`agent_runs`/`agent_steps`, admin UI); spans exportable over OTLP; `/metrics` for Prometheus |
 
 API — **23 business routes** (the first seven rows below), plus the infrastructure routes in the
-last row. `web/openapi.json` (dumped from the app by `tools/dump_openapi.py`) and `/docs` are the
-complete, authoritative list; the grouping here is a map, not a contract. Re-derive it with the
-snippet in `deploy/environments.md` §L10.
+last row; 30 registered in total. `web/openapi.json` (dumped from the app by
+`tools/dump_openapi.py`) and `/docs` are authoritative **for everything they contain** — but note
+`GET /metrics` is registered with `include_in_schema=False` and therefore appears in neither, so
+they are no longer a *complete* route list. Re-derive the full set with the snippet in
+`deploy/environments.md` §L10. The grouping here is a map, not a contract.
 
 | Area | Routes |
 |---|---|
@@ -414,12 +416,15 @@ build is the only gate before a bundle gets served.
 ### Shared test database
 
 For manual checks against real MySQL + Redis, `.env.test` points everything at a separate
-schema and namespace. It is a **six-key overlay, not a full config** — `PI_DATABASE_URL` →
+schema and namespace. It is a **twelve-key overlay, not a full config** — `PI_DATABASE_URL` →
 `pi_py_test`, `PI_REDIS_NS=test`, `PI_WORKSPACE_ROOT` → `~/.pi-py/workspaces-test`,
-`PI_AUDIT_PATH` → `~/.pi-py/audit-test.jsonl`, `PI_MILVUS_NS=it`, `PI_PUBLIC_BASE_URL`. Every
-other key (`PI_JWT_SECRET`, all credentials, model selection, sandbox and capacity settings) is
-**inherited from `.env`**, so the two environments share secrets and are separated only by where
-data lands — see `deploy/environments.md` §2 and its landmine **L4** before assuming isolation.
+`PI_AUDIT_PATH` → `~/.pi-py/audit-test.jsonl`, `PI_MILVUS_NS=it`, `PI_PUBLIC_BASE_URL`,
+`PI_METRICS`/`PI_METRICS_TOKEN`, `PI_TRACER=otel`/`PI_OTLP_ENDPOINT`, `PI_ENVIRONMENT=test`,
+`PI_SERVICE_NAME`. Every other key (`PI_JWT_SECRET`, all other credentials, model selection,
+sandbox and capacity settings) is **inherited from `.env`**, so the two environments share
+secrets and are separated only by where data lands — see `deploy/environments.md` §2 and its
+landmine **L4** before assuming isolation. (`PI_METRICS_TOKEN` is the one credential the overlay
+*does* set independently, and it is the model to copy for L4.)
 
 `pi/__init__.py` only auto-loads `.pi-py.env` / `.env` / `~/.pi-py/.env`, so test overrides need
 an explicit source — and the order matters, because existing environment variables always win:

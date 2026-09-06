@@ -19,17 +19,22 @@
 **当前唯一在跑的实例是测试环境**，不是生产环境：
 
 ```
-PID 809332  pi-py serve --host 0.0.0.0 --port 8398   （2026-09-05 19:46 启动）
+PID 1080214  pi-py serve --host 0.0.0.0 --port 8398   （2026-09-06 20:22:39 启动）
   → MySQL schema  pi_py_test        （不是 .env 里的 pi_py）
   → Redis NS      test
   → workspace     /root/.pi-py/workspaces-test
   → audit         /root/.pi-py/audit-test.jsonl
   → Milvus NS     it
+  → PI_ENVIRONMENT=test / PI_TRACER=otel（OTLP → 127.0.0.1:4317，该端口确有监听）
+  → /metrics 开启且**有 token 保护**（无 token 访问答 404）
 ```
 
-生产 schema `pi_py` **从未启用**：0 用户、0 会话、0 消息、0 用量记录，且落后 5 个迁移
-（见地雷 **L1**）。`/root/.pi-py/` 下也没有 `audit-2026-09-06.jsonl`（只有 `audit-test-*`），
-说明生产进程今天没跑过。
+（2026-09-06 20:22 之前的实例是 PID 809332，2026-09-05 19:46 启动；已重启。）
+
+生产 schema `pi_py` **没有对外服务过**：8 张数据表**全部 0 行**，`alembic_version` 仍停在
+`0002_user_active`。但 ⚠️ **它在 2026-09-06 20:09:21 被 `create_all` 污染过** —— 表数从 5 张
+变成 9 张，而 `sessions.plan` 列仍然缺失，alembic 完全不知道这 4 张新表的存在。
+**我原先写的"升级窗口还开着"已经失效，详见地雷 L1（含取证与修复路径）。**
 
 **别把"服务在跑"当成"生产在跑"。** 端口 8398 = 测试，8300 = 生产（约定见 README）。
 
@@ -41,8 +46,9 @@ PID 809332  pi-py serve --host 0.0.0.0 --port 8398   （2026-09-05 19:46 启动�
 
 ```bash
 PID=$(pgrep -f 'pi-py serve')
-tr '\0' '\n' < /proc/$PID/environ | grep -E '^(PI_DATABASE_URL|PI_REDIS_NS|PI_WORKSPACE_ROOT|PI_AUDIT_PATH|PI_MILVUS_NS|PI_PUBLIC_BASE_URL)='
+tr '\0' '\n' < /proc/$PID/environ | grep -E '^PI_(DATABASE_URL|REDIS_NS|WORKSPACE_ROOT|AUDIT_PATH|MILVUS_NS|PUBLIC_BASE_URL|ENVIRONMENT|METRICS|TRACER)='
 ls -l /proc/$PID/cwd          # .env 是按 cwd 加载的，cwd 不对就什么都没加载
+ps -o lstart= -p $PID         # 启动时间：判断它是否早于你最近一次改 .env
 ```
 
 看 `PI_DATABASE_URL` 结尾是 `pi_py` 还是 `pi_py_test`，一眼定论。
@@ -71,7 +77,9 @@ asyncio.run(m())"
 
 ## 2. 两个环境的完整对照
 
-`.env` = 完整配置（32 个键）。`.env.test` = **只有 6 个键的覆盖层**，其余全部从 `.env` 继承。
+`.env` = 完整配置（41 行赋值，但只有 **40 个唯一键** —— `PI_METRICS_TOKEN` 被定义了两次，
+见 **L12**）。`.env.test` = **12 个键的覆盖层**（2026-09-06 晚从 6 个涨到 12 个），
+其余全部从 `.env` 继承。
 
 | 键 | 生产 `.env` | 测试 `.env.test` | 隔离？ |
 |---|---|---|---|
@@ -80,17 +88,25 @@ asyncio.run(m())"
 | `PI_WORKSPACE_ROOT` | `/root/.pi-py/workspaces` | `/root/.pi-py/workspaces-test` | ✅ |
 | `PI_AUDIT_PATH` | `/root/.pi-py/audit.jsonl` | `/root/.pi-py/audit-test.jsonl` | ✅ |
 | `PI_MILVUS_NS` | `pi` | `it` | ✅ 同集群不同 collection |
+| `PI_METRICS_TOKEN` | ⚠️ **配了但没生效**（被空值遮蔽） | 有独立一份，**生效** | ✅ 但生产那侧是坏的，见 **L12** |
 | `PI_PUBLIC_BASE_URL` | **未设置** | `http://<TEST_PUBLIC_IP>:8398` | ⚠️ 见 **L3** |
+| `PI_ENVIRONMENT` | 未设置（默认） | `test` | ✅ 新增，用于 metrics/trace 标签 |
+| `PI_SERVICE_NAME` | 未设置（默认） | `pi-py` | — |
+| `PI_TRACER` | `jsonl` | **`otel`** | ✅ 覆盖层里显式改了，测试环境走 OTLP |
+| `PI_OTLP_ENDPOINT` | 未设置 | `http://127.0.0.1:4317` | ✅ 实测该端口**确有监听**，trace 留在本机不外发；采集器没起时 tracer 会**出声地**降级（见 ARCHITECTURE §15 `test_observability.py`） |
+| `PI_METRICS` | `1` | `1` | — 两边都开 |
 | `PI_JWT_SECRET` | 有 | **未覆盖 → 与生产同一个** | ❌ 见 **L4** |
 | `PI_REDIS_URL` | 有（含密码） | **未覆盖 → 同一个** | ❌ 仅靠 NS 分隔 |
 | `PI_MILVUS_TOKEN` | 有 | **未覆盖 → 同一个** | ❌ 仅靠 NS 分隔 |
 | `OPENAI_API_KEY` / `BASE_URL` | 有 | **未覆盖 → 同一个** | ❌ 共用网关与配额 |
 | `PI_MODEL` / `PI_MEMORY_MODEL` / `PI_MEMORY_ARBITER_MODEL` | `openai/qwen-flash` ×2 + `qwen-plus` | **未覆盖 → 同一套** | ❌ 测试跑真模型 = 花真钱 |
-| `PI_SANDBOX*` / `PI_POLICY` / `PI_TRACER` / 容量各项 | 见 `.env` | **未覆盖 → 同一套** | — 本就无需隔离 |
+| `PI_SANDBOX*` / `PI_POLICY` / 容量各项 | 见 `.env` | **未覆盖 → 同一套** | — 本就无需隔离 |
 
-两个 env 文件权限都是 `600`，都被 `.gitignore` 忽略。
+两个 env 文件权限都是 `600`，都被 `.gitignore:5-6` 忽略（`git check-ignore` 已验证）。
 
 **结论：隔离的是"数据落点"，没隔离的是"凭据与密钥"。** 测试进程内存里握着全套生产凭据。
+唯一例外是 `PI_METRICS_TOKEN` —— 它两边各有一份且不同，这是**覆盖层里做对了的样板**，
+**L4** 建议的独立 `PI_JWT_SECRET` 照这个样子加一行即可。
 `PI_SANDBOX=docker` 挡住了工具执行路径；曾经跑在 app 进程内、绕过沙箱的
 `web_fetch`/`web_search` **已被删除**（不是禁用），联网改由模型端点自己的 builtin tools
 承担，见 ARCHITECTURE §7.2 与 §17 第 20 条。
@@ -111,7 +127,7 @@ _ENV_FILE_CANDIDATES = (Path(".pi-py.env"), Path(".env"), Path.home()/".pi-py"/"
 两条合起来的后果：
 
 - 直接 `pi-py serve` → 只加载 `.env` → 连**生产** `pi_py`。
-- 先 `set -a; . ./.env.test; set +a` 再 serve → 那 6 个键已在 environ 里，`.env` 填不进去 →
+- 先 `set -a; . ./.env.test; set +a` 再 serve → 那 12 个键已在 environ 里，`.env` 填不进去 →
   连**测试** `pi_py_test`，但密钥仍从 `.env` 补齐。
 
 `.pi-py.env` 和 `~/.pi-py/.env` 目前都不存在。若哪天创建了 `.pi-py.env`，它会**压过 `.env`**
@@ -158,17 +174,22 @@ cd /root/pi/pi-python
 
 ## 4. 已知地雷
 
-### L1 · 生产 schema 落后 5 个迁移，而 `create_all` 只建表不补列 ⚠️ 最严重
+### L1 · 生产 schema 已被 `create_all` 污染 ⚠️ 最严重 —— **这颗雷在 2026-09-06 20:09:21 炸了**
 
-实测状态：
+> **状态更新（2026-09-06 晚）**：本节原先的结论是"升级窗口还开着，`create_all` 从未对生产跑过"。
+> **该结论已失效。** 取证显示 `pi_py` 在 20:09:21 多出 4 张表，正是下面预言的那个场景。
+> 原始分析全部保留，因为它就是这次事故的预测书；**新增的取证与修复路径见本节末尾**。
 
-| schema | alembic_version | 表 |
-|---|---|---|
-| `pi_py`（生产） | **`0002_user_active`** | 5 张：`users` `sessions` `messages` `usage_records` `alembic_version` |
-| `pi_py_test`（测试） | `0007_trace_fidelity`（= head） | 9 张：另有 `agent_runs` `agent_steps` `audit_events` `user_memories` |
+实测状态（2026-09-06 21:40 复核）：
 
-缺的迁移：`0003_session_plan`、`0004_user_memories`、`0005_audit_events`、`0006_agent_runs`、
-`0007_trace_fidelity`。
+| schema | alembic_version | 表数 | `sessions.plan` |
+|---|---|---|---|
+| `pi_py`（生产） | **`0002_user_active`** | **9 张**（原 5 张 + 4 张 `create_all` 补的） | ❌ **缺失** |
+| `pi_py_test`（测试） | `0007_trace_fidelity`（= head） | 9 张 | ✅ 有 |
+
+两边都是 9 张表，**但生产那 9 张是"错的 9 张"**：`alembic_version` 说自己在 `0002`，
+`sessions.plan` 也没加上。缺的迁移：`0003_session_plan`、`0004_user_memories`、
+`0005_audit_events`、`0006_agent_runs`、`0007_trace_fidelity`。
 
 **为什么这会静默地炸而不是启动就报错**：`src/pi/server/app.py:727` 的 lifespan 调
 `db.init()`，而 `src/pi/server/db.py:250` 是 `Base.metadata.create_all`。SQLAlchemy 的
@@ -199,14 +220,64 @@ cd /root/pi/pi-python
 **正确顺序**：先 `pi-py migrate` 升到 `0007`，再启动。**不要**靠 `create_all` 兜底 ——
 它会把 schema 带进一个 alembic 认不出来的中间态。
 
-**好消息：这个窗口现在还开着。** 实测 `pi_py` 只有 5 张表（`users` `sessions` `messages`
-`usage_records` `alembic_version`），说明**当前代码的 `create_all` 从未对生产跑过** ——
-schema 仍然与 `0002` 自洽。现在执行 `pi-py migrate`（在只 source 了 `.env`、没 source
-`.env.test` 的 shell 里）可以干净地一路升到 `0007`。**一旦有人不小心对生产启动过一次服务，
-上面第 2 条就会生效，此后只能手工收拾。** 这也是为什么启动前要按 §1 先确认连的是哪个库。
+#### 取证：怎么确认是 `create_all` 干的，不是 alembic
 
-> `deploy/cloud-deploy.md` §1 第 4 项已记录"schema 在 alembic 0002，数据为空"，
-> 但没写出上面这层后果。本节是它的补充。
+四条独立证据，2026-09-06 21:40 实测：
+
+1. **建表时间戳分成两批**。`information_schema.tables.create_time`：
+   `alembic_version` = 2026-09-02 15:46:03，`users`/`sessions`/`messages`/`usage_records`
+   = 2026-09-02 16:48:15，而 `agent_runs`/`agent_steps`/`audit_events`/`user_memories`
+   = **2026-09-06 20:09:21**（四张同一秒 → 同一次 `create_all` 调用）。
+2. **`alembic_version` 没动**，仍是 `0002_user_active`。alembic 升级一定会写这张表；
+   `create_all` 不会。
+3. **列序是决定性物证**。`pi_py.agent_runs` 的列序是 **ORM 声明序** ——
+   `…, model, prompt, request_id, enable_search, builtin_tools, first_idx, last_idx, status, error, …`
+   （新列**插在中间**）；而 `pi_py_test.agent_runs` 是
+   `…, model, status, error, …, ended_at, prompt, request_id, enable_search, builtin_tools, first_idx, last_idx`
+   （新列**追加在末尾**，正是 `0007` 逐个 `add_column` 的效果）。
+   **同一个 ORM、两种列序 = 两条不同的建表路径。**
+4. **四张表全部 0 行**，且 `users`/`sessions`/`messages`/`usage_records` 也全 0 行 ——
+   生产**从未真正服务过任何请求**，20:09 那次只是把表建出来就停了。
+
+> 触发它的最可能路径：在只 source 了 `.env`（没 source `.env.test`）的 shell 里跑了
+> `pi-py serve` 或 `pi-py migrate`。后者的话，alembic 会在 `0004` 的 `create_table` 上撞车而中断，
+> 于是 `alembic_version` 停在 `0002`、表却已经被 `create_all` 建好了 —— 与观测完全一致。
+
+#### 修复路径（**未执行，需要授权**）
+
+**关键前提：生产 8 张数据表全部 0 行，所以修复没有任何数据损失风险。**
+
+已核实迁移与表的对应关系：`0003` 只 `add_column(sessions.plan)`；`0004` 只建 `user_memories`；
+`0005` 只建 `audit_events`；`0006` 只建 `agent_runs` + `agent_steps`；`0007` 只对这两张表
+`add_column`/`alter_column`。所以**只要把那 4 张表删掉，schema 就精确回到 `0002` 的状态**，
+alembic 可以从 `0003` 干净重放到 `0007`：
+
+```sql
+-- 在 pi_py 上执行；注意先删子表 agent_steps（0006 的 downgrade 也是这个顺序）
+DROP TABLE IF EXISTS agent_steps;
+DROP TABLE IF EXISTS agent_runs;
+DROP TABLE IF EXISTS audit_events;
+DROP TABLE IF EXISTS user_memories;
+```
+
+```bash
+# 然后在一个【只 source .env、绝不 source .env.test】的 shell 里：
+cd /root/pi/pi-python
+.venv/bin/pi-py migrate          # 0003 → 0007，一路干净
+# 复核：alembic_version 应为 0007_trace_fidelity，sessions 应有 plan 列
+```
+
+**执行前必须确认**：① 当前 shell 的 `PI_DATABASE_URL` 指向 `pi_py` 而不是 `pi_py_test`
+（按 §1 的方法核实，别靠记忆）；② 没有别的服务正连着 `pi_py`；③ 你确实授权了对生产做 DDL。
+`DROP TABLE` 不可逆 —— 虽然这四张表现在是空的，但**这条命令一旦跑错库就是灾难**，
+所以本文档只给路径、不代执行。
+
+替代方案（更彻底但更重）：既然生产全空，也可以直接 `DROP SCHEMA pi_py; CREATE SCHEMA pi_py;`
+再从 `0001` 全量 `migrate`。好处是连 2026-09-02 那批老表的任何潜在漂移一起清掉；
+代价是需要 schema 级权限。
+
+> `deploy/cloud-deploy.md` §1 第 4 项记录的是"schema 在 alembic 0002，数据为空"——
+> 那是 09-04 的状态，**现在已经是"0002 + 9 张表 + 缺 plan 列"的污染态**，该行需要同步更新。
 
 ### L2 · 端口 8300 与 8398
 
@@ -331,6 +402,12 @@ PI_LIVE_API=http://127.0.0.1:8398 npm run test:live
 改密码后旧 token 不会立即失效（校验只看密钥 + 撤销表 + `is_active`，不比对密码），
 要立刻踢下线得同时调 `POST /v1/admin/users/{u}/revoke` 抬 epoch。
 
+**同一根因下还有一个新增的暴露面**：`/metrics`（2026-09-06 晚上线）。它在生产配置下
+**是无鉴权的** —— 不是因为设计如此，而是因为 `.env` 里的 `PI_METRICS_TOKEN` 被一个空值
+遮蔽了，详见 **L12**。`/metrics` 泄露的是流量量与模型使用情况（不含用户名与会话 id，
+`TestMetricsEndpoint` 钉住了这一点），量级上不如 admin 账号严重，但**修它只要删一行**，
+而修 admin 密码要写库 —— 所以 **L12 应该排在 L5 前面做**。
+
 ### L6 · `smokeweb` 账号来源不明，密码不可恢复
 
 `pi_py_test.users` 里 id=29 的 `smokeweb`（2026-09-05 创建，1 个 session）**不属于播种批次**
@@ -343,9 +420,14 @@ PI_LIVE_API=http://127.0.0.1:8398 npm run test:live
 ### L7 · 文档里的计数大面积漂移（已于 2026-09-06 全部修正）
 
 不是"三处"，是**十几处**，而且同一份文档内部互相矛盾（ARCHITECTURE 里同时存在
-174 / 291 / 332 / 333 四个不同的测试总数）。全部实测值与修正位置：
+174 / 291 / 332 / 333 四个不同的测试总数）。
 
-| 位置 | 原值 | 实测 / 已改为 |
+> ⚠️ **下表右列是 2026-09-06 下午（约 16:00–17:00）的实测值，不是当前值。**
+> 当晚又上了 metrics/otel/builtin-tools 一批功能，总数从 348 涨到 **364**、
+> 前端从 55 涨到 **56**。当晚的增量见本节末尾的更新注记，当前权威值见 **§6 基线快照**。
+> 这张表保留下来是为了记录"漂移有多严重"，不是为了给出当前数字。
+
+| 位置 | 原值 | 下午实测 / 当时改为 |
 |---|---|---|
 | `README.md` §Layout | `tests/ 174 tests` | **348** |
 | `README.md` §Layout | `migrations/ 0001–0003` | **0001–0007**（head `0007_trace_fidelity`） |
@@ -448,11 +530,17 @@ MySQL 才是记忆的真源（`user_memories` 表存了 packed float32 向量）
 `rebuild_milvus.py` 可以零 API 调用重建索引 —— 所以误重建 `it_memories` 可恢复，
 误重建 `pi_memories` 同样可恢复，但要花时间和 embedding 配额。
 
-### L10 · README 的 API 清单漏了 9 个路由（三个完整特性域）
+### L10 · README 的 API 清单漏了路由，而 `openapi.json` 也不再完整
 
-README §Multi-user server 的 "API (see `/docs` for OpenAPI)" 那行列了 11 个路由，
-实测 app 上注册的是 **29 个**（去掉 `/docs` `/redoc` `/openapi.json` `/healthz` `/readyz`
-`/docs/oauth2-redirect` 这 6 个基础设施路由，业务路由 23 个）。**漏掉的 9 个**：
+README §Multi-user server 原先那行 "API (see `/docs` for OpenAPI)" 列了 11 个路由。
+实测（2026-09-06 21:40 复核）app 上注册的是 **30 个**。
+
+口径统一（README 与本文档现在用同一套分法）：**23 条业务路由 + 7 条基础设施路由 = 30**。
+基础设施那 7 条是 `/docs` `/redoc` `/openapi.json` `/healthz` `/readyz`
+`/docs/oauth2-redirect`，加上 2026-09-06 晚新增的 **`GET /metrics`**（它算基础设施而非业务，
+因为它是运维端点、且 `include_in_schema=False` 不进契约）。
+
+原清单**漏掉的 10 个**：
 
 | 路由 | 属于 | 说明 |
 |---|---|---|
@@ -465,10 +553,18 @@ README §Multi-user server 的 "API (see `/docs` for OpenAPI)" 那行列了 11 �
 | `POST /v1/sessions/{id}/files` | **文件附件** | 上传，见 **L3** |
 | `GET /v1/sessions/{id}/files` | 文件附件 | 列表 |
 | `GET /files/{session_id}/{name}` | 文件附件 | **无认证**下载，注意它在 `/v1` **之外** |
+| `GET /metrics` | **可观测性** | `app.py:929`，Prometheus 文本格式；`include_in_schema=False`，token 门禁答 404 不答 403，见 **L12** |
 
-也就是说 **长期记忆、执行轨迹、文件附件三个特性域，加上账号注销，在 README 的 API 清单里
-完全不存在**。`web/openapi.json` 是唯一完整的清单（它是从 app dump 出来的，见
-`tools/dump_openapi.py`），所以查 API 请以它或 `/docs` 为准，**不要信 README 那一行**。
+也就是说 **长期记忆、执行轨迹、文件附件、可观测性四个特性域，加上账号注销，
+原先在 README 的 API 清单里完全不存在**。已补进 README（见那张分组表）。
+
+⚠️ **一个反直觉的点：`web/openapi.json` 现在不是完整清单了。** `/metrics` 用
+`include_in_schema=False` 注册（`app.py:929`），实测 `grep -c '"/metrics"' web/openapi.json`
+= **0**。这个设计是有意的（`test_server.py::TestMetricsEndpoint` 专门钉住"`/metrics`
+不在 OpenAPI 文档里"，避免把运维端点暴露给 API 消费者），但后果是：
+
+> **查完整路由列表，`/docs` 和 `web/openapi.json` 都会漏掉 `/metrics`。**
+> 唯一可靠的来源是从 app 对象枚举（下面的脚本）。
 
 重新生成完整清单：
 
@@ -511,7 +607,9 @@ tests/test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the
 这条 flaky **与同期另一个会话的改动无关**：对方在 17:03–17:12 改了 `policy.json`、
 `tests/test_security.py`、`README.md`、`ARCHITECTURE.md`、`deploy/cloud-deploy.md`
 （删除本地 web 工具、改走 builtin tools），改完全套件仍然红在同一条上，
-且 `tests/test_security.py` 单独跑 31 passed、`--collect-only` 仍是 348 —— 计数没变。
+且 `tests/test_security.py` 单独跑 31 passed、`--collect-only` 当时仍是 348 —— 计数没变。
+（**"当时"**：那批改动只删了本地 web 工具、没动测试数；348→364 是**当晚** metrics/otel
+那批功能扩展带来的，与 flaky 无关。）
 
 #### 机制（已从代码核实，不是猜测）
 
@@ -569,6 +667,70 @@ tests/test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the
 
    ⚠️ **再说一遍：修的是测试的确定性，不是第 2 点那个生产竞态。** 第 2 点仍然开着。
 
+### L12 · `.env` 里 `PI_METRICS_TOKEN` 被定义两次，**空值那份赢了** → 生产 `/metrics` 裸奔 ⚠️ 新发现
+
+**2026-09-06 21:50 实测确认，尚未修复。**
+
+`.env` 里这个键出现了两次：
+
+| 行号 | 内容 | 结果 |
+|---|---|---|
+| **57** | `PI_METRICS_TOKEN=`（**空值**） | ✅ **生效** |
+| **173** | `PI_METRICS_TOKEN=<真 token>` | ❌ **被忽略** |
+
+原因是 `src/pi/__init__.py::_load_env_file()` 的语义：
+
+```python
+for line in lines:                      # 自上而下
+    ...
+    if key and key not in os.environ:   # 先到先得
+        os.environ[key] = value
+```
+
+第 57 行先把键设成**空字符串**，第 173 行再遇到同一个键时 `key not in os.environ` 已经为假，
+于是**整行被跳过**。这不是"后者覆盖前者"，而是**前者永久遮蔽后者** —— 与直觉相反。
+
+实测后果（干净进程按 `serve` 的方式加载 `.env`）：
+
+```
+os.environ['PI_METRICS_TOKEN'] = ''   (长度 0)
+settings.metrics_token         = ''
+settings.metrics_enabled       = True
+→ app.py:718 会告警 "/metrics is open"：True
+```
+
+`app.py:718` 的判断是 `if metrics.enabled and not settings.metrics_token`，而
+`PI_METRICS` 默认就是 `1`（`config.py:157`）。所以**一旦对生产启动服务，`/metrics` 就是
+完全无鉴权的**，任何能到达端口的人都能读到流量量与模型使用情况。
+
+最讽刺的是 `.env:170-172` 那段注释自己写着：
+
+> `# app.py 在 metrics 开启且无 token 时会告警：裸奔的 /metrics 会把流量量`
+> `# 和模型使用情况暴露给任何能达到端口的人。PI_METRICS 默认就是 1，`
+> `# 所以重启前必须有这个 token（或显式 PI_METRICS=0）。`
+
+—— 然后紧接着第 173 行给的 token **不生效**。写注释的人做对了，但被 116 行之前的一个空赋值废掉了。
+
+**测试环境反而是好的**：`.env.test:22` 的 `PI_METRICS_TOKEN` 只出现一次，正常生效。
+实测运行中的服务（PID 1080214，测试环境）对无 token 的 `GET /metrics` 返回 **HTTP 404**
+—— 这是设计：token 不对答 404 而非 403，免得告诉扫描器这里有个端点（`.env:54-55` 的注释写明）。
+`test_server.py::TestMetricsEndpoint` 也钉住了这个行为。
+
+**修法：删掉 `.env` 第 57 行那个空赋值。** 一行删除，零风险。
+（`PI_METRICS_TOKEN` 是 `.env` 里**唯一**重复定义的键 —— 已用脚本扫过全部 41 行赋值确认。）
+
+**为什么我没直接改**：`.env` 是生产配置文件，且这属于 #42/#43（密钥与云侧暴露面）的范畴，
+交接文档明确标注未授权给我。**这是本文档里性价比最高的一处待办：删一行，堵一个公网信息泄露面。**
+
+顺带一条通用纪律：**改 `.env` 时永远用 `grep -c '^KEY='` 确认只有一个定义**。
+这个加载器的"先到先得 + 空值也算设置"语义，会让任何重复键都变成静默失效，
+而且失效方向总是"看起来配了、实际没配"。可以用这条一次性扫全文：
+
+```bash
+cd /root/pi/pi-python && grep -E '^[A-Z_]+=' .env | cut -d= -f1 | sort | uniq -d
+# 有输出 = 存在重复键，靠前的那个生效
+```
+
 ---
 
 ## 5. 测试环境账号现状（2026-09-06 实测）
@@ -601,33 +763,41 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
 #             "username":"admin","is_admin":true}
 ```
 
-浏览器入口 `http://<host>:8398/`（`web/dist` 已构建于 2026-09-05 19:32，且没有比它更新的前端
+浏览器入口 `http://<host>:8398/`（`web/dist` 已于 **2026-09-06 18:48** 重建，且没有比它更新的前端
 源码，即 dist 是最新的）。注意 **不是** README 快速开始里写的 8300。
 
 ---
 
-## 6. 基线快照（2026-09-06 实测）
+## 6. 基线快照（2026-09-06 21:40 复核）
 
 | 项 | 值 |
 |---|---|
-| 服务进程 | PID 809332，`.venv/bin/pi-py serve --host 0.0.0.0 --port 8398`，2026-09-05 19:46 启动，cwd `/root/pi/pi-python` |
+| 服务进程 | **PID 1080214**，`.venv/bin/pi-py serve --host 0.0.0.0 --port 8398`，**2026-09-06 20:22:39 启动**，cwd `/root/pi/pi-python`（上一代是 PID 809332 / 09-05 19:46，已重启） |
+| 该进程连的库 | `pi_py_test`（`/proc/1080214/environ` 实测）—— **仍是测试环境，生产未对外服务** |
 | `/healthz` | `{"status":"ok"}` |
 | `/readyz` | `{"status":"ready","checks":{"db":"ok","cache":"ok","memory":"ok"}}` |
-| Python 套件 | 364 collected → **363 passed, 1 skipped**，25.3s，74 warnings。~~⚠️ flaky~~ **✅ 已修**：曾 10 次里 6 次红在同一条 `TestDeregister`，修后单独跑 30/30、全套件连跑 5 次一致，见 L11 |
+| `/metrics`（无 token） | **HTTP 404**，size 0 —— token 门禁生效（`.env.test` 那份是好的；生产那份坏在 **L12**） |
+| OTLP 采集器 | `127.0.0.1:4317` **有监听**（`.env.test` 的 `PI_TRACER=otel` 确实有对端） |
+| Python 套件 | 364 collected → **363 passed, 1 skipped**，25.3–25.5s，**74 warnings**。~~⚠️ flaky~~ **✅ 已修**：曾 10 次里 6 次红在同一条 `TestDeregister`；修后**本次独立复核连跑 6 次全部一致**，见 L11 |
+| `pytest integration/` | **4 tests collected**（需真实云基建，默认不跑） |
 | 前端套件 | **56 passed**（3 files），1.1s，连跑稳定；`npm run typecheck`（`vue-tsc --noEmit`）亦通过 |
 | venv | `.venv/bin/python` = Python 3.12.3；`aiomysql`/`pymysql`/`asyncpg`/`sqlalchemy` 均可用 |
 | alembic head | `0007_trace_fidelity`（`migrations/versions/` 共 0001–0007） |
-| Docker 残留 | 只有一个 `hello-world` 容器（3 天前 Exited 0），**无沙箱池孤儿容器** |
-| 审计 | `audit-test-2026-09-06.jsonl` 5 条；无 `audit-2026-09-06.jsonl`（生产今天没跑） |
-| env 文件权限 | `.env` 600、`.env.test` 600 |
+| **生产 schema** | ⚠️ `pi_py` = `0002_user_active` + **9 张表**（`create_all` 污染）+ **缺 `sessions.plan`**；8 张数据表全 0 行。见 **L1** |
+| 测试 schema | `pi_py_test` = `0007_trace_fidelity`，9 张表，`sessions.plan` 存在 ✅ |
+| Python 源码规模 | 10,628 行（`find src -name '*.py' \| xargs wc -l`） |
+| Docker | **新增可观测性栈**：`pi-py-prometheus-1`（`prom/prometheus:v2.54.1`）+ `pi-py-jaeger-1`（`jaegertracing/all-in-one:1.60`），均 Up 2 小时。Jaeger 就是 `127.0.0.1:4317` 的监听方。**无沙箱池孤儿容器**（那个 4 天前 `Exited(0)` 的 `hello-world` 是装机验证残留） |
+| 审计 | `audit-test-2026-09-06.jsonl` **11 条**；仍无 `audit-2026-09-06.jsonl`（生产没跑过） |
+| `web/dist` | 构建于 **2026-09-06 18:48**，且没有比它更新的前端源码 → dist 是最新的 |
+| env 文件权限 | `.env` 600、`.env.test` 600；`.gitignore:5-6` 忽略两者（已用 `git check-ignore` 验证，`git status` 里也不出现） |
 
-66 条 warning 的实际构成（**不是**单一来源，别照着"全是 JWT key 太短"去理解）：
+74 条 warning 的实际构成（2026-09-06 21:40 复核；**不是**单一来源，别照着"全是 JWT key 太短"去理解）：
 
 | 条数 | 类型 | 性质 |
 |---|---|---|
-| 64 | `InsecureKeyLengthWarning`（`jwt/api_jwt.py:147` 编码 33 + `:368` 解码 31） | **测试夹具问题**：用例里的 HMAC key 只有 15 字节，低于 RFC 7518 建议的 32。与生产无关 —— 实测生产 `PI_JWT_SECRET` 是 **64 字符 hex（32 字节熵）**，满足建议值 |
-| 1 | `StarletteDeprecationWarning`（`fastapi/testclient.py:1`） | **依赖层的将来风险**：`Using httpx with starlette.testclient is deprecated; install httpx2 instead`。整个离线套件的 HTTP 驱动都走 `TestClient`，所以这条哪天变成硬错误会一次性打红 76 个 `test_server.py` 用例。升级 fastapi/starlette 前先确认这条 |
-| 1 | `PytestUnraisableExceptionWarning`（表面挂在 `test_launch.py::TestLogout::test_logout_revokes_token`） | **良性，但值得知道**：`BaseSubprocessTransport.__del__` 在事件循环关闭后触发 `RuntimeError: Event loop is closed`。该用例本身不起子进程 —— 是别处（`LocalRunner` 的 `create_subprocess_exec`）留下的 transport 在这个用例期间被 GC 掉了。根因是 asyncio 的 teardown 顺序 + 本项目"每个用例 `asyncio.run()` 一个新循环、不用 pytest-asyncio"的约定：transport 没有确定性关闭，靠 finalizer 兜底。用例是 passed 的，不影响结果；但它说明**沙箱本地路径的子进程 transport 生命周期不是确定性收尾的**，与 README §Security note 提到的冷 CLI 路径"timeout 只杀本地 docker run 客户端"是同一类问题 |
+| 72 | `InsecureKeyLengthWarning`（`jwt/api_jwt.py:147` 编码 **37** + `:368` 解码 **35**） | **测试夹具问题**：用例里的 HMAC key 只有 15 字节，低于 RFC 7518 建议的 32。与生产无关 —— 实测生产 `PI_JWT_SECRET` 是 **64 字符 hex（32 字节熵）**，满足建议值。（套件从 348 涨到 364 后这一项也从 64 涨到 72，属正常联动） |
+| 1 | `StarletteDeprecationWarning`（`fastapi/testclient.py:1`） | **依赖层的将来风险**：`Using httpx with starlette.testclient is deprecated; install httpx2 instead`。整个离线套件的 HTTP 驱动都走 `TestClient`，所以这条哪天变成硬错误会一次性打红 **83** 个 `test_server.py` 用例。升级 fastapi/starlette 前先确认这条 |
+| 1 | `PytestUnraisableExceptionWarning`（**修 flaky 后依然存在**） | **良性，但值得知道**：`BaseSubprocessTransport.__del__` 在事件循环关闭后触发 `RuntimeError: Event loop is closed`。挂名在 `test_launch.py::TestLogout::test_logout_revokes_token`，但该用例本身不起子进程 —— 是别处（`LocalRunner` 的 `create_subprocess_exec`）留下的 transport 在这个用例期间被 GC 掉了。根因是 asyncio 的 teardown 顺序 + 本项目"每个用例 `asyncio.run()` 一个新循环、不用 pytest-asyncio"的约定：transport 没有确定性关闭，靠 finalizer 兜底。用例是 passed 的，不影响结果；但它说明**沙箱本地路径的子进程 transport 生命周期不是确定性收尾的**，与 README §Security note 提到的冷 CLI 路径"timeout 只杀本地 docker run 客户端"是同一类问题。（本文档撰写过程中用 aiomysql 跑只读查询时，也在解释器退出阶段见到同一句 `RuntimeError: Event loop is closed`，同一根因） |
 
 要复现这份分类：
 
@@ -641,9 +811,15 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
 
 本文只**记录**问题，不自动修。以下属于用户自己的运维范畴（`HANDOFF.md` §1 明确标注未授权）：
 
-- **L4** 给 `.env.test` 补独立 `PI_JWT_SECRET` —— 一行配置，收益最大，建议优先。
+- **L12 ⭐ 最优先** —— 删掉 `.env` 第 57 行那个空的 `PI_METRICS_TOKEN=`。**一行删除、零风险、
+  堵一个公网信息泄露面**，而且是本文档所有待办里唯一"改完立刻可验证"的
+  （重启后 `curl -s -o /dev/null -w '%{http_code}' http://<host>:8398/metrics` 应从 200 变 404）。
+- **L1 ⭐ 上生产前必做** —— 生产 schema 已被 `create_all` 污染（2026-09-06 20:09:21）。
+  修复路径见 L1 末尾：DROP 那 4 张空表 → `pi-py migrate` 干净升到 `0007`。
+  **在对生产做任何 DDL 之前，先按 §1 确认 shell 连的是 `pi_py` 而不是 `pi_py_test`。**
+- **L4** 给 `.env.test` 补独立 `PI_JWT_SECRET` —— 一行配置，照 `PI_METRICS_TOKEN`
+  已有的样子写即可（那是覆盖层里做对了的样板）。
 - **L5** 换 `admin` 密码 / 确认 ECS 安全组（`cloud-deploy.md` §1 第 5 项至今 "☐ 待你确认"）。
-- **L1** 生产上线前必须先 `pi-py migrate` 到 `0007`，**不要**靠 `create_all`。
 - **#42**（密钥轮换）、**#43**（云侧暴露面）本就是用户的活。
 
 以下属于代码/文档侧，可以直接做：
@@ -652,16 +828,25 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
   `app.py:888` 的文档字符串已进 OpenAPI 契约，改它要重跑 codegen）。
 - **L3** 在 `.env` 里补一行注释说明"生产故意不设 `PI_PUBLIC_BASE_URL`"，或者补上生产值；
   给 README/ARCHITECTURE 补文件附件特性的一节；若要收紧 capability URL，
-  session id 加长到 `hex[:16]` + 给 `/files/` 加 IP 限流（都不改契约）。
+  session id 加长到 `hex[:16]`（**已复核：`db.py:360` 仍是 `hex[:12]`，48 位，未改**）
+  + 给 `/files/` 加 IP 限流（**已复核：`RateLimiter` 仍只在 `app.py:703` 构造一处，
+  即只挂在 `POST /runs` 上**）。两者都不改契约。
 - **L6** 清掉 `smokeweb` 这类无主残留账号。
-- **L7** 已修正；后续改测试数时记得 README 与 ARCHITECTURE 两处都要动。
-- **L10** 已把 README 的 API 清单补全（11 → 23 条业务路由）。以后加路由时**同步改那张表**，
-  或者干脆把它换成"完整清单见 `/docs` 与 `web/openapi.json`"以免再次漂移。
+- **L7** 已修正；后续改测试数时记得 README 与 ARCHITECTURE 两处都要动
+  （2026-09-06 晚那次功能扩展就同时动了 5 个文件的计数）。
+- **L10** 已把 README 的 API 清单补全（11 条 → **23 条业务 + 7 条基础设施 = 30**，
+  两边口径已统一）。以后加路由时**同步改那张表**。
+  ⚠️ 注意别把表换成"完整清单见 `openapi.json`"—— **那条路现在不成立了**，
+  `/metrics` 是 `include_in_schema=False`，不在契约里。要自动化就用 L10 那个枚举脚本。
 - **L11** flaky 测试**已修**（2026-09-06 晚，只改 `tests/test_server.py`，没碰 `src/pi/memory/`）。
   当初记录而不动手的三个理由现在都不成立了：并发会话已静默、全套件回到全绿、
   而且仓库已经 `git init` 并有了首个提交（L8 那个"无法安全回滚"也随之解决）。
   实际修法就是本节建议的"正解"——在 `_counts()` 快照前等在飞的抽取收尾，
   照 `_wait_audit_flushed` 的样子写了个 `_wait_usage_settled()`，等**静默**而非等固定行数；
-  **没有**用放宽断言的方式把红灯关掉。
+  **没有**用放宽断言的方式把红灯关掉。本次独立复核：连跑 6 次全套件全部
+  `363 passed, 1 skipped`，零抖动 ✅
   ⚠️ **但注销语义那个真缺口仍然开着**：测试现在会等抽取收尾，产品代码里注销和在飞抽取
   之间**依然没有互斥**。这一条与 #54（Run 地基 / 可回溯）同源，建议合并考虑。
+- **L12 的通用防线**（可选）：给 `.env` 加一个 CI/pre-commit 检查，
+  `grep -E '^[A-Z_]+=' .env | cut -d= -f1 | sort | uniq -d` 有输出就报错。
+  加载器"先到先得 + 空值也算设置"的语义不会变，所以这类遮蔽只能靠外部检查兜住。

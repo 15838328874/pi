@@ -148,8 +148,8 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
 
 ### 3.2.1 ⚠️ 新增（2026-09-06）：先搞清楚你在哪个环境
 
-**`deploy/environments.md` 是新建的环境专档，动手前必读**（11 条已核实的地雷 L1–L11，
-外加两个环境的逐键对照、启动流程、账号现状与基线快照）。最容易踩的四条：
+**`deploy/environments.md` 是新建的环境专档，动手前必读**（12 条已核实的地雷 L1–L12，
+外加两个环境的逐键对照、启动流程、账号现状与基线快照）。最容易踩的五条：
 
 - **离线套件曾 flaky，测试侧已修**（L11）：2026-09-06 共 10 次全套件运行有 6 次红在
   `test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the_token`（约 60%）。
@@ -162,20 +162,34 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
   做 #54 时**仍然**建议一并考虑注销与在飞任务的互斥——测试现在会等，产品代码不会。
   注：这条 flaky 与 17:03–17:12 那个会话的 web 工具改动无关，改前改后都红在同一条上。
 
-- **当前跑着的实例是测试环境，不是生产**：PID 809332 在 **8398** 端口，连 `pi_py_test` /
-  Redis NS `test` / `workspaces-test` / Milvus NS `it`。`.env.test` 只是**6 个键的覆盖层**，而且
+- **当前跑着的实例是测试环境，不是生产**：**PID 1080214**（2026-09-06 20:22:39 启动，
+  上一代 PID 809332 已重启）在 **8398** 端口，连 `pi_py_test` / Redis NS `test` /
+  `workspaces-test` / Milvus NS `it` / `PI_ENVIRONMENT=test` / `PI_TRACER=otel`。
+  `.env.test` 是 **12 个键的覆盖层**（当晚从 6 个涨到 12 个，新增 metrics 与 otel 两组），而且
   `pi/__init__.py` **不会自动加载它**（候选只有 `.pi-py.env` / `.env` / `~/.pi-py/.env`）——
   必须先 `set -a; . ./.env; . ./.env.test; set +a`。裸跑 `pi-py serve` 会连**生产** `pi_py`。
   判断某个活进程连的是哪个库，读 `/proc/<pid>/environ`，**不要**看 `.env`。
-- **生产 schema 落后 5 个迁移（停在 `0002`，head 是 `0007`），而 `0006`/`0007` 正是
-  `agent_runs`/`agent_steps` 两张表 —— 也就是 #54 要建的地基**。生产库里这两张表根本不存在，
-  `pi_py` 全表 0 行。更要命的是 lifespan 的 `db.init()` 会 `create_all`：它**只建缺失的表，
-  不补缺失的列**，所以对生产启动一次之后 `sessions.plan` 仍然缺（`0003` 是 `ADD COLUMN`），
-  每次会话读写都会 `Unknown column 'sessions.plan'`，而 `/readyz` 依旧报 `db: ok`
-  （它只跑 `users.count()`，碰不到 `sessions`）。**一旦 create_all 先跑过，alembic 就再也
-  升不干净了**（`0004`+ 的 `create_table` 会撞已存在的表，`0007` 的 `add_column` 会撞
-  create_all 已建好的同名列）。目前生产还没被污染，窗口开着：要上生产**先 `migrate` 再 `serve`**。
-  详见 L1。
+- **⭐ `.env` 里 `PI_METRICS_TOKEN` 被定义两次，空值那份赢了 → 生产 `/metrics` 无鉴权（L12）**：
+  第 57 行是 `PI_METRICS_TOKEN=`（空），第 173 行才是真 token。加载器语义是
+  `if key not in os.environ` —— **先到先得，空值也算"已设置"**，所以第 173 行整行被跳过。
+  实测干净进程加载 `.env` 后 `settings.metrics_token == ''` 且 `metrics_enabled == True`，
+  即 `app.py:718` 会打出 `/metrics is open` 告警。**测试环境反而是好的**（`.env.test` 那份
+  只出现一次，实测无 token 访问 `/metrics` 答 404）。
+  **修法是删掉 `.env` 第 57 行那一行**，零风险、性价比最高，但 `.env` 是生产配置、
+  属 #42/#43 范畴，未授权自动执行。顺带记住这条纪律：改 `.env` 后用
+  `grep -E '^[A-Z_]+=' .env | cut -d= -f1 | sort | uniq -d` 扫重复键。
+- **生产 schema 已被 `create_all` 污染 ⚠️（2026-09-06 20:09:21 发生）**：`pi_py` 的
+  `alembic_version` 仍停在 `0002`，但表数已从 5 张变成 **9 张** —— `agent_runs`/`agent_steps`/
+  `audit_events`/`user_memories` 被 lifespan 的 `db.init()` → `create_all` 静默补出来了，
+  而 **`sessions.plan` 列仍然缺失**（`0003` 是 `ADD COLUMN`，`create_all` 只建表不补列）。
+  取证与"为什么现在 `pi-py migrate` 会撞车"见 `deploy/environments.md` **L1**（四条独立证据，
+  其中 `agent_runs` 的**列序**是决定性物证：生产是 ORM 声明序、测试是 alembic 追加序）。
+  后果：对生产启动服务后 `/readyz` 仍报 `db: ok`（它只跑 `users.count()`，碰不到 `sessions`），
+  但任何 `GET /v1/sessions` 都会 `Unknown column 'sessions.plan'`。
+  **修复路径已写在 L1 末尾**：生产 8 张数据表全 0 行，DROP 那 4 张空表即可精确回到 `0002`
+  状态，然后 `pi-py migrate` 干净升到 `0007`。**未执行，需要用户授权对生产做 DDL。**
+  ⚠️ 这两张 `agent_runs`/`agent_steps` 正是 **#54 要建的地基** —— 做 #54 之前必须先决定
+  生产这块怎么收拾，否则 #54 的迁移（`0008`+）落在一个 alembic 认不出来的 schema 上无从谈起。
 - **`.env.test` 不覆盖 `PI_JWT_SECRET` 和任何凭据** —— 两个环境共用同一个 JWT 密钥、
   同一个 Redis/Milvus/MySQL 实例、同一个模型网关（测试跑的是**真模型，花真钱**），
   只靠 schema/NS 分隔数据落点。后果之一：在一个环境 `logout`/`revoke` **不会**在另一个环境
@@ -329,21 +343,35 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
   其中 `render.test.ts` 26 / `transcript.test.ts` 21 / `sse.test.ts` 9；
   `npm run typecheck`（`vue-tsc --noEmit`）亦通过；
   `tests/live/api.live.ts` 是 **11 例**（文档里长期写的 7 已陈旧）。
-- **路由全景**：上面那条清单**不完整**。实测 app 上 29 条路由 = 23 条业务 + 6 条基础设施。
-  漏掉的是：`DELETE /v1/me`（注销）、`GET /v1/admin/traces` 与 `/traces/{run_id}`（轨迹，
-  即 `agent_runs`/`agent_steps` 的读侧，**与 #54 直接相关**）、以及**会话附件三条**
-  `POST|GET /v1/sessions/{id}/files` + `GET /files/{session_id}/{name}`（后者在 `/v1` 之外、
-  **故意无认证**）。admin 也不是 3 条而是 6 条。完整表已补进 README §Multi-user server，
+- **路由全景**：上面那条清单**不完整**。实测 app 上 **30 条路由 = 23 条业务 + 7 条基础设施**
+  （2026-09-06 晚新增 `GET /metrics` 后从 29 涨到 30；`/metrics` 归基础设施，因为它
+  `include_in_schema=False`、不进 OpenAPI 契约）。漏掉的是：`DELETE /v1/me`（注销）、
+  `GET /v1/admin/traces` 与 `/traces/{run_id}`（轨迹，即 `agent_runs`/`agent_steps` 的读侧，
+  **与 #54 直接相关**）、**会话附件三条** `POST|GET /v1/sessions/{id}/files` +
+  `GET /files/{session_id}/{name}`（后者在 `/v1` 之外、**故意无认证**）、以及 `GET /metrics`。
+  admin 也不是 3 条而是 6 条。完整表已补进 README §Multi-user server，
   分析见 `deploy/environments.md` L3/L10。
-- **代码规模**：Python 源码 9,672 行（ARCHITECTURE 头部原写 8,600）、前端手写 3,231 行
-  （原写 ~1,500；另有 codegen 的 `api/schema.d.ts` 2,440 行不计入手写）、
-  前端测试 1,041 行、Python 测试 6,542 行。
-- **新增文档**：`deploy/environments.md`（生产/测试环境专档，L1–L11 地雷清单）。
+  ⚠️ **`web/openapi.json` 与 `/docs` 现在都不再是完整清单**（缺 `/metrics`），
+  要枚举全部路由只能用 L10 里那个从 app 对象取 `routes` 的脚本。
+- **代码规模**（2026-09-06 21:45 实测，比当天下午又涨了一轮）：Python 源码 **10,628** 行
+  （ARCHITECTURE 头部原写 8,600，下午我改成 9,672，现已 10,628）、Python 测试 **7,015** 行、
+  前端手写 **3,303** 行（另有 codegen 的 `api/schema.d.ts` 2,441 行不计入手写）、
+  前端测试 **1,137** 行。
+- **新增文档**：`deploy/environments.md`（生产/测试环境专档，**L1–L12** 地雷清单）。
   README 与 ARCHITECTURE 的计数漂移已一并修正（ARCHITECTURE §15 的分文件表现在逐行相加
-  正好等于 348，之前 `test_server.py` 写 92 实际 76、`test_model_capabilities.py` 整个不在表里）。
-- **未变**：`pi_py_test` 在 alembic head `0007`；`pi_py`（生产）仍停在 `0002`、全表 0 行、
-  **从未启用**。`web/dist` 构建于 09-05 19:32 且没有更新的前端源码，即 dist 是最新的。
-  Docker 无沙箱孤儿容器（只有一个 3 天前 `Exited(0)` 的 `hello-world`）。
+  正好等于 collected 总数；修正过程中发现 `test_server.py` 原写 92 实际 76、
+  `test_model_capabilities.py` 整个不在表里，两者都已补正，随后又随功能扩展涨到 83 / 14）。
+- **仍未变**：`pi_py_test` 在 alembic head `0007`；`pi_py`（生产）`alembic_version` 仍是
+  `0002`、8 张数据表**全 0 行**、从未对外服务过 —— 但**schema 形状已经变了**（9 张表、
+  缺 `sessions.plan`），见上面那条与 L1，别再当成"干净的 0002"。
+- **已变（2026-09-06 晚）**：`web/dist` 于 **18:48 重建**（原记录是 09-05 19:32），
+  且没有比它更新的前端源码，dist 仍是最新的。Docker 里新增
+  **`pi-py-prometheus-1`**（`prom/prometheus:v2.54.1`）与 **`pi-py-jaeger-1`**
+  （`jaegertracing/all-in-one:1.60`）两个容器，Up 2 小时 —— 这就是 `127.0.0.1:4317`
+  有监听的原因，`.env.test` 的 `PI_TRACER=otel` 有真实对端（Jaeger），
+  `deploy/prometheus.yml` 对应 Prometheus 抓取。仍无沙箱孤儿容器
+  （那个 4 天前 `Exited(0)` 的 `hello-world` 是 docker 装机验证残留）。
+  `audit-test-2026-09-06.jsonl` 11 条；依然没有 `audit-2026-09-06.jsonl`（生产没跑）。
 
 ## 7. 常用命令
 

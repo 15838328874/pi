@@ -12,7 +12,9 @@
 > 另有 codegen 生成的 `api/schema.d.ts` 约 2,400 行，不计入手写）
 >
 > ⚠️ 上面的数字会随开发漂移，**不要当验收标准**。要基线就跑 §15 那两条命令。
-> 环境与生产/测试之分的说明见 **`deploy/environments.md`**（含 11 条已核实的"地雷"）。
+> 环境与生产/测试之分的说明见 **`deploy/environments.md`**（含 12 条已核实的"地雷"，
+> 其中 **L1** 生产 schema 已被 `create_all` 污染、**L12** `.env` 里 `PI_METRICS_TOKEN`
+> 被空值遮蔽导致生产 `/metrics` 无鉴权 —— 这两条是上生产前必须先处理的）。
 >
 > 本包已收敛为**纯服务端形态**：本地单人 CLI/TUI、本地 SQLite 会话存储、
 > Windows/WSL 支持均已移除（见 §12）。

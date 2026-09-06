@@ -12,9 +12,12 @@
 > 另有 codegen 生成的 `api/schema.d.ts` 约 2,400 行，不计入手写）
 >
 > ⚠️ 上面的数字会随开发漂移，**不要当验收标准**。要基线就跑 §15 那两条命令。
-> 环境与生产/测试之分的说明见 **`deploy/environments.md`**（含 12 条已核实的"地雷"，
-> 其中 **L1** 生产 schema 已被 `create_all` 污染、**L12** `.env` 里 `PI_METRICS_TOKEN`
-> 被空值遮蔽导致生产 `/metrics` 无鉴权 —— 这两条是上生产前必须先处理的）。
+> 环境与生产/测试之分的说明见 **`deploy/environments.md`**（14 条已核实的"地雷" L1–L14）。
+> 其中 **L1**（生产 schema 被 `create_all` 污染）、**L12**（`.env` 里 `PI_METRICS_TOKEN`
+> 被空值遮蔽 → 生产 `/metrics` 无鉴权）与 **L14**（conftest 钉死清单漏了 `PI_METRICS_TOKEN`，
+> 由 L12 的修复暴露）**已于 2026-09-06 22:00–22:15 修复并验证**；
+> 仍然开着的是 **L3**（生产缺 `PI_PUBLIC_BASE_URL` → 附件功能关闭）、**L4**（两环境共用
+> `PI_JWT_SECRET`）、**L5**（另 5 个测试账号仍是公开默认密码）、**L13**（产品没有改密码接口）。
 >
 > 本包已收敛为**纯服务端形态**：本地单人 CLI/TUI、本地 SQLite 会话存储、
 > Windows/WSL 支持均已移除（见 §12）。
@@ -1165,9 +1168,25 @@ os.environ["PI_REDIS_URL"] = ""   # → MemoryBackend，绝不连真 Redis
 os.environ["PI_SANDBOX"]   = ""   # → LocalRunner，绝不起真容器
 os.environ["PI_POLICY"]    = ""
 os.environ["PI_TRACER"]    = "noop"
+os.environ["PI_MILVUS_URI"] = ""  # → NoOpStore，绝不连真向量库
+os.environ["PI_EMBEDDING_MODEL"] = ""
+os.environ["PI_RERANK_URL"] = ""
+os.environ["PI_MEMORY_MODEL"] = ""
+os.environ["PI_MEMORY_ARBITER_MODEL"] = ""
+os.environ["PI_WEB_DIST"] = "/nonexistent-pi-web-dist"
+os.environ["PI_METRICS_TOKEN"] = ""   # 见下面这段教训
+os.environ["PI_METRICS"] = "1"
 ```
 
 因为"已存在的环境变量优先"，这几行赋值就让 `.env` 里的对应项失效。
+
+⚠️ **这份清单是"承重墙"，而且已经漏过一次**：`PI_METRICS_TOKEN` 原先不在其中。
+漏着的时候看不出来，因为 `.env` 里那个键恰好是**空值**（本身是 L12 那个 bug）——
+空值漏进测试与钉成空串效果相同。等 L12 修好、`.env` 里只剩末尾那份真 token，
+它立刻漏进套件：`/metrics` 对不带 token 的请求改答 **404**（这是设计，见 §17），
+于是 `TestMetricsEndpoint` 里两个"假设端点敞开"的用例从 200/503 翻成 404。
+**教训：往 `.env` 加任何 `PI_*` 时，都要问一句"离线套件的行为依赖它吗"，
+依赖就必须在 conftest 里钉住。** 完整记录见 `deploy/environments.md` **L14**。
 **新增会触达外部服务的配置项时，记得同步加进这个列表。**
 
 ### 12.3 测试库：`.env.test` 与 `tools/seed_testdb.py`
@@ -1195,10 +1214,18 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 
 | 账号 | 状态 | 用来验什么 |
 |---|---|---|
-| `admin` | `is_admin=1` | 管理员端点；提权走 `UserRepo.set_admin`，就是"改库"那条路 |
+| `admin` | `is_admin=1`；**密码已于 2026-09-06 轮换，不再是默认值** | 管理员端点；提权走 `UserRepo.set_admin`，就是"改库"那条路 |
 | `alice` / `bob` / `carol` | 普通用户，各 2 个会话（一个 4 条消息、一个空） | 正常链路、跨用户 404、utf8mb4（消息里带中文和 4 字节 emoji） |
 | `overquota` | 配额 1000、当月已用 1540 | `POST /runs` 立刻 402 |
 | `disabled` | `is_active=0` | 登录 401 |
+
+> 重跑 `seed_testdb.py` **不会**把 `admin` 的密码冲回默认值：脚本先 `by_username()`，
+> 只在返回 `None` 时才 `create()`，对已存在账号只做"必要时提权"，从不改写 `password_hash`。
+> 轮换后的值刻意不写进仓库（有公开远端）。另注：**产品里没有任何改密码的接口** ——
+> `UserRepo` 只有 `set_active`/`set_quota`/`set_admin`，没有 `set_password`，路由侧也没有，
+> 所以轮换只能直接 `UPDATE users SET password_hash=…`（哈希用 `pi.server.auth.hash_password()`）；
+> 且改密码**不会**让已签发 token 失效（`current_user()` 全程不比对密码），要踢人得调
+> `POST /v1/admin/users/{u}/revoke` 抬 epoch。见 `deploy/environments.md` **L5**/**L13**。
 
 护栏：脚本开头检查 `PI_DATABASE_URL` 的库名，不以 `_test` 结尾就拒绝退出，
 免得对着生产库灌出一堆账号。另外用量记录写的是**当天**日期，而 `/v1/usage` 和
@@ -1377,8 +1404,11 @@ cd web && npm run typecheck   # vue-tsc --noEmit
 - 异步测试用 `asyncio.run(main())` 包裹（未引入 pytest-asyncio 依赖）；
 - `conftest.py` 除了把 `src/` 加进 `sys.path`，还在 import pi **之前**钉死
   `PI_REDIS_URL` / `PI_SANDBOX` / `PI_POLICY` / `PI_TRACER` / `PI_WEB_DIST`
-  / `PI_MEMORY_MODEL` / `PI_MEMORY_ARBITER_MODEL`，防止仓库根的
-  生产 `.env` 被自动加载后把测试引到真 Redis / 真 docker / 真模型网关上（原理见 §12.2）。
+  / `PI_MILVUS_URI` / `PI_EMBEDDING_MODEL` / `PI_RERANK_URL`
+  / `PI_MEMORY_MODEL` / `PI_MEMORY_ARBITER_MODEL` / `PI_METRICS_TOKEN` / `PI_METRICS`，
+  防止仓库根的生产 `.env` 被自动加载后把测试引到真 Redis / 真 docker / 真模型网关 /
+  真向量库上，或让 `/metrics` 的鉴权门禁改变断言结果（原理见 §12.2，
+  以及"这份清单已经漏过一次"的教训）。
   `PI_WEB_DIST` 指向一个不存在的路径是**为了路由确定性**：`web/dist` 一旦存在，
   app 就会在 `/` 上挂一个匹配一切路径的 Mount，整套测试的路由行为于是取决于
   "有没有人碰巧跑过 `npm run build`"。需要真目录的用例（`TestWebUiMount`）自己指；

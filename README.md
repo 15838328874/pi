@@ -393,12 +393,22 @@ python -m pytest -q          # 363 passed, 1 skipped
 > Full analysis in `deploy/environments.md` **L11**.
 
 The suite needs no database, Redis, Docker, or API key: `tests/conftest.py` pins
-`PI_REDIS_URL` / `PI_SANDBOX` / `PI_POLICY` empty, `PI_TRACER=noop` and `PI_WEB_DIST` at a
-nonexistent path before `pi` is imported, so a production `.env` in the repo root cannot leak
-into a test run — and the `web/dist` pin means routing does not depend on whether someone
-happened to run `npm run build`, which would otherwise add a catch-all mount at `/`.
+`PI_REDIS_URL` / `PI_SANDBOX` / `PI_POLICY` / `PI_MILVUS_URI` / `PI_EMBEDDING_MODEL` /
+`PI_RERANK_URL` / `PI_MEMORY_MODEL` / `PI_MEMORY_ARBITER_MODEL` / `PI_METRICS_TOKEN` empty,
+`PI_TRACER=noop`, `PI_METRICS=1` and `PI_WEB_DIST` at a nonexistent path before `pi` is
+imported, so a production `.env` in the repo root cannot leak into a test run — and the
+`web/dist` pin means routing does not depend on whether someone happened to run
+`npm run build`, which would otherwise add a catch-all mount at `/`.
 Tests use `FakeProvider` plus throwaway SQLite files, and async tests are wrapped in
 `asyncio.run()` (no pytest-asyncio dependency).
+
+> That pin list is **load-bearing and was incomplete once already**. `PI_METRICS_TOKEN` was
+> missing, which was invisible while `.env` happened to carry an *empty* value for it — the
+> moment the empty duplicate was deleted (see `deploy/environments.md` **L12**) the real token
+> leaked in, `/metrics` started answering 404 to unauthenticated scrapes, and two
+> `TestMetricsEndpoint` cases flipped from 200/503 to 404. **When you add a `PI_*` setting to
+> `.env`, ask whether the suite's behaviour depends on it, and pin it in `conftest.py` if so.**
+> Full write-up: **L14**.
 
 The frontend has its own suite (Node, not Python):
 
@@ -442,6 +452,18 @@ populated and one empty session plus a usage record, `overquota` (`quota_tokens=
 1540 tokens used → 402), and `disabled` (`is_active=0` → 401). The script refuses to run unless
 `PI_DATABASE_URL` names a `*_test` schema, so forgetting the source cannot damage real data.
 Note that usage is a monthly window and the seeded records are stamped today.
+
+> ⚠️ On the shared test instance, **`admin`'s password was rotated off the default on
+> 2026-09-06** — `pi-test-123` now returns 401 for it, while the other five fixtures still use
+> the default. Re-running `seed_testdb.py` will **not** reset it: the script only calls
+> `create()` when `by_username()` returns `None`, and never rewrites an existing
+> `password_hash`. The rotated value is deliberately not written down anywhere in this repo
+> (it has a public remote). Note also that there is **no password-change API at all** —
+> `UserRepo` has `set_active`/`set_quota`/`set_admin` but no `set_password`, and no route
+> exposes one, so rotation means a direct `UPDATE users SET password_hash=…` using
+> `pi.server.auth.hash_password()`. Changing a password does **not** invalidate issued tokens
+> (`current_user()` never compares passwords); call `POST /v1/admin/users/{u}/revoke` for that.
+> See `deploy/environments.md` **L5** and **L13**.
 
 Two things bite people here, both written up in **[`deploy/environments.md`](deploy/environments.md)**:
 

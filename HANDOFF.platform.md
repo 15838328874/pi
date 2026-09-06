@@ -148,7 +148,7 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
 
 ### 3.2.1 ⚠️ 新增（2026-09-06）：先搞清楚你在哪个环境
 
-**`deploy/environments.md` 是新建的环境专档，动手前必读**（12 条已核实的地雷 L1–L12，
+**`deploy/environments.md` 是新建的环境专档，动手前必读**（14 条已核实的地雷 L1–L14，
 外加两个环境的逐键对照、启动流程、账号现状与基线快照）。最容易踩的五条：
 
 - **离线套件曾 flaky，测试侧已修**（L11）：2026-09-06 共 10 次全套件运行有 6 次红在
@@ -169,27 +169,31 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
   `pi/__init__.py` **不会自动加载它**（候选只有 `.pi-py.env` / `.env` / `~/.pi-py/.env`）——
   必须先 `set -a; . ./.env; . ./.env.test; set +a`。裸跑 `pi-py serve` 会连**生产** `pi_py`。
   判断某个活进程连的是哪个库，读 `/proc/<pid>/environ`，**不要**看 `.env`。
-- **⭐ `.env` 里 `PI_METRICS_TOKEN` 被定义两次，空值那份赢了 → 生产 `/metrics` 无鉴权（L12）**：
-  第 57 行是 `PI_METRICS_TOKEN=`（空），第 173 行才是真 token。加载器语义是
-  `if key not in os.environ` —— **先到先得，空值也算"已设置"**，所以第 173 行整行被跳过。
-  实测干净进程加载 `.env` 后 `settings.metrics_token == ''` 且 `metrics_enabled == True`，
-  即 `app.py:718` 会打出 `/metrics is open` 告警。**测试环境反而是好的**（`.env.test` 那份
-  只出现一次，实测无 token 访问 `/metrics` 答 404）。
-  **修法是删掉 `.env` 第 57 行那一行**，零风险、性价比最高，但 `.env` 是生产配置、
-  属 #42/#43 范畴，未授权自动执行。顺带记住这条纪律：改 `.env` 后用
-  `grep -E '^[A-Z_]+=' .env | cut -d= -f1 | sort | uniq -d` 扫重复键。
-- **生产 schema 已被 `create_all` 污染 ⚠️（2026-09-06 20:09:21 发生）**：`pi_py` 的
-  `alembic_version` 仍停在 `0002`，但表数已从 5 张变成 **9 张** —— `agent_runs`/`agent_steps`/
-  `audit_events`/`user_memories` 被 lifespan 的 `db.init()` → `create_all` 静默补出来了，
-  而 **`sessions.plan` 列仍然缺失**（`0003` 是 `ADD COLUMN`，`create_all` 只建表不补列）。
-  取证与"为什么现在 `pi-py migrate` 会撞车"见 `deploy/environments.md` **L1**（四条独立证据，
-  其中 `agent_runs` 的**列序**是决定性物证：生产是 ORM 声明序、测试是 alembic 追加序）。
-  后果：对生产启动服务后 `/readyz` 仍报 `db: ok`（它只跑 `users.count()`，碰不到 `sessions`），
-  但任何 `GET /v1/sessions` 都会 `Unknown column 'sessions.plan'`。
-  **修复路径已写在 L1 末尾**：生产 8 张数据表全 0 行，DROP 那 4 张空表即可精确回到 `0002`
-  状态，然后 `pi-py migrate` 干净升到 `0007`。**未执行，需要用户授权对生产做 DDL。**
-  ⚠️ 这两张 `agent_runs`/`agent_steps` 正是 **#54 要建的地基** —— 做 #54 之前必须先决定
-  生产这块怎么收拾，否则 #54 的迁移（`0008`+）落在一个 alembic 认不出来的 schema 上无从谈起。
+- **✅ `.env` 里 `PI_METRICS_TOKEN` 曾被定义两次、空值那份赢了（L12）—— 已修复**：
+  原先第 57 行是 `PI_METRICS_TOKEN=`（空），第 173 行才是真 token。加载器语义是
+  `if key not in os.environ` —— **先到先得，空值也算"已设置"**，所以真 token 整行被跳过，
+  干净进程加载 `.env` 后 `metrics_token == ''` 而 `metrics_enabled == True`，
+  即生产 `/metrics` 会无鉴权对外。**2026-09-06 22:00 已删掉那个空赋值**并留了防回归注释；
+  验证：重复键扫描无输出、`metrics_token` 长度 64 为真值、`/metrics is open` 告警不再触发。
+  ⚠️ **要重启生产服务才生效**（当前跑的测试实例读 `.env.test`，那份一直是好的）。
+  **记住这条纪律**：改 `.env` 后用 `grep -E '^[A-Z_]+=' .env | cut -d= -f1 | sort | uniq -d`
+  扫重复键 —— 这个加载器会让任何重复键静默失效，且失效方向永远是"看着配了、其实没配"。
+- **✅ 生产 schema 曾被 `create_all` 污染（2026-09-06 20:09:21 发生，22:00 已修复）**：
+  当时 `pi_py` 的 `alembic_version` 停在 `0002`，但表数已从 5 张变成 9 张 ——
+  `agent_runs`/`agent_steps`/`audit_events`/`user_memories` 被 lifespan 的 `db.init()` →
+  `create_all` 静默补出来，而 **`sessions.plan` 列仍缺失**（`0003` 是 `ADD COLUMN`，
+  `create_all` 只建表不补列）。取证与机理见 `deploy/environments.md` **L1**
+  （决定性物证是 `agent_runs` 的**列序**：生产当时是 ORM 声明序、测试是 alembic 追加序）。
+  **修复动作**：硬断言目标 schema == `pi_py` 且 8 张数据表合计 0 行后，DROP 那 4 张空表
+  （顺序照 `0006` 的 downgrade，先子表 `agent_steps`），schema 精确回到 `0002` 形状，
+  再跑 `pi-py migrate`。
+  **验证**：`alembic_version` = `0007_trace_fidelity`、9 张表齐全、`sessions.plan` 存在，
+  且**逐表逐列比对生产与测试两个 schema 完全一致（0 处差异）**，`agent_runs` 列序已变为
+  alembic 追加序。
+  ⚠️ **生产仍 0 用户 0 数据**，即"schema 就绪、未播种、未上线"。#54 要动的
+  `agent_runs`/`agent_steps` 现在生产也有了，但**#54 若新增迁移请从 `0008` 起编号**，
+  并且**永远先 `migrate` 再 `serve`** —— L1 里那条"create_all 只建表不补列、一旦先跑过
+  alembic 就升不干净"的教训对以后每一次加迁移都适用。
 - **`.env.test` 不覆盖 `PI_JWT_SECRET` 和任何凭据** —— 两个环境共用同一个 JWT 密钥、
   同一个 Redis/Milvus/MySQL 实例、同一个模型网关（测试跑的是**真模型，花真钱**），
   只靠 schema/NS 分隔数据落点。后果之一：在一个环境 `logout`/`revoke` **不会**在另一个环境
@@ -357,13 +361,15 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
   （ARCHITECTURE 头部原写 8,600，下午我改成 9,672，现已 10,628）、Python 测试 **7,015** 行、
   前端手写 **3,303** 行（另有 codegen 的 `api/schema.d.ts` 2,441 行不计入手写）、
   前端测试 **1,137** 行。
-- **新增文档**：`deploy/environments.md`（生产/测试环境专档，**L1–L12** 地雷清单）。
+- **新增文档**：`deploy/environments.md`（生产/测试环境专档，**L1–L14** 地雷清单）。
   README 与 ARCHITECTURE 的计数漂移已一并修正（ARCHITECTURE §15 的分文件表现在逐行相加
   正好等于 collected 总数；修正过程中发现 `test_server.py` 原写 92 实际 76、
   `test_model_capabilities.py` 整个不在表里，两者都已补正，随后又随功能扩展涨到 83 / 14）。
-- **仍未变**：`pi_py_test` 在 alembic head `0007`；`pi_py`（生产）`alembic_version` 仍是
-  `0002`、8 张数据表**全 0 行**、从未对外服务过 —— 但**schema 形状已经变了**（9 张表、
-  缺 `sessions.plan`），见上面那条与 L1，别再当成"干净的 0002"。
+- **已变（2026-09-06 22:00 之后）**：`pi_py`（生产）已从 `0002` **修复到 `0007_trace_fidelity`**，
+  9 张表、`sessions.plan` 存在、与 `pi_py_test` 逐表逐列完全一致；但仍 **0 用户 0 数据**
+  （未播种、未上线）。`pi_py_test` 一直在 head `0007`。
+  `pi_py_test.users` 里 **`admin` 的密码已轮换**（不再是 `pi-test-123`，新值不入文档），
+  其余 5 个播种账号仍是默认值。
 - **已变（2026-09-06 晚）**：`web/dist` 于 **18:48 重建**（原记录是 09-05 19:32），
   且没有比它更新的前端源码，dist 仍是最新的。Docker 里新增
   **`pi-py-prometheus-1`**（`prom/prometheus:v2.54.1`）与 **`pi-py-jaeger-1`**

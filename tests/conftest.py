@@ -32,6 +32,17 @@ os.environ["PI_MEMORY_ARBITER_MODEL"] = ""
 # `npm run build`, and a catch-all mount changes how every other route resolves.
 # TestWebUiMount points PI_WEB_DIST at a real directory itself.
 os.environ["PI_WEB_DIST"] = "/nonexistent-pi-web-dist"
+# /metrics answers 404 (not 403, so a scanner cannot learn the endpoint exists)
+# whenever a token is configured and the request does not carry it. The repo root
+# .env sets a real PI_METRICS_TOKEN, so unpinned it flips every test that assumes
+# an open scrape target from 200 to 404 - and flips the PI_METRICS=0 test from 503
+# to 404, because the token gate runs first. Empty token = open, which is what
+# TestMetricsEndpoint's non-token cases assert; the token-gated case sets its own
+# value via _app(..., PI_METRICS_TOKEN="sekret"). PI_METRICS is pinned for the
+# same reason: .env sets it, and a future PI_METRICS=0 there would silently turn
+# the series test into a 503.
+os.environ["PI_METRICS_TOKEN"] = ""
+os.environ["PI_METRICS"] = "1"
 
 from pi.llm.fake import FakeProvider  # noqa: E402  (after the env pinning above)
 from pi.models import ToolCallBlock, ToolResultBlock  # noqa: E402

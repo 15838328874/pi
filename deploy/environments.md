@@ -31,10 +31,11 @@ PID 1080214  pi-py serve --host 0.0.0.0 --port 8398   （2026-09-06 20:22:39 启
 
 （2026-09-06 20:22 之前的实例是 PID 809332，2026-09-05 19:46 启动；已重启。）
 
-生产 schema `pi_py` **没有对外服务过**：8 张数据表**全部 0 行**，`alembic_version` 仍停在
-`0002_user_active`。但 ⚠️ **它在 2026-09-06 20:09:21 被 `create_all` 污染过** —— 表数从 5 张
-变成 9 张，而 `sessions.plan` 列仍然缺失，alembic 完全不知道这 4 张新表的存在。
-**我原先写的"升级窗口还开着"已经失效，详见地雷 L1（含取证与修复路径）。**
+生产 schema `pi_py` **没有对外服务过**：8 张数据表**全部 0 行**。它曾在
+2026-09-06 20:09:21 被 `create_all` 污染（表数从 5 张变 9 张、`alembic_version` 却停在
+`0002`、`sessions.plan` 缺失），**已于 22:00 修复**：DROP 掉那 4 张空表后重跑
+`pi-py migrate`，现已升到 `0007_trace_fidelity`，且与 `pi_py_test` 逐表逐列完全一致。
+完整取证与修复记录见地雷 **L1**。生产**尚未播种任何账号**，即"schema 就绪、未上线"。
 
 **别把"服务在跑"当成"生产在跑"。** 端口 8398 = 测试，8300 = 生产（约定见 README）。
 
@@ -88,7 +89,7 @@ asyncio.run(m())"
 | `PI_WORKSPACE_ROOT` | `/root/.pi-py/workspaces` | `/root/.pi-py/workspaces-test` | ✅ |
 | `PI_AUDIT_PATH` | `/root/.pi-py/audit.jsonl` | `/root/.pi-py/audit-test.jsonl` | ✅ |
 | `PI_MILVUS_NS` | `pi` | `it` | ✅ 同集群不同 collection |
-| `PI_METRICS_TOKEN` | ⚠️ **配了但没生效**（被空值遮蔽） | 有独立一份，**生效** | ✅ 但生产那侧是坏的，见 **L12** |
+| `PI_METRICS_TOKEN` | ✅ **已修**（原先被一个空值遮蔽，见 **L12**） | 有独立一份，一直生效 | ✅ 两侧现在各有一份且都生效 |
 | `PI_PUBLIC_BASE_URL` | **未设置** | `http://<TEST_PUBLIC_IP>:8398` | ⚠️ 见 **L3** |
 | `PI_ENVIRONMENT` | 未设置（默认） | `test` | ✅ 新增，用于 metrics/trace 标签 |
 | `PI_SERVICE_NAME` | 未设置（默认） | `pi-py` | — |
@@ -174,13 +175,27 @@ cd /root/pi/pi-python
 
 ## 4. 已知地雷
 
-### L1 · 生产 schema 已被 `create_all` 污染 ⚠️ 最严重 —— **这颗雷在 2026-09-06 20:09:21 炸了**
+### L1 · 生产 schema 曾被 `create_all` 污染 ✅ **已于 2026-09-06 22:00 修复**
 
-> **状态更新（2026-09-06 晚）**：本节原先的结论是"升级窗口还开着，`create_all` 从未对生产跑过"。
-> **该结论已失效。** 取证显示 `pi_py` 在 20:09:21 多出 4 张表，正是下面预言的那个场景。
-> 原始分析全部保留，因为它就是这次事故的预测书；**新增的取证与修复路径见本节末尾**。
+> **✅ 修复完成（2026-09-06 22:00，用户授权后执行）**：按本节末尾的修复路径操作 ——
+> DROP 掉 `create_all` 多建的那 4 张空表（执行前用硬断言确认了 ① 目标 schema 精确等于
+> `pi_py`、② `alembic_version` 是 `0002_user_active`、③ 8 张数据表合计 **0 行**），
+> schema 精确回到 `0002` 形状后跑 `pi-py migrate`。
+>
+> **验证结果**：`alembic_version` = **`0007_trace_fidelity`** ✅；9 张表齐全 ✅；
+> **`sessions.plan` 存在** ✅；并且做了最强的一项 —— 逐表逐列比对生产与测试两个 schema，
+> **9 张表、列名/类型/nullable/default 全部一致，0 处差异**，`agent_runs` 的列序也变成了
+> alembic 追加序（`…ended_at, prompt, request_id, enable_search, builtin_tools, first_idx, last_idx`），
+> 与 `pi_py_test` 完全相同 —— 证明它是由 `0006`+`0007` 正常重建的，不再是 `create_all` 产物。
+>
+> **仍未做的**：生产库依然 **0 用户、0 数据**，即"schema 就绪但尚未播种/上线"。
+> 要真正启用生产还需要播种账号并起服务（起服务前记得先处理 **L12** 与 **L3** 的
+> `PI_PUBLIC_BASE_URL`）。
+>
+> 下面保留**完整的原始分析**：它既是这次事故的预测书（写于事发前约 4 小时），
+> 也是"`create_all` 为什么危险"的通用说明 —— 下次再加迁移时同样适用。
 
-实测状态（2026-09-06 21:40 复核）：
+**事发时的实测状态**（2026-09-06 21:40 复核，现已修复）：
 
 | schema | alembic_version | 表数 | `sessions.plan` |
 |---|---|---|---|
@@ -384,10 +399,31 @@ PI_LIVE_API=http://127.0.0.1:8398 npm run test:live
 **建议**（属于 #42 密钥轮换 / #43 云侧暴露面的范畴，未授权自动执行）：给 `.env.test` 补一个
 独立的 `PI_JWT_SECRET`。这一行就能把两个环境的 token 彻底隔开，代价是零。
 
-### L5 · 测试账号用的是公开的默认弱密码，而端口对公网开放
+### L5 · 测试账号用的是公开的默认弱密码，而端口对公网开放 ⚠️ **部分修复：admin 已轮换，其余 5 个仍是默认值**
+
+> **部分修复（2026-09-06 22:05，用户授权后执行）**：`admin`（id=8，`is_admin=1`）的密码
+> 已从 `pi-test-123` 轮换为用户指定的强口令。做法是用项目自己的
+> `pi.server.auth.hash_password()` 生成 PBKDF2 哈希后 `UPDATE users SET password_hash`，
+> 执行前硬断言 ① 目标是 `pi_py_test` 而非 `pi_py`、② `username='admin'` 恰好命中 1 行、
+> ③ 该行 `is_admin` 为真。
+>
+> **验证结果**：新密码登录 → HTTP 200 且 `is_admin: true`；用该 token 打管理端
+> `/v1/admin/users`(200, 7 个账号)、`/v1/admin/traces`(200)、`/v1/admin/audit`(200) 全部可用；
+> 旧密码 `pi-test-123` → **HTTP 401** ✅。新值**不写入本文档**，理由见 §5。
+>
+> ⚠️ **仍然开着的部分**：
+> 1. `alice`/`bob`/`carol`/`overquota`/`disabled` **5 个账号仍是 `pi-test-123`**。
+>    它们不是管理员，但都是有效账号、都能起 run 花真钱（模型网关是共用的，见 **L4**）。
+> 2. **端口暴露面没变**：服务仍是 `0.0.0.0:8398` + 公网 IP + 开放注册。
+>    改密码只堵住了"用已知默认密码登入现有账号"，堵不住"自己注册一个新账号"。
+> 3. ECS 安全组是否限定来源 IP，`cloud-deploy.md` §1 第 5 项至今仍是 "☐ 待你确认"。
+>
+> 另注：**改密码不会踢掉已签发的 token**（校验只看密钥 + Redis 撤销表 + `is_active`，
+> 不比对密码），所以轮换前若已有 token 流出，要立刻失效得再调
+> `POST /v1/admin/users/admin/revoke` 抬 epoch。本次没有执行 revoke。
 
 `tools/seed_testdb.py:170` 的 `--password` 默认值是 `pi-test-123`，**这个值写在 README 里**。
-实测 `pi_py_test` 中 6 个播种账号（`admin`/`alice`/`bob`/`carol`/`overquota`/`disabled`）
+修复前实测 `pi_py_test` 中 6 个播种账号（`admin`/`alice`/`bob`/`carol`/`overquota`/`disabled`）
 的密码全部就是它 —— 包括 `is_admin=1` 的那个。
 
 同时服务是 `--host 0.0.0.0 --port 8398`，`PI_PUBLIC_BASE_URL` 里的 `<TEST_PUBLIC_IP>` 是公网 IP，
@@ -479,8 +515,12 @@ export PATH=/usr/local/node/bin:$PATH && cd web && npm test      # 2026-09-06 �
 `test_smoke` 2、`test_compaction` 1 —— 合计 **364**，与 ARCHITECTURE §15 那张表逐行相加一致。
 
 离线套件不需要网络/数据库/Redis/Docker/API key：`tests/conftest.py` 在 import `pi` **之前**
-就把 `PI_REDIS_URL`/`PI_SANDBOX`/`PI_POLICY` 清空、`PI_TRACER=noop`、`PI_WEB_DIST` 指向不存在
-的路径，所以仓库根的生产 `.env` 漏不进测试。
+就把一批 `PI_*` 钉死（`PI_REDIS_URL`/`PI_SANDBOX`/`PI_POLICY`/`PI_MILVUS_URI`/
+`PI_EMBEDDING_MODEL`/`PI_RERANK_URL`/`PI_MEMORY_MODEL`/`PI_MEMORY_ARBITER_MODEL`/
+`PI_METRICS_TOKEN` 清空，`PI_TRACER=noop`、`PI_METRICS=1`、`PI_WEB_DIST` 指向不存在的路径），
+所以仓库根的生产 `.env` 漏不进测试。
+
+⚠️ 但这句话**曾经是不成立的** —— 那份钉死清单漏了 `PI_METRICS_TOKEN`，见 **L14**。
 
 ### L8 · git：从零 commit 的中间态到首个提交 ✅ 已解决（但并发写入这条没变）
 
@@ -667,9 +707,23 @@ tests/test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the
 
    ⚠️ **再说一遍：修的是测试的确定性，不是第 2 点那个生产竞态。** 第 2 点仍然开着。
 
-### L12 · `.env` 里 `PI_METRICS_TOKEN` 被定义两次，**空值那份赢了** → 生产 `/metrics` 裸奔 ⚠️ 新发现
+### L12 · `.env` 里 `PI_METRICS_TOKEN` 被定义两次，空值那份赢了 ✅ **已于 2026-09-06 22:00 修复**
 
-**2026-09-06 21:50 实测确认，尚未修复。**
+> **✅ 修复完成（用户授权后执行）**：删掉了 `.env` 第 57 行那个空的 `PI_METRICS_TOKEN=`，
+> 并在原位置留下一段防回归注释（说明加载器"先到先得 + 空值也算已设置"的语义、
+> 指向末尾的真值所在小节、附上扫重复键的命令）。
+>
+> **验证结果**：① `grep -E '^[A-Z_]+=' .env \| cut -d= -f1 \| sort \| uniq -d` **无输出**
+> （重复键清零）；② 干净进程加载 `.env` 后 `settings.metrics_token` 长度 **64**、
+> 为真值；③ `metrics_enabled and not metrics_token` = **False**，即 `app.py:718` 的
+> `/metrics is open` 告警**不再触发**；④ `.env` 从 41 行赋值变为 **40 行 / 40 个唯一键**。
+>
+> ⚠️ **要生效必须重启生产服务**（当前跑着的是测试实例 PID 1080214，它读的是 `.env.test`
+> 里那份本来就正常的 token，所以这次修改对运行中的服务无影响 —— 它保护的是**下一次起生产**）。
+>
+> 下面保留完整分析，因为这个坑的**机制**比这一处修复更值得记住。
+
+**2026-09-06 21:50 实测确认（修复前的状态）**：
 
 `.env` 里这个键出现了两次：
 
@@ -716,13 +770,9 @@ settings.metrics_enabled       = True
 —— 这是设计：token 不对答 404 而非 403，免得告诉扫描器这里有个端点（`.env:54-55` 的注释写明）。
 `test_server.py::TestMetricsEndpoint` 也钉住了这个行为。
 
-**修法：删掉 `.env` 第 57 行那个空赋值。** 一行删除，零风险。
-（`PI_METRICS_TOKEN` 是 `.env` 里**唯一**重复定义的键 —— 已用脚本扫过全部 41 行赋值确认。）
+**修法：删掉 `.env` 第 57 行那个空赋值。**（✅ 已照此执行，见本节开头的修复记录。）
 
-**为什么我没直接改**：`.env` 是生产配置文件，且这属于 #42/#43（密钥与云侧暴露面）的范畴，
-交接文档明确标注未授权给我。**这是本文档里性价比最高的一处待办：删一行，堵一个公网信息泄露面。**
-
-顺带一条通用纪律：**改 `.env` 时永远用 `grep -c '^KEY='` 确认只有一个定义**。
+顺带一条通用纪律：**改 `.env` 时永远确认每个键只有一个定义**。
 这个加载器的"先到先得 + 空值也算设置"语义，会让任何重复键都变成静默失效，
 而且失效方向总是"看起来配了、实际没配"。可以用这条一次性扫全文：
 
@@ -731,36 +781,142 @@ cd /root/pi/pi-python && grep -E '^[A-Z_]+=' .env | cut -d= -f1 | sort | uniq -d
 # 有输出 = 存在重复键，靠前的那个生效
 ```
 
+### L13 · 产品里**没有任何改密码的接口** —— 只能直接写库 ⚠️ 新发现
+
+2026-09-06 22:05 执行 L5 的密码轮换时撞出来的：`UserRepo` 只有
+`set_active()`（`db.py:307`）、`set_quota()`（`:314`）、`set_admin()`（`:321`）三个 mutator，
+**没有 `set_password()`**。路由侧同样没有：24 条业务路由里没有任何
+`POST /v1/me/password`、`PATCH /v1/me`、或管理端的"重置某用户密码"。
+
+后果是三层都缺：
+
+| 谁 | 能做什么 | 缺什么 |
+|---|---|---|
+| 普通用户 | 注册、登录、注销（`DELETE /v1/me`） | **不能自助改密码**，也不能"忘记密码"找回 |
+| 管理员 | 改 `is_active`、改配额、抬 epoch 踢下线 | **不能重置别人的密码** |
+| 运维 | —— | 只能 `UPDATE users SET password_hash=…` 直接写库 |
+
+也就是说：**密码一旦设定就永久不可变，除非有人手动改数据库。** 本次 L5 的轮换就是这么做的 ——
+用 `pi.server.auth.hash_password()` 生成哈希再 `UPDATE`，并且必须自己保证
+① 连的是哪个 schema、② 命中几行、③ 该不该同时 `revoke` 抬 epoch。这三件事产品本来都该管。
+
+这一条与 **#54** 和 `DESIGN.platform.md` 的不变量体系是相关的：一个多用户服务把
+"凭据轮换"留给裸 SQL，等于把最容易出错的一步交给了最没有护栏的路径。
+建议加两个端点（`POST /v1/me/password` 自助改密 + `POST /v1/admin/users/{u}/password`
+管理端重置），两者都应当**同时抬该用户的 epoch**，让旧 token 立即失效 ——
+现在的 `revoke` 已经有这个机制（`app.py` 的 `epoch:{username}`），复用即可。
+
+顺带记一条容易踩的语义：**改密码不会让已签发的 token 失效**。
+`current_user()`（`app.py:801`）的校验链是"解 JWT → 查 `revoked:{jti}` → 查 `epoch:{username}`
+→ 查库拿 user"，**全程不比对密码**。所以轮换密码后必须显式调
+`POST /v1/admin/users/{u}/revoke` 才能真正踢人下线。本次轮换**没有**执行 revoke
+（用户没要求，且旧密码 `pi-test-123` 已确认失效，风险面是"轮换前已签发的 token"）。
+
+### L14 · 离线套件并非完全密封：`conftest.py` 的钉死清单漏过 `PI_METRICS_TOKEN` ✅ 已修
+
+**2026-09-06 22:15 由 L12 的修复意外暴露，当场修掉。** 这条值得单列，因为它是
+"修一个 bug 揭出另一个 bug"的典型，而且**揭示了一个会反复咬人的结构性问题**。
+
+README / ARCHITECTURE §12.2 / 本文档 L7 都声称：`tests/conftest.py` 在 import `pi` 之前
+钉死环境变量，"所以仓库根的生产 `.env` 漏不进测试"。**这句话当时是错的** —— 清单里没有
+`PI_METRICS_TOKEN`。
+
+#### 为什么一直没被发现
+
+`.env` 里那个键恰好是**空值**（就是 L12 那个 bug 本身）。空值漏进测试，和 conftest 钉成
+空串，效果完全相同 —— 所以这个缺口**被另一个 bug 完美掩盖了**。
+
+一旦 L12 修好（删掉空的重复定义，末尾那份真 token 开始生效），缺口立刻显形：
+
+```
+FAILED test_server.py::TestMetricsEndpoint::test_a_completed_run_shows_up_in_the_series
+       assert 404 == 200
+FAILED test_server.py::TestMetricsEndpoint::test_switching_metrics_off_answers_503_with_the_reason
+       assert 404 == 503
+```
+
+机理：`/metrics` 在"配了 token 但请求没带"时**故意答 404**（不是 403，免得告诉扫描器
+端点存在，见 L10/L12）。真 token 从 `.env` 漏进测试进程后，端点进入鉴权分支，
+两个"假设端点敞开"的用例就全变 404。第二个用例尤其能说明问题：它设了 `PI_METRICS=0`
+想验 503，但**token 门禁跑在开关判断之前**，所以连 503 分支都到不了。
+
+四个 metrics 用例里只有 `test_a_token_gates_it_and_a_wrong_one_404s` 不受影响 ——
+它通过 `_app(..., PI_METRICS_TOKEN="sekret")` **自己**设值，本来就是密封的。
+这恰好指出了正确写法。
+
+#### 修法（已执行）
+
+在 `tests/conftest.py` 的钉死段补两行，并写明缘由：
+
+```python
+os.environ["PI_METRICS_TOKEN"] = ""
+os.environ["PI_METRICS"] = "1"
+```
+
+`PI_METRICS` 一并钉上是防御性的：`.env` 现在设的是 `1`（与默认值相同，无行为差异），
+但将来谁要在 `.env` 里写 `PI_METRICS=0`，那个 series 用例就会静默变成 503。
+
+**验证**：`pytest tests/test_server.py::TestMetricsEndpoint -q` → **4 passed**；
+全套件 → **363 passed, 1 skipped**，回到修复前水平。
+
+#### 结构性教训（这条比修复本身重要）
+
+conftest 的钉死清单是一份**手工维护的白名单**，而 `.env` 是一份**不断增长的配置**。
+两者没有任何机制保持同步，所以：
+
+> **每往 `.env` 加一个 `PI_*`，都必须问一句"离线套件的行为依赖它吗"，依赖就钉进 conftest。**
+> 而且这个缺口的失效方式特别阴险 —— 它不会立刻报错，会等到某次 `.env` 的值从"恰好无害"
+> 变成"真的有效"时才炸，届时距离引入缺口可能已经隔了很多次提交。
+
+可以做的自动化（**未实施**）：加一个测试，断言"`ServerSettings` 认识的每一个环境变量名，
+要么在 conftest 的钉死清单里，要么在一份显式的允许漏入白名单里"。这样新增配置项时
+漏钉会立刻红灯，而不是等值变化后才炸。这是本文档里唯一一条**建议新增测试**的项。
+
 ---
 
-## 5. 测试环境账号现状（2026-09-06 实测）
+## 5. 测试环境账号现状（2026-09-06 22:10 复核）
 
 `pi_py_test.users`，7 行。密码哈希均为 `pbkdf2$200000$<32 hex salt>$<64 hex digest>`（111 字符），
-盐各自独立（7 个账号 7 个不同哈希）。
+7 个账号 7 个各不相同的完整哈希（盐各自独立）。
 
 | id | username | admin | active | quota | 创建时间 | sessions | 密码 |
 |---|---|---|---|---|---|---|---|
-| 8 | `admin` | ✅ | ✅ | 1,000,000 | 2026-09-03T06:56:10Z | 4 | `pi-test-123`（播种默认，见 **L5**） |
-| 9 | `alice` | — | ✅ | 1,000,000 | 同上 | 7 | 同上 |
+| 8 | `admin` | ✅ | ✅ | 1,000,000 | 2026-09-03 | 7 | **已于 2026-09-06 22:05 轮换**，不再是播种默认值。新值**不写入本文档**（见下方说明），旧值 `pi-test-123` 实测已返回 401 |
+| 9 | `alice` | — | ✅ | 1,000,000 | 同上 | 7 | `pi-test-123`（播种默认，**未轮换**） |
 | 10 | `bob` | — | ✅ | 1,000,000 | 同上 | 2 | 同上 |
 | 11 | `carol` | — | ✅ | 1,000,000 | 同上 | 2 | 同上 |
 | 12 | `overquota` | — | ✅ | **1,000** | 同上 | 2 | 同上（配额夹具 → 402） |
 | 13 | `disabled` | — | **❌** | 1,000,000 | 同上 | 0 | 同上（停用夹具 → 401） |
-| 29 | `smokeweb` | — | ✅ | 1,000,000 | 2026-09-05T09:23:14Z | 1 | **未知，不可恢复**（见 **L6**） |
+| 29 | `smokeweb` | — | ✅ | 1,000,000 | 2026-09-05 | 1 | **未知，不可恢复**（见 **L6**） |
 
 前 6 个由 `tools/seed_testdb.py` 播种（创建时间完全相同），`overquota`/`disabled` 是故意的
 故障夹具，别"修好"它们。
 
-生产 `pi_py.users` = **0 行**，没有任何账号。
+> **为什么 admin 的新密码不写在这里**：本仓库有公开远端（`github.com/15838328874/pi`）。
+> 轮换的全部意义就是让"公开可知的默认密码"失效，把新值写进被跟踪的文档等于原地白做一遍。
+> `pi-test-123` 之所以照写不误，是因为它是 `tools/seed_testdb.py:170` 的源码默认值、
+> 本来就随仓库公开（见文首脱敏说明）。新密码请走密码管理器或口头传递。
 
-登录验证（2026-09-06 实测通过）：
+`tools/seed_testdb.py` **不会把 admin 的密码冲回默认值**：它在 `:120` 先 `by_username()`，
+只有 `user is None` 时才 `create()`，对已存在的账号只做"必要时提权"（`:132`），
+从不改写 `password_hash`。所以重跑播种是安全的。
+
+生产 `pi_py.users` = **0 行**，没有任何账号（schema 已于 2026-09-06 修复到 `0007`，
+但尚未播种，见 **L1**）。
+
+登录验证（2026-09-06 22:05 实测，用轮换后的密码）：
 
 ```bash
 curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
   -H 'Content-Type: application/json' \
-  -d '{"username":"admin","password":"pi-test-123"}'
+  -d '{"username":"admin","password":"<轮换后的值>"}'
 # → HTTP 200 {"access_token":"…","token_type":"bearer","expires_in":43200,
 #             "username":"admin","is_admin":true}
+# 用该 token 实测管理端全部可用：
+#   GET /v1/admin/users  → 200（7 个账号）
+#   GET /v1/admin/traces → 200
+#   GET /v1/admin/audit  → 200
+# 旧密码 pi-test-123 → 401 ✅
 ```
 
 浏览器入口 `http://<host>:8398/`（`web/dist` 已于 **2026-09-06 18:48** 重建，且没有比它更新的前端
@@ -783,7 +939,7 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
 | 前端套件 | **56 passed**（3 files），1.1s，连跑稳定；`npm run typecheck`（`vue-tsc --noEmit`）亦通过 |
 | venv | `.venv/bin/python` = Python 3.12.3；`aiomysql`/`pymysql`/`asyncpg`/`sqlalchemy` 均可用 |
 | alembic head | `0007_trace_fidelity`（`migrations/versions/` 共 0001–0007） |
-| **生产 schema** | ⚠️ `pi_py` = `0002_user_active` + **9 张表**（`create_all` 污染）+ **缺 `sessions.plan`**；8 张数据表全 0 行。见 **L1** |
+| **生产 schema** | ✅ **已修复到 `0007_trace_fidelity`**（2026-09-06 22:00）：9 张表、`sessions.plan` 存在、与 `pi_py_test` 逐表逐列**完全一致（0 处差异）**；8 张数据表仍全 0 行（未播种）。曾被 `create_all` 污染，见 **L1** |
 | 测试 schema | `pi_py_test` = `0007_trace_fidelity`，9 张表，`sessions.plan` 存在 ✅ |
 | Python 源码规模 | 10,628 行（`find src -name '*.py' \| xargs wc -l`） |
 | Docker | **新增可观测性栈**：`pi-py-prometheus-1`（`prom/prometheus:v2.54.1`）+ `pi-py-jaeger-1`（`jaegertracing/all-in-one:1.60`），均 Up 2 小时。Jaeger 就是 `127.0.0.1:4317` 的监听方。**无沙箱池孤儿容器**（那个 4 天前 `Exited(0)` 的 `hello-world` 是装机验证残留） |
@@ -809,17 +965,35 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
 
 ## 7. 待办归属
 
-本文只**记录**问题，不自动修。以下属于用户自己的运维范畴（`HANDOFF.md` §1 明确标注未授权）：
+本文只**记录**问题，不自动修；下列标 ✅ 的是 2026-09-06 22:00–22:10 经用户明确授权后执行的。
 
-- **L12 ⭐ 最优先** —— 删掉 `.env` 第 57 行那个空的 `PI_METRICS_TOKEN=`。**一行删除、零风险、
-  堵一个公网信息泄露面**，而且是本文档所有待办里唯一"改完立刻可验证"的
-  （重启后 `curl -s -o /dev/null -w '%{http_code}' http://<host>:8398/metrics` 应从 200 变 404）。
-- **L1 ⭐ 上生产前必做** —— 生产 schema 已被 `create_all` 污染（2026-09-06 20:09:21）。
-  修复路径见 L1 末尾：DROP 那 4 张空表 → `pi-py migrate` 干净升到 `0007`。
-  **在对生产做任何 DDL 之前，先按 §1 确认 shell 连的是 `pi_py` 而不是 `pi_py_test`。**
+**已完成（本轮）**：
+
+- ✅ **L12** —— 删掉 `.env` 第 57 行那个空的 `PI_METRICS_TOKEN=`，留了防回归注释。
+  验证：重复键扫描无输出、`metrics_token` 长度 64、`/metrics is open` 告警不再触发。
+  ⚠️ **需重启生产服务才生效**。
+- ✅ **L1** —— DROP 生产那 4 张 `create_all` 多建的空表 + `pi-py migrate`。
+  验证：`alembic_version` = `0007_trace_fidelity`、`sessions.plan` 存在、
+  与 `pi_py_test` 逐表逐列 0 差异。
+- ✅ **L5（部分）** —— `admin` 密码已轮换，旧默认值实测 401，管理端三路由实测 200。
+- ✅ **L14** —— `tests/conftest.py` 补钉 `PI_METRICS_TOKEN=""` 与 `PI_METRICS="1"`。
+  这是 L12 修复的**直接后果**：真 token 开始生效后漏进了离线套件，把两个
+  `TestMetricsEndpoint` 用例从 200/503 打成 404。验证：该 4 个用例全过、
+  全套件回到 `363 passed, 1 skipped`。**本轮唯一一处代码改动**（且只动测试基建，
+  没碰 `src/`）。
+
+**仍然开着，属于用户运维范畴**（`HANDOFF.md` §1 标注未授权）：
+
+- **L5 剩余部分** —— `alice`/`bob`/`carol`/`overquota`/`disabled` **5 个账号仍是
+  `pi-test-123`**；端口仍是 `0.0.0.0:8398` + 公网 IP + 开放注册（改密码堵不住"自己注册一个"）；
+  ECS 安全组是否限流，`cloud-deploy.md` §1 第 5 项至今 "☐ 待你确认"。
+  另：轮换密码**不会**让已签发 token 失效，要踢人得调 `POST /v1/admin/users/{u}/revoke`。
 - **L4** 给 `.env.test` 补独立 `PI_JWT_SECRET` —— 一行配置，照 `PI_METRICS_TOKEN`
   已有的样子写即可（那是覆盖层里做对了的样板）。
-- **L5** 换 `admin` 密码 / 确认 ECS 安全组（`cloud-deploy.md` §1 第 5 项至今 "☐ 待你确认"）。
+- **L3** 生产要不要开附件功能：开就补 `PI_PUBLIC_BASE_URL`（且必须走 TLS 域名，
+  别照抄测试环境那个明文 HTTP + 公网 IP 的形状），不开就在 `.env` 里写明"故意不设"。
+- **L1 的后续** —— 生产 schema 已就绪但**未播种、未上线**。真要启用需要播种账号 + 起服务，
+  起之前确认 L12 已随重启生效、L3 已决定。
 - **#42**（密钥轮换）、**#43**（云侧暴露面）本就是用户的活。
 
 以下属于代码/文档侧，可以直接做：
@@ -850,3 +1024,12 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
 - **L12 的通用防线**（可选）：给 `.env` 加一个 CI/pre-commit 检查，
   `grep -E '^[A-Z_]+=' .env | cut -d= -f1 | sort | uniq -d` 有输出就报错。
   加载器"先到先得 + 空值也算设置"的语义不会变，所以这类遮蔽只能靠外部检查兜住。
+  （`.env` 本身是 git-ignored，所以这个检查得放在部署脚本或运维 checklist 里，
+  而不是仓库的 pre-commit hook —— hook 读不到生产机上那份 `.env`。）
+- **L13** 加改密码的接口：`POST /v1/me/password`（自助，需验旧密码）+
+  `POST /v1/admin/users/{u}/password`（管理端重置）。两者都应当**同时抬该用户的 epoch**
+  让旧 token 立即失效 —— `revoke` 已经有这套机制（Redis `epoch:{username}`），复用即可。
+  这是本轮唯一发现的**产品功能缺口**（不是配置或文档问题），需要写代码 + 迁移无关，
+  但会动 `app.py`/`db.py`/`web/`，属于 #54 之外的独立小任务。
+  在它落地之前，任何密码轮换都只能靠裸 SQL，而裸 SQL 没有"确认连的是哪个库"这层护栏
+  —— 本次轮换是靠临时脚本里的硬断言补上的，那不该是常态。

@@ -3,7 +3,7 @@
 > 面向后来人的完整说明：项目是什么、怎么设计的、每个模块每个函数干什么、
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
-> 最后更新：2026-09-06 · 代码规模约 10,600 行 Python 源码 + 364 个离线测试（363 passed / 1 skipped，
+> 最后更新：2026-09-06 · 代码规模约 10,600 行 Python 源码 + 365 个离线测试（364 passed / 1 skipped，
 > **套件曾 flaky、现已修复**：`TestDeregister` 与后台记忆抽取赛跑，实测 10 次全套件运行有 6 次会红这一条，
 > 修后单独跑 30/30、全套件连跑 5 次一致。**注意修的是测试的确定性，注销与在飞抽取之间那个
 > 生产级竞态仍然开着**，见 `deploy/environments.md` L11 与 §15）
@@ -244,7 +244,7 @@ pi-python/
 │       ├── cache.py         缓存/锁后端（内存 / Redis）
 │       ├── auth.py          PBKDF2 哈希 + JWT
 │       └── ratelimit.py     每用户固定窗口限流
-├── tests/                   364 个测试（纯本地可跑，无外部依赖）
+├── tests/                   365 个测试（纯本地可跑，无外部依赖）
 ├── migrations/              Alembic 迁移 0001–0007（head = 0007_trace_fidelity：建表、用户激活、
 │                            会话计划列、用户记忆、审计事件、run 轨迹、轨迹保真度）
 ├── tools/loadtest.py        SSE 压测工具
@@ -1066,7 +1066,8 @@ join 只能过滤索引给的 id、救不回索引看不见的，没有这条回
 恰好读到"昨天"的记忆）→ cosine 0.35 召回下限（实测阈值：降到 0 会把离题查询也
 送进 rerank，升到 0.5 会丢相关事实）→ rerank 精排（0.3 分值下限）→ 取前 5 条注入。
 全程任何失败都返回空串——检索失败不能 fail 用户的回合。embedding/rerank 花费
-同样 `turns=0` 入账。
+同样 `turns=0` 入账（`recall_failed` 曾是个例外：embedding 已经花了却返回空
+`Usage()`，等于把已付的 token 从 `usage_records` 里抹掉，2026-09-06 修掉并有测试钉住）。
 
 这四个阶段各自有 span（`memory.embed` / `memory.recall` / `memory.join` /
 `memory.rerank`，挂在 `memory.retrieve` 下，见 §10.1），整份账——走了哪条召回路径、
@@ -1337,7 +1338,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q     # 363 passed, 1 skipped —— 全本地，不需要网络/数据库/模型
+python -m pytest -q     # 364 passed, 1 skipped —— 全本地，不需要网络/数据库/模型
                         # ✅ 不再 flaky（曾约 6/10 次红在 TestDeregister），见下面
 
 export PATH=/usr/local/node/bin:$PATH        # node 不在默认 PATH 里
@@ -1349,7 +1350,7 @@ cd web && npm run typecheck   # vue-tsc --noEmit
 它们会随开发漂移 —— 本文档里就曾经同时存在 174 / 291 / 332 / 333 四个互相矛盾的总数。
 
 ✅ **Python 套件的 flaky 已修掉**：2026-09-06 曾连续 10 次全套件运行（当时总数 348 例，
-现在 364），4 次全绿、6 次 `1 failed`，失败永远是
+现在 365），4 次全绿、6 次 `1 failed`，失败永远是
 `test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the_token`。
 根因是该用例的 `_counts()` 快照没有等在飞的**后台记忆抽取**收尾，而抽取无论成功失败都会写一条
 `turns=0` 的 `usage_records`（`memory/service.py:732`），落在快照之后就让 `purged` 比 `before` 多 1。
@@ -1364,12 +1365,12 @@ cd web && npm run typecheck   # vue-tsc --noEmit
 实打实的缺口，正解是**注销与在飞抽取互斥**（或等它们收尾），与 Run 地基 / append-only
 事件日志那条线一并考虑。完整分析见 **`deploy/environments.md` L11**。
 
-测试组织（离线套件都在 `tests/`，共 364 例；前端另有一套 Node 侧的，见 §18.5；
+测试组织（离线套件都在 `tests/`，共 365 例；前端另有一套 Node 侧的，见 §18.5；
 花真钱的 `integration/` 另算，见本节末尾）：
 
 | 文件 | 例数 | 覆盖 |
 |---|---|---|
-| `test_memory.py` | 125 | 长期记忆全链路（离线，`HashEmbedder`+`InMemoryStore`+桩 Milvus）：`_user_filter` 租户隔离与查询形状、Milvus DDL/方言兼容、抽取 JSON 解析（缺字段/截断/注入指令是数据不是命令）、写路径核心语义（**repo 先落、索引镜像 best-effort、pending_sync 追平**；touch 确认而非重插、复活禁止、最旧不被逐出、满额逐出最久未确认）、**维护循环**（ensure_index→sync_pending→decay 的顺序与幂等、Redis 锁不持有就不扫）、**衰减**（软删行留 MySQL、索引向量按用户清）、metering（`turns=0` 计入 `usage_records`、失败也记账、关闭即不记）、**仲裁**（合并保最旧 `created_at`、秘密先脱敏再入库、单组合并不失败整批、未列出的不动、无模型即关闭）、两段式检索（索引→repo join→rerank；**索引滞后/零命中回退 MySQL 全扫**；熔断开路回退；cosine 召回 + rerank 精排 + 阈值降级到纯 cosine）、rerank 端点真 HTTP、检索/抽取失败不炸主流程、后台抽取不阻塞 run |
+| `test_memory.py` | 126 | 长期记忆全链路（离线，`HashEmbedder`+`InMemoryStore`+桩 Milvus）：`_user_filter` 租户隔离与查询形状、Milvus DDL/方言兼容、抽取 JSON 解析（缺字段/截断/注入指令是数据不是命令）、写路径核心语义（**repo 先落、索引镜像 best-effort、pending_sync 追平**；touch 确认而非重插、复活禁止、最旧不被逐出、满额逐出最久未确认）、**维护循环**（ensure_index→sync_pending→decay 的顺序与幂等、Redis 锁不持有就不扫）、**衰减**（软删行留 MySQL、索引向量按用户清）、metering（`turns=0` 计入 `usage_records`、失败也记账、关闭即不记、**索引与 repo 双双失败时 embedding 花费仍入账**）、**仲裁**（合并保最旧 `created_at`、秘密先脱敏再入库、单组合并不失败整批、未列出的不动、无模型即关闭）、两段式检索（索引→repo join→rerank；**索引滞后/零命中回退 MySQL 全扫**；熔断开路回退；cosine 召回 + rerank 精排 + 阈值降级到纯 cosine）、rerank 端点真 HTTP、检索/抽取失败不炸主流程、后台抽取不阻塞 run |
 | `test_sandbox_pool.py` | 41 | 预热池（假传输，无需真 docker）：复用/预热/并发去重/回收/重建/驱逐/关闭；容器资源限额（`_parse_size`、`SandboxLimits` 校验与两种渲染、CLI/Engine API 两条建容器路径都真的带上了限额）；`PI_SANDBOX` 非法值必须报错而不是静默降级 |
 | `test_server.py` | 83 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16）；**契约回归**：`event_to_sse` 的每种事件都对得上文档里的 `Sse*Data` 模型（正反两向 + 真流端到端）、OpenAPI 里没有未定型的响应体、错误体统一 `ErrorOut`、`messages.blocks` 是扁平数组（见 §11.3.1）、工具结果预览的截断长度与文档里引用的 `PREVIEW_LEN` 常量一致；`LoginOut.username` 与 `/v1/me` 报同一个人；**`TestWebUiMount`** 钉住前端挂载顺序（见 §11.3 / §18）；**`TestPlanRun`** 走真 HTTP+SSE 路径打 `submit_plan`（线序 + 持久化回读）；**`TestMemoryWiring`/`TestArbiterSweep`/`TestMaintenanceSweep`**：配置真到达 `MemoryService`、脏用户查询、Redis 锁、lifespan 后台循环；**`TestDeregister`**：注销级联（七张表回执、token 即死、向量镜像只剩别人、workspace 删除、再注册白纸）；**`TestAuditMysql`**：每条审计落 MySQL、管理端读表不读文件（删掉 JSONL 也能查）；**`TestTraces`/`TestTraceFlags`**：轨迹逐步记录（含每轮 `llm_call` 与失败的那一轮）、**`retrieval` 步骤记下召回明细**、**召回阶段抛异常时 run 仍成功但被打上 `memory_failed` 且能被 `anomaly=true` 捞出**、失败 run 可过滤、鉴权门、保留期删除、四个异常判定；**`TestMetricsEndpoint`**：run 完成后序列真的动了、`in_flight` 归零、序列里不含用户名与会话 id、`/metrics` 不在 OpenAPI 文档里、token 门禁（错 token 答 404）、`PI_METRICS=0` 答 503 并说明原因；**`TestSseEventPayloads`** 另钉住 `retrieval`/`llm_call` **绝不上线**（否则每次 run 都发一帧 `event: unknown`）；**`TestSessionFiles`**：附件三路由的集成层（上传/列表/下载，含**无认证**的 `GET /files/{sid}/{name}` 与 `PI_PUBLIC_BASE_URL` 未设时的 400；单元层见 `test_model_capabilities.py`，环境侧的暴露面分析见 `deploy/environments.md` L3） |
 | `test_planning.py` | 16 | **任务规划（#45）**。工具层 8 例：计划作为 payload 记录、不碰磁盘、参数化拒绝越界/畸形计划（步数超 20、步长超 300、空标题、缺 steps、空 steps）、校验错误文案截断、成功文案能整段活过 SSE 预览、`all_tools()` 注册且带 `terminal` 标记；循环层 6 例：成功的 `submit_plan` 结束 run、同批后续调用被跳过且**不执行**、跳过调用有审计、无效计划不结束本轮、一批里两个 `submit_plan` 先者胜、跳过合成结果让历史对下一轮仍配对（配对不变量，见 §6.1） |
@@ -1388,7 +1389,7 @@ cd web && npm run typecheck   # vue-tsc --noEmit
 > 101 → 93 的差额（8 例）全部来自这两处，没有覆盖率损失。（93 是**那次删除之后**的
 > 数量，不是当前总数；之后陆续补了认证审计、`X-Forwarded-For`、沙箱资源限额、策略回归
 > 与 OpenAPI/SSE 契约，再后来加了整个长期记忆模块与会话附件，再后来是可观测层
-> （span 父子树 + OTLP 导出 + `/metrics` + 召回明细），现在见上表 364 例
+> （span 父子树 + OTLP 导出 + `/metrics` + 召回明细），现在见上表 365 例
 > —— 上表逐文件相加**正好等于** `pytest --collect-only` 的总数，2026-09-06 已核对。
 > 改测试时记得同步这张表，否则它又会像 `test_server.py`（曾写 92，实际 76）和
 > `test_model_capabilities.py`（整个文件曾不在表里）那样漂移。）

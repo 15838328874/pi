@@ -350,7 +350,7 @@ src/pi/
   server/                   config, db, auth, cache, ratelimit, runner, app (FastAPI)
   cli.py                    argparse entrypoints: serve / migrate
 migrations/                 Alembic versions 0001-0007 (head: 0007_trace_fidelity)
-tests/                      pytest suite: 364 tests, no network/DB/model needed
+tests/                      pytest suite: 365 tests, no network/DB/model needed
 tools/dump_openapi.py       regenerate web/openapi.json from a throwaway app instance
 web/                        Vue 3 + TS frontend (see "Web UI" below)
   openapi.json              committed contract, dumped from the app
@@ -371,7 +371,7 @@ deploy/                     Caddyfiles, cloud runbook, .env template, environmen
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 363 passed, 1 skipped
+python -m pytest -q          # 364 passed, 1 skipped
 ```
 
 > ✅ **The suite is no longer flaky.** It used to be: ten full-suite runs on 2026-09-06 were

@@ -491,8 +491,8 @@ PI_LIVE_API=http://127.0.0.1:8398 npm run test:live
 数字会随开发漂移，**别把它当验收标准**。要基线就跑：
 
 ```bash
-.venv/bin/python -m pytest -q                                   # 2026-09-06 晚: 363 passed, 1 skipped, 25.3s（连跑 5 次一致；曾 flaky，已修，见 L11）
-.venv/bin/python -m pytest --collect-only -q | tail -1           # 2026-09-06 晚: 364 tests collected（稳定）
+.venv/bin/python -m pytest -q                                   # 2026-09-06 22:40: 364 passed, 1 skipped, 25.7s（曾 flaky，已修，见 L11）
+.venv/bin/python -m pytest --collect-only -q | tail -1           # 2026-09-06 22:40: 365 tests collected（稳定）
 export PATH=/usr/local/node/bin:$PATH && cd web && npm test      # 2026-09-06 晚: 56 passed, 1.1s（稳定）
 ```
 
@@ -509,10 +509,13 @@ export PATH=/usr/local/node/bin:$PATH && cd web && npm test      # 2026-09-06 �
 .venv/bin/python -m pytest --collect-only -q 2>/dev/null | grep -oE '^tests/[a-z_]+\.py' | sort | uniq -c
 ```
 
-2026-09-06 晚间的结果：`test_memory` 125、`test_server` 83、`test_sandbox_pool` 41、
+2026-09-06 22:40 的结果：`test_memory` **126**、`test_server` 83、`test_sandbox_pool` 41、
 `test_security` 31、`test_observability` 23、`test_planning` 16、`test_model_capabilities` 14、
 `test_deployment` 12、`test_launch` 7、`test_rebuild_milvus` 5、`test_mysql_compat` 4、
-`test_smoke` 2、`test_compaction` 1 —— 合计 **364**，与 ARCHITECTURE §15 那张表逐行相加一致。
+`test_smoke` 2、`test_compaction` 1 —— 合计 **365**，与 ARCHITECTURE §15 那张表逐行相加一致。
+（比上面那次晚间基线多的 1 例是 `test_memory.py::TestIndexDegradation::
+test_a_dead_index_and_a_dead_repo_still_meter_the_embedding`：索引与 MySQL 兜底同时挂掉时，
+已花的 embedding token 仍须入账——`recall_failed` 那条路径原先返回空 `Usage()`。）
 
 离线套件不需要网络/数据库/Redis/Docker/API key：`tests/conftest.py` 在 import `pi` **之前**
 就把一批 `PI_*` 钉死（`PI_REDIS_URL`/`PI_SANDBOX`/`PI_POLICY`/`PI_MILVUS_URI`/
@@ -684,7 +687,8 @@ tests/test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the
 #### 对后来人的三条实际影响
 
 1. ~~**不要把 `347 passed` 当成"必须全绿"的验收门**~~ —— **这条已作废**：flaky 已修
-   （见下面第 3 点），现在 **`363 passed, 1 skipped` 就是验收门**，看到任何一条红都该当成
+   （见下面第 3 点），现在 **`364 passed, 1 skipped` 就是验收门**（22:40 起，比修 flaky
+   那轮的 363 多 1 例，见 L7 的分文件计数），看到任何一条红都该当成
    真问题查，不要再先怀疑"是不是那条老 flaky"。修完后实测：单独跑 30/30 全过，
    全套件连跑 5 次结果完全一致。
 2. **它是真 bug 的信号，不只是测试瑕疵**。生产语义上：用户点注销的瞬间如果有一次抽取正在飞，

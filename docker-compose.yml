@@ -1,0 +1,155 @@
+services:
+  app:
+    build: .
+    ports:
+      - "8300:8300"
+    environment:
+      PI_DATABASE_URL: postgresql+asyncpg://pi:change-me@postgres:5432/pi
+      PI_REDIS_URL: redis://redis:6379/0
+      PI_JWT_SECRET: ${PI_JWT_SECRET:?set a strong secret}
+      PI_MODEL: ${PI_MODEL:-openai/qwen3.8-max}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      PI_FALLBACK_CHAIN: ${PI_FALLBACK_CHAIN:-}
+      PI_POLICY: /etc/pi-py/policy.json
+      PI_REDIS_NS: ${PI_REDIS_NS:-prod}
+      # Caddy is a separate container, so its source IP is on Docker's bridge
+      # (172.16/12), not 127.0.0.1. Without this uvicorn drops X-Forwarded-For
+      # and every client appears to be Caddy. Never set it to "*".
+      PI_FORWARDED_ALLOW_IPS: ${PI_FORWARDED_ALLOW_IPS:-172.16.0.0/12}
+      # Optional docker sandbox for bash tools (needs docker access in the app
+      # container); warm pool is the default when enabled. See deploy/cloud-deploy.md.
+      # NOTE: this interpolates from .env, and the repo .env sets PI_SANDBOX=docker for
+      # the bare-metal deployment. This app container has NO docker access, so inheriting
+      # that value makes every bash call fail closed. Leave it empty here, or give the
+      # container a way to reach a daemon (PI_DOCKER_HOST, or mount the socket - which is
+      # equivalent to host root).
+      PI_SANDBOX: ${PI_SANDBOX:-}
+      PI_SANDBOX_IMAGE: ${PI_SANDBOX_IMAGE:-python:3.12-slim}
+      PI_SANDBOX_POOL: ${PI_SANDBOX_POOL:-1}
+      PI_SANDBOX_POOL_MAX: ${PI_SANDBOX_POOL_MAX:-16}
+      PI_SANDBOX_IDLE_TTL: ${PI_SANDBOX_IDLE_TTL:-600}
+      # --- tracing + metrics ---
+      # jsonl unless asked, because this file starts no collector by default and an
+      # OTLP exporter pointed at nothing logs a failed batch every few seconds.
+      # Turn both on together:
+      #   PI_TRACER=otel docker compose --profile observability up -d
+      PI_TRACER: ${PI_TRACER:-jsonl}
+      PI_OTLP_ENDPOINT: ${PI_OTLP_ENDPOINT:-http://jaeger:4317}
+      PI_ENVIRONMENT: ${PI_ENVIRONMENT:-compose}
+      PI_TRACE_SAMPLE_RATE: ${PI_TRACE_SAMPLE_RATE:-1.0}
+      # Scraped by the prometheus service below. An empty token leaves /metrics
+      # open, which is only acceptable while 8300 is not reachable from outside.
+      PI_METRICS: ${PI_METRICS:-1}
+      PI_METRICS_TOKEN: ${PI_METRICS_TOKEN:-}
+      # Per-container ceilings. Docker's own defaults are "no limit", and registration is
+      # open, so without these one account can exhaust the host with a single command.
+      # Keep PI_SANDBOX_MEMORY * PI_MAX_CONCURRENT_RUNS well under physical RAM.
+      PI_SANDBOX_MEMORY: ${PI_SANDBOX_MEMORY:-1g}
+      PI_SANDBOX_PIDS: ${PI_SANDBOX_PIDS:-256}
+      PI_SANDBOX_CPUS: ${PI_SANDBOX_CPUS:-1.0}
+      # PI_SANDBOX_USER is deliberately not passed: it defaults to the app's own uid:gid
+      # (10001:10001 in this image), so files written through the bind mount stay
+      # readable and deletable by the app.
+    volumes:
+      - workspaces:/home/pi/.pi-py/workspaces
+      - ./policy.json:/etc/pi-py/policy.json:ro
+      - audits:/home/pi/.pi-py
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    deploy:
+      replicas: ${PI_REPLICAS:-1}  # scale out: locks + rate limits are Redis-backed
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pi
+      POSTGRES_PASSWORD: change-me
+      POSTGRES_DB: pi
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pi"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # Trace collector and UI. The app exports OTLP/gRPC to jaeger:4317 over the
+  # compose network, so 4317 does not need publishing for that - it is published
+  # on loopback only so a bare-metal pi-py on this host can export too.
+  #
+  # all-in-one keeps spans in MEMORY: this is a debugging view, not an archive.
+  # The durable record stays agent_runs/agent_steps in the database (30 days,
+  # PI_TRACE_RETENTION_DAYS), and Jaeger is the projection you read a run's span
+  # tree in. Restarting this container loses the spans; nothing else notices.
+  #
+  # Both ports are bound to 127.0.0.1 on purpose. Neither UI authenticates, and a
+  # trace carries prompts, tool arguments and tool output - publishing 16686 on a
+  # public interface would hand all of it to anyone who scans the host. Reach it
+  # with `ssh -L 16686:127.0.0.1:16686 <host>` instead.
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    profiles: ["observability"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: memory
+      MEMORY_MAX_TRACES: ${PI_JAEGER_MAX_TRACES:-20000}
+    ports:
+      - "127.0.0.1:16686:16686"  # UI
+      - "127.0.0.1:4317:4317"    # OTLP/gRPC
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=${PI_PROMETHEUS_RETENTION:-15d}
+    # host-gateway so a bare-metal pi-py on this host is scrapeable as
+    # host.docker.internal:<port>, not only the compose `app` service.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Overridable because the committed config scrapes `app:8300`, which is only
+      # right when the app itself is the compose service. A bare-metal deployment
+      # points this at its own file (outside the repo, so a PI_METRICS_TOKEN can
+      # live in it without being committed).
+      - ${PI_PROMETHEUS_CONFIG:-./deploy/prometheus.yml}:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"  # loopback only, same reason as Jaeger's UI
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  workspaces:
+  audits:
+  caddy_data:
+  prometheus_data:

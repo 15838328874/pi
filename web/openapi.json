@@ -1,0 +1,2916 @@
+{
+  "components": {
+    "schemas": {
+      "AdminUserListOut": {
+        "properties": {
+          "users": {
+            "description": "Ordered by id, capped at 200.",
+            "items": {
+              "$ref": "#/components/schemas/AdminUserOut"
+            },
+            "title": "Users",
+            "type": "array"
+          }
+        },
+        "required": [
+          "users"
+        ],
+        "title": "AdminUserListOut",
+        "type": "object"
+      },
+      "AdminUserOut": {
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "is_active": {
+            "title": "Is Active",
+            "type": "boolean"
+          },
+          "is_admin": {
+            "title": "Is Admin",
+            "type": "boolean"
+          },
+          "quota_tokens": {
+            "title": "Quota Tokens",
+            "type": "integer"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "is_admin",
+          "is_active",
+          "quota_tokens",
+          "created_at"
+        ],
+        "title": "AdminUserOut",
+        "type": "object"
+      },
+      "AuditOut": {
+        "properties": {
+          "records": {
+            "description": "Newest first. Deliberately untyped: this reads the audit_events table whose payload schema has grown over time (event = tool_call | compaction | auth | memory, all carrying ts), and a strict model would turn one legacy record into a 500.",
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Records",
+            "type": "array"
+          }
+        },
+        "required": [
+          "records"
+        ],
+        "title": "AuditOut",
+        "type": "object"
+      },
+      "Body_upload_file_v1_sessions__session_id__files_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_file_v1_sessions__session_id__files_post",
+        "type": "object"
+      },
+      "DeregisterIn": {
+        "description": "Password confirmation for DELETE /v1/me.\n\nThe bearer token already proves session ownership, but erasure is irreversible\nand tokens can be left on a shared machine - a stolen token must not be enough\nto erase an account.",
+        "properties": {
+          "password": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Password",
+            "type": "string"
+          }
+        },
+        "required": [
+          "password"
+        ],
+        "title": "DeregisterIn",
+        "type": "object"
+      },
+      "DeregisterOut": {
+        "description": "DELETE /v1/me. `purged` says what actually went away, per table.",
+        "properties": {
+          "deleted": {
+            "const": true,
+            "title": "Deleted",
+            "type": "boolean"
+          },
+          "purged": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "description": "Row counts removed per table (memories, messages, sessions, usage_records, account). The workspace directory is deleted even when it held no database rows.",
+            "title": "Purged",
+            "type": "object"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "deleted",
+          "purged"
+        ],
+        "title": "DeregisterOut",
+        "type": "object"
+      },
+      "ErrorOut": {
+        "description": "FastAPI's HTTPException body; every non-2xx below uses this shape.",
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorOut",
+        "type": "object"
+      },
+      "FileBlock": {
+        "description": "A file attached to a user message (upload), referenced by public URL.\n\nThe gateway downloads the file itself when the request is sent, so this\nblock only ever carries the URL plus a display name. Only some models\naccept it; the provider decides whether to translate it or fail loudly.",
+        "properties": {
+          "file_url": {
+            "title": "File Url",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "const": "file",
+            "default": "file",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file_url"
+        ],
+        "title": "FileBlock",
+        "type": "object"
+      },
+      "FileListOut": {
+        "properties": {
+          "files": {
+            "description": "Sorted by name.",
+            "items": {
+              "$ref": "#/components/schemas/FileOut"
+            },
+            "title": "Files",
+            "type": "array"
+          }
+        },
+        "required": [
+          "files"
+        ],
+        "title": "FileListOut",
+        "type": "object"
+      },
+      "FileOut": {
+        "description": "A file uploaded to a session. `url` is public (no auth) and is what the\nmodel gateway fetches when the file is attached to a run.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "url"
+        ],
+        "title": "FileOut",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthOut": {
+        "properties": {
+          "status": {
+            "const": "ok",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "HealthOut",
+        "type": "object"
+      },
+      "LoginIn": {
+        "properties": {
+          "password": {
+            "title": "Password",
+            "type": "string"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "LoginIn",
+        "type": "object"
+      },
+      "LoginOut": {
+        "properties": {
+          "access_token": {
+            "title": "Access Token",
+            "type": "string"
+          },
+          "expires_in": {
+            "description": "Seconds. PI_TOKEN_TTL_MINUTES * 60.",
+            "title": "Expires In",
+            "type": "integer"
+          },
+          "is_admin": {
+            "description": "So the client can show/hide the admin console right after login.",
+            "title": "Is Admin",
+            "type": "boolean"
+          },
+          "token_type": {
+            "const": "bearer",
+            "title": "Token Type",
+            "type": "string"
+          },
+          "username": {
+            "description": "The stored account name, not an echo of the request. MySQL's default collation matches case-insensitively, so the login form's spelling and the account's spelling can differ.",
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "token_type",
+          "expires_in",
+          "username",
+          "is_admin"
+        ],
+        "title": "LoginOut",
+        "type": "object"
+      },
+      "LogoutOut": {
+        "properties": {
+          "revoked": {
+            "title": "Revoked",
+            "type": "boolean"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "revoked",
+          "username"
+        ],
+        "title": "LogoutOut",
+        "type": "object"
+      },
+      "MeOut": {
+        "properties": {
+          "is_admin": {
+            "description": "So the client can show/hide the admin console after token restore.",
+            "title": "Is Admin",
+            "type": "boolean"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "is_admin"
+        ],
+        "title": "MeOut",
+        "type": "object"
+      },
+      "MemoryClearOut": {
+        "properties": {
+          "deleted": {
+            "description": "How many facts this user had; 0 when memory is off.",
+            "title": "Deleted",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "title": "MemoryClearOut",
+        "type": "object"
+      },
+      "MemoryDeleteOut": {
+        "properties": {
+          "deleted": {
+            "const": true,
+            "description": "Always true; a fact that is not the caller's is a 404.",
+            "title": "Deleted",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "deleted"
+        ],
+        "title": "MemoryDeleteOut",
+        "type": "object"
+      },
+      "MemoryFactOut": {
+        "description": "One stored long-term fact. Text is redacted before it is ever written.",
+        "properties": {
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Store-local id, unique within this user's facts.",
+            "title": "Id",
+            "type": "integer"
+          },
+          "kind": {
+            "description": "preference | convention | environment | fact.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "source_session": {
+            "description": "Session the fact was extracted from.",
+            "title": "Source Session",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "kind",
+          "source_session",
+          "created_at"
+        ],
+        "title": "MemoryFactOut",
+        "type": "object"
+      },
+      "MemoryListOut": {
+        "properties": {
+          "facts": {
+            "description": "Oldest first, capped at 500.",
+            "items": {
+              "$ref": "#/components/schemas/MemoryFactOut"
+            },
+            "title": "Facts",
+            "type": "array"
+          },
+          "status": {
+            "description": "'ready', 'disabled' or 'unavailable: <reason>'. 'disabled' with an empty list is the normal state when PI_MILVUS_URI or PI_EMBEDDING_MODEL is unset, not an error.",
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "facts",
+          "status"
+        ],
+        "title": "MemoryListOut",
+        "type": "object"
+      },
+      "MessageListOut": {
+        "properties": {
+          "messages": {
+            "description": "Ordered by idx, oldest first.",
+            "items": {
+              "$ref": "#/components/schemas/MessageOut"
+            },
+            "title": "Messages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "messages"
+        ],
+        "title": "MessageListOut",
+        "type": "object"
+      },
+      "MessageOut": {
+        "properties": {
+          "blocks": {
+            "items": {
+              "discriminator": {
+                "mapping": {
+                  "file": "#/components/schemas/FileBlock",
+                  "text": "#/components/schemas/TextBlock",
+                  "tool_call": "#/components/schemas/ToolCallBlock",
+                  "tool_result": "#/components/schemas/ToolResultBlock"
+                },
+                "propertyName": "type"
+              },
+              "oneOf": [
+                {
+                  "$ref": "#/components/schemas/TextBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/ToolCallBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/ToolResultBlock"
+                },
+                {
+                  "$ref": "#/components/schemas/FileBlock"
+                }
+              ]
+            },
+            "title": "Blocks",
+            "type": "array"
+          },
+          "idx": {
+            "description": "0-based position of the message within the session.",
+            "title": "Idx",
+            "type": "integer"
+          },
+          "role": {
+            "$ref": "#/components/schemas/Role"
+          }
+        },
+        "required": [
+          "idx",
+          "role",
+          "blocks"
+        ],
+        "title": "MessageOut",
+        "type": "object"
+      },
+      "Plan": {
+        "description": "Structured task plan, produced by the model through the submit_plan tool.\n\nThe bounds are load-bearing: this is untrusted model output that gets\npersisted into a TEXT column and replayed over SSE. 200 + 20*300 caps a plan\nat ~6 KB, which a single column, a single event frame and a 50-session list\nresponse all absorb comfortably.\n\nSteps are plain strings rather than objects. Nothing in this schema tracks\nstep progress - a status field would be dead weight until the approval and\nresume phases give it a lifecycle, and freezing the enum values now would\nonly have to be undone later.",
+        "properties": {
+          "steps": {
+            "description": "Ordered, concrete steps.",
+            "items": {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Steps",
+            "type": "array"
+          },
+          "title": {
+            "description": "One-line goal of the task.",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "steps"
+        ],
+        "title": "Plan",
+        "type": "object"
+      },
+      "ReadyOut": {
+        "properties": {
+          "checks": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Per dependency: 'ok', 'unreachable', or 'error: <detail>'.",
+            "title": "Checks",
+            "type": "object"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "not-ready"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "checks"
+        ],
+        "title": "ReadyOut",
+        "type": "object"
+      },
+      "RegisterIn": {
+        "properties": {
+          "password": {
+            "maxLength": 128,
+            "minLength": 8,
+            "title": "Password",
+            "type": "string"
+          },
+          "username": {
+            "maxLength": 32,
+            "minLength": 2,
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "password"
+        ],
+        "title": "RegisterIn",
+        "type": "object"
+      },
+      "RegisterOut": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "integer"
+          },
+          "is_admin": {
+            "description": "Always false. Admin is granted by editing the DB.",
+            "title": "Is Admin",
+            "type": "boolean"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "username",
+          "is_admin"
+        ],
+        "title": "RegisterOut",
+        "type": "object"
+      },
+      "RevokeOut": {
+        "properties": {
+          "revoked": {
+            "const": true,
+            "title": "Revoked",
+            "type": "boolean"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "revoked"
+        ],
+        "title": "RevokeOut",
+        "type": "object"
+      },
+      "Role": {
+        "enum": [
+          "system",
+          "user",
+          "assistant"
+        ],
+        "title": "Role",
+        "type": "string"
+      },
+      "RunIn": {
+        "properties": {
+          "builtin_tools": {
+            "description": "Gateway-executed tools to offer the model this run.",
+            "items": {
+              "enum": [
+                "web_search",
+                "web_extractor",
+                "code_interpreter"
+              ],
+              "type": "string"
+            },
+            "maxItems": 3,
+            "title": "Builtin Tools",
+            "type": "array"
+          },
+          "enable_search": {
+            "default": false,
+            "description": "Endpoint-side web search woven into the answer (extra_body.enable_search).",
+            "title": "Enable Search",
+            "type": "boolean"
+          },
+          "files": {
+            "description": "Names of files uploaded to this session to attach to the prompt.",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Files",
+            "type": "array"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "prompt": {
+            "maxLength": 32000,
+            "minLength": 1,
+            "title": "Prompt",
+            "type": "string"
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "title": "RunIn",
+        "type": "object"
+      },
+      "SessionCreatedOut": {
+        "description": "POST /v1/sessions. cwd is echoed so the client can show where bash runs.",
+        "properties": {
+          "cwd": {
+            "title": "Cwd",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "model",
+          "cwd"
+        ],
+        "title": "SessionCreatedOut",
+        "type": "object"
+      },
+      "SessionIn": {
+        "properties": {
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "title": {
+            "default": "session",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "title": "SessionIn",
+        "type": "object"
+      },
+      "SessionListOut": {
+        "properties": {
+          "sessions": {
+            "description": "Newest first, capped at 50.",
+            "items": {
+              "$ref": "#/components/schemas/SessionSummary"
+            },
+            "title": "Sessions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "title": "SessionListOut",
+        "type": "object"
+      },
+      "SessionSummary": {
+        "description": "Body of GET /v1/sessions/{id} and one element of GET /v1/sessions.",
+        "properties": {
+          "created_at": {
+            "description": "UTC ISO-8601, second precision (stored as a string).",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "plan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Plan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The session's current plan, or null until submit_plan has run. Both the list and the detail endpoint return it, so a reload shows the same plan the live stream painted. A newer plan replaces an older one; the immutable history is the submit_plan call in the transcript."
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "model",
+          "created_at"
+        ],
+        "title": "SessionSummary",
+        "type": "object"
+      },
+      "SseCompactionData": {
+        "properties": {
+          "chars_after": {
+            "title": "Chars After",
+            "type": "integer"
+          },
+          "chars_before": {
+            "title": "Chars Before",
+            "type": "integer"
+          },
+          "dropped": {
+            "description": "Number of messages replaced by the summary.",
+            "title": "Dropped",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "dropped",
+          "chars_before",
+          "chars_after"
+        ],
+        "title": "SseCompactionData",
+        "type": "object"
+      },
+      "SseDoneData": {
+        "description": "End-of-stream marker. Always `{}`.",
+        "properties": {},
+        "title": "SseDoneData",
+        "type": "object"
+      },
+      "SseErrorData": {
+        "properties": {
+          "message": {
+            "description": "Emitted inside an HTTP 200 stream: a failed run is an event, not a status code.",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "SseErrorData",
+        "type": "object"
+      },
+      "SsePlanData": {
+        "description": "Inherits Plan instead of re-declaring title/steps, so the bounds live in one place.",
+        "properties": {
+          "steps": {
+            "description": "Ordered, concrete steps.",
+            "items": {
+              "maxLength": 300,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Steps",
+            "type": "array"
+          },
+          "title": {
+            "description": "One-line goal of the task.",
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "steps"
+        ],
+        "title": "SsePlanData",
+        "type": "object"
+      },
+      "SseStartData": {
+        "properties": {
+          "model": {
+            "description": "The model this turn actually resolved to.",
+            "title": "Model",
+            "type": "string"
+          },
+          "session": {
+            "title": "Session",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session",
+          "model"
+        ],
+        "title": "SseStartData",
+        "type": "object"
+      },
+      "SseTextDeltaData": {
+        "properties": {
+          "text": {
+            "description": "One incremental chunk of assistant text.",
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "SseTextDeltaData",
+        "type": "object"
+      },
+      "SseToolCallEndData": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "ok": {
+            "description": "False when the tool raised, when the policy denied it, or when a terminal tool earlier in the same batch ended the turn and this call was skipped without executing - in that last case `result` says so, and the tool had no side effects.",
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "result": {
+            "description": "Preview only: AgentLoop cuts it to 200 characters and flattens newlines to spaces before emitting the event. Fetch the full result from GET /v1/sessions/{id}/messages instead.",
+            "title": "Result",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "ok",
+          "result"
+        ],
+        "title": "SseToolCallEndData",
+        "type": "object"
+      },
+      "SseToolCallStartData": {
+        "properties": {
+          "id": {
+            "description": "Tool call id; matches the id in toolcall_end. Emitted once per streamed argument chunk, so the same id arrives several times - key on the id, do not treat each frame as a new call.",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "SseToolCallStartData",
+        "type": "object"
+      },
+      "SseTurnEndData": {
+        "properties": {
+          "turns": {
+            "description": "LLM round-trips this run took, including tool loops.",
+            "title": "Turns",
+            "type": "integer"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/Usage"
+          }
+        },
+        "required": [
+          "turns",
+          "usage"
+        ],
+        "title": "SseTurnEndData",
+        "type": "object"
+      },
+      "TextBlock": {
+        "properties": {
+          "text": {
+            "title": "Text",
+            "type": "string"
+          },
+          "type": {
+            "const": "text",
+            "default": "text",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "TextBlock",
+        "type": "object"
+      },
+      "ToolCallBlock": {
+        "properties": {
+          "arguments": {
+            "default": "{}",
+            "title": "Arguments",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "type": {
+            "const": "tool_call",
+            "default": "tool_call",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "ToolCallBlock",
+        "type": "object"
+      },
+      "ToolResultBlock": {
+        "properties": {
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "is_error": {
+            "default": false,
+            "title": "Is Error",
+            "type": "boolean"
+          },
+          "tool_use_id": {
+            "title": "Tool Use Id",
+            "type": "string"
+          },
+          "type": {
+            "const": "tool_result",
+            "default": "tool_result",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_use_id",
+          "content"
+        ],
+        "title": "ToolResultBlock",
+        "type": "object"
+      },
+      "TraceListOut": {
+        "properties": {
+          "runs": {
+            "items": {
+              "$ref": "#/components/schemas/TraceRunOut"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "title": "TraceListOut",
+        "type": "object"
+      },
+      "TraceRunOut": {
+        "properties": {
+          "builtin_tools": {
+            "description": "Gateway-executed tools this run offered the model.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Builtin Tools",
+            "type": "array"
+          },
+          "duration_ms": {
+            "default": 0.0,
+            "title": "Duration Ms",
+            "type": "number"
+          },
+          "enable_search": {
+            "default": false,
+            "description": "Model-native web search was on.",
+            "title": "Enable Search",
+            "type": "boolean"
+          },
+          "ended_at": {
+            "default": "",
+            "title": "Ended At",
+            "type": "string"
+          },
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "failed_tools": {
+            "default": 0,
+            "title": "Failed Tools",
+            "type": "integer"
+          },
+          "first_idx": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "First message idx this run persisted; null when nothing landed.",
+            "title": "First Idx"
+          },
+          "flags": {
+            "description": "Anomaly verdict: status name when the run failed, 'empty' when it produced no turns, 'tool_storm' at >= 3 failed tool calls, 'memory_failed' when a retrieval stage raised. An empty recall is not flagged - it is the normal answer for a user with no facts yet. Empty list = unremarkable run.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Flags",
+            "type": "array"
+          },
+          "input_tokens": {
+            "default": 0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "last_idx": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Idx"
+          },
+          "messages": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/MessageOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only /v1/admin/traces/{run_id} fills this: the full transcript slice this run wrote (first_idx..last_idx) - input, assistant output, tool calls with arguments and results, attachments.",
+            "title": "Messages"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "default": 0,
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "prompt": {
+            "default": "",
+            "description": "The user's input, verbatim. The list view truncates to 200 chars.",
+            "title": "Prompt",
+            "type": "string"
+          },
+          "request_id": {
+            "default": "",
+            "description": "Matches X-Request-Id and the access-log line.",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "run_id": {
+            "description": "12-hex id; also the /v1/admin/traces/{run_id} key",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          },
+          "started_at": {
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "description": "ok | error | timeout",
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/TraceStepOut"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Only /v1/admin/traces/{run_id} fills this; the list view omits it.",
+            "title": "Steps"
+          },
+          "turns": {
+            "default": 0,
+            "title": "Turns",
+            "type": "integer"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "username",
+          "session_id",
+          "model",
+          "status",
+          "started_at"
+        ],
+        "title": "TraceRunOut",
+        "type": "object"
+      },
+      "TraceStepOut": {
+        "properties": {
+          "args": {
+            "default": "",
+            "description": "Full JSON arguments of the tool call (tool_call steps), or the query retrieval selected facts for (retrieval steps). Empty otherwise.",
+            "title": "Args",
+            "type": "string"
+          },
+          "detail": {
+            "default": "",
+            "description": "Full result content for tool_call steps. For retrieval, the whole account as JSON: outcome, which recall path ran, every candidate with its cosine and rerank scores and why it was dropped, per-stage milliseconds, and the text actually injected - the only record of it, since injected memory never enters the transcript. For llm_call, turn, stop_reason, tokens, duration and error as JSON. The plan title or the error message for those kinds. Never the SSE preview.",
+            "title": "Detail",
+            "type": "string"
+          },
+          "duration_ms": {
+            "default": 0.0,
+            "title": "Duration Ms",
+            "type": "number"
+          },
+          "kind": {
+            "description": "tool_call | retrieval | llm_call | plan | compaction | error. retrieval is the long-term-memory lookup before the first model call (at most one per run); llm_call is one per model round-trip, including the one that raised.",
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "default": "",
+            "description": "Tool name, 'memory.retrieve', or an llm_call's model.",
+            "title": "Name",
+            "type": "string"
+          },
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "seq": {
+            "description": "order within the run, 0-based",
+            "title": "Seq",
+            "type": "integer"
+          },
+          "ts": {
+            "default": "",
+            "title": "Ts",
+            "type": "string"
+          }
+        },
+        "required": [
+          "seq",
+          "kind"
+        ],
+        "title": "TraceStepOut",
+        "type": "object"
+      },
+      "Usage": {
+        "properties": {
+          "input_tokens": {
+            "default": 0,
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "output_tokens": {
+            "default": 0,
+            "title": "Output Tokens",
+            "type": "integer"
+          }
+        },
+        "title": "Usage",
+        "type": "object"
+      },
+      "UsageModelOut": {
+        "properties": {
+          "est_cost_usd": {
+            "title": "Est Cost Usd",
+            "type": "number"
+          },
+          "input_tokens": {
+            "title": "Input Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "output_tokens": {
+            "title": "Output Tokens",
+            "type": "integer"
+          },
+          "runs": {
+            "title": "Runs",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "model",
+          "input_tokens",
+          "output_tokens",
+          "est_cost_usd",
+          "runs"
+        ],
+        "title": "UsageModelOut",
+        "type": "object"
+      },
+      "UsageOut": {
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/UsageModelOut"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "month": {
+            "description": "'YYYY-MM' in UTC.",
+            "title": "Month",
+            "type": "string"
+          },
+          "quota_tokens": {
+            "description": "Effective monthly quota: the user's own, or PI_DEFAULT_QUOTA_TOKENS when that is 0.",
+            "title": "Quota Tokens",
+            "type": "integer"
+          },
+          "total_est_cost_usd": {
+            "title": "Total Est Cost Usd",
+            "type": "number"
+          },
+          "total_input_tokens": {
+            "title": "Total Input Tokens",
+            "type": "integer"
+          },
+          "total_output_tokens": {
+            "title": "Total Output Tokens",
+            "type": "integer"
+          },
+          "used_tokens": {
+            "title": "Used Tokens",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "month",
+          "models",
+          "total_input_tokens",
+          "total_output_tokens",
+          "total_est_cost_usd",
+          "quota_tokens",
+          "used_tokens"
+        ],
+        "title": "UsageOut",
+        "type": "object"
+      },
+      "UserUpdateIn": {
+        "properties": {
+          "is_active": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Is Active"
+          },
+          "quota_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Quota Tokens"
+          }
+        },
+        "title": "UserUpdateIn",
+        "type": "object"
+      },
+      "UserUpdateOut": {
+        "properties": {
+          "changed": {
+            "description": "Which fields this call actually wrote; empty if the body was {}.",
+            "items": {
+              "enum": [
+                "quota_tokens",
+                "is_active"
+              ],
+              "type": "string"
+            },
+            "title": "Changed",
+            "type": "array"
+          },
+          "username": {
+            "title": "Username",
+            "type": "string"
+          }
+        },
+        "required": [
+          "username",
+          "changed"
+        ],
+        "title": "UserUpdateOut",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "pi-py server",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/files/{session_id}/{name}": {
+      "get": {
+        "description": "Public download of a session upload.\n\nNo auth: the model gateway must fetch this URL with no token, so the\nunguessable session id plus the file name is the bearer capability.\nEvery hit is audited under the session's owner.",
+        "operationId": "download_file_files__session_id___name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No such session. Ownership is part of the lookup, so another user's session is also 404 and never 403 - the existence of an id is not leaked across accounts."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download File"
+      }
+    },
+    "/healthz": {
+      "get": {
+        "description": "Liveness: the process is up. Checks nothing, so it cannot flap.",
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Healthz"
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "Readiness: DB reachable and cache pingable. Memory is reported alongside\nthem but does not gate the status. Returns a JSONResponse directly so the\nstatus code can be 503 without raising.",
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyOut"
+                }
+              }
+            },
+            "description": "DB or cache is not 'ok'. Same body as 200, with status 'not-ready'. The memory entry is reported but never triggers this."
+          }
+        },
+        "summary": "Readyz"
+      }
+    },
+    "/v1/admin/audit": {
+      "get": {
+        "description": "Audit history from audit_events, newest first.\n\nReads MySQL, not the JSONL mirror: history is no longer bounded by the\ndaily file rotation, and the indexed columns (actor/tool/event) do the\nfiltering instead of a Python scan. `user` matches both tool_call\nrecords (keyed by username) and auth records (keyed by username);\n`limit` is capped at 500 server-side, silently reduced rather than\nrejected. Records surface a beat after the audited request: they reach\nthis table through the async drainer, not on the request path.",
+        "operationId": "admin_audit_v1_admin_audit_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Tool"
+            }
+          },
+          {
+            "in": "query",
+            "name": "event",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Event"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Authenticated but not an admin. is_admin is granted by writing the users table directly; no endpoint can grant it."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Audit"
+      }
+    },
+    "/v1/admin/traces": {
+      "get": {
+        "description": "Execution traces, newest first: one agent_runs row per POST /runs.\n\n`anomaly=true` keeps only flagged runs (failed / empty / tool storm).\n`limit` is capped at 200 server-side. The single-run view\n(/v1/admin/traces/{run_id}) carries the steps and the transcript; this\nlist view omits them so a page stays one query. The prompt is\ntruncated to 200 chars here - the detail view carries it in full.",
+        "operationId": "admin_traces_v1_admin_traces_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "user",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "User"
+            }
+          },
+          {
+            "in": "query",
+            "name": "session",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Session"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "anomaly",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Anomaly",
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Authenticated but not an admin. is_admin is granted by writing the users table directly; no endpoint can grant it."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Traces"
+      }
+    },
+    "/v1/admin/traces/{run_id}": {
+      "get": {
+        "description": "One run, complete: prompt, capability flags, ordered steps with full\ntool arguments and results, and the transcript slice it wrote.\n\nRetention deletes old traces, so a 404 can also mean \"older than\nPI_TRACE_RETENTION_DAYS\". A run whose session was deleted still shows\nsteps but no messages (the idx range points at rows that are gone).",
+        "operationId": "admin_trace_v1_admin_traces__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceRunOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Authenticated but not an admin. is_admin is granted by writing the users table directly; no endpoint can grant it."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No run with this id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Trace"
+      }
+    },
+    "/v1/admin/users": {
+      "get": {
+        "operationId": "admin_list_users_v1_admin_users_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminUserListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Authenticated but not an admin. is_admin is granted by writing the users table directly; no endpoint can grant it."
+          }
+        },
+        "summary": "Admin List Users"
+      }
+    },
+    "/v1/admin/users/{username}": {
+      "patch": {
+        "description": "Partial update: omitted fields are untouched.\n\nSetting is_active=false also bumps the user's revocation epoch, so every\ntoken issued before now is rejected on its next request.",
+        "operationId": "admin_update_user_v1_admin_users__username__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserUpdateIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserUpdateOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "'cannot disable yourself' - the last admin must not be able to lock the panel out."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Authenticated but not an admin. is_admin is granted by writing the users table directly; no endpoint can grant it."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No such username."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Update User"
+      }
+    },
+    "/v1/admin/users/{username}/revoke": {
+      "post": {
+        "description": "Invalidate every active token of a user without disabling the account.",
+        "operationId": "admin_revoke_user_v1_admin_users__username__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "username",
+            "required": true,
+            "schema": {
+              "title": "Username",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RevokeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Authenticated but not an admin. is_admin is granted by writing the users table directly; no endpoint can grant it."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No such username."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Admin Revoke User"
+      }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "operationId": "login_v1_auth_login_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "'invalid credentials' for an unknown username or a wrong password (deliberately indistinguishable), 'account disabled' only when the password was correct - so the second message does not enumerate accounts either."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login"
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "description": "Blacklist this token's jti for its remaining lifetime.\n\nThe token stays cryptographically valid; revocation is a cache lookup,\nso it is lost if the cache is flushed before the token would expire.",
+        "operationId": "logout_v1_auth_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LogoutOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          }
+        },
+        "summary": "Logout"
+      }
+    },
+    "/v1/auth/register": {
+      "post": {
+        "description": "Open signup, always a normal user; admin is granted by editing the DB.\n\nUnauthenticated by design, so 8300 must not be reachable from the internet.",
+        "operationId": "register_v1_auth_register_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Username does not match ^[a-zA-Z0-9_-]{2,32}$. The password bounds are enforced earlier, by the request body schema (422)."
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Username already exists - including a signup that lost the race to an identical one."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register"
+      }
+    },
+    "/v1/me": {
+      "delete": {
+        "description": "Erase this account and every trace of it.\n\nThe full cascade: memory facts and their vector mirror, then messages,\nsessions, usage rows, the account row, and the workspace directory. All\ninteractions leave traces in MySQL by design, so erasing one user means\nwalking all of them - in FK order, one transaction for the relational\npart. A run still streaming for this user fails its next message write\n(the session row is gone); that is the accepted behavior, not a crash.\n\nThe revocation epoch is bumped last and matters most on re-registration:\na token issued to the deleted account must never authenticate against a\nnew account created under the same username later.",
+        "operationId": "deregister_v1_me_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeregisterIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeregisterOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "'password confirmation failed' (the token alone must not be enough for irreversible erasure), or 'cannot delete the last admin'."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deregister"
+      },
+      "get": {
+        "description": "Whoami: the cheapest way for the client to validate a stored token.",
+        "operationId": "me_v1_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MeOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          }
+        },
+        "summary": "Me"
+      }
+    },
+    "/v1/memories": {
+      "delete": {
+        "description": "Forget everything. This is the erasure endpoint (PIPL art. 47 / GDPR art. 17).\n\nReturns a count rather than a flag so the caller can tell \"you had nothing\nstored\" from \"memory is not enabled here\" without a second request.",
+        "operationId": "clear_memories_v1_memories_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryClearOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          }
+        },
+        "summary": "Clear Memories"
+      },
+      "get": {
+        "description": "The caller's stored long-term facts, oldest first.\n\nThe user id comes from the token and never from a parameter, so there is no\nway to ask for somebody else's memory. `limit` is capped server-side at 500.",
+        "operationId": "list_memories_v1_memories_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Memories"
+      }
+    },
+    "/v1/memories/{fact_id}": {
+      "delete": {
+        "description": "Forget one fact.\n\nThe path id is not authority on its own: the delete is scoped to the caller,\nso guessing another tenant's id is a 404 rather than a removal. That also\nmeans the 404 leaks nothing - it is identical for \"not yours\" and \"never\nexisted\".",
+        "operationId": "delete_memory_v1_memories__fact_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fact_id",
+            "required": true,
+            "schema": {
+              "title": "Fact Id",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryDeleteOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No such fact - including one that exists but belongs to another user."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Memory"
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "operationId": "list_sessions_v1_sessions_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          }
+        },
+        "summary": "List Sessions"
+      },
+      "post": {
+        "operationId": "create_session_v1_sessions_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCreatedOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Session"
+      }
+    },
+    "/v1/sessions/{session_id}": {
+      "get": {
+        "operationId": "get_session_v1_sessions__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No such session. Ownership is part of the lookup, so another user's session is also 404 and never 403 - the existence of an id is not leaked across accounts."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Session"
+      }
+    },
+    "/v1/sessions/{session_id}/files": {
+      "get": {
+        "description": "Files uploaded to this session, with their public download URLs.",
+        "operationId": "list_files_v1_sessions__session_id__files_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No such session. Ownership is part of the lookup, so another user's session is also 404 and never 403 - the existence of an id is not leaked across accounts."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Files"
+      },
+      "post": {
+        "description": "Upload a file into this session's workspace.\n\nThe file becomes attachable to runs (`RunIn.files`) and downloadable by\nanyone holding the returned URL - which is the point: the model gateway\nfetches it with no credentials when a run references it.",
+        "operationId": "upload_file_v1_sessions__session_id__files_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_file_v1_sessions__session_id__files_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "PI_PUBLIC_BASE_URL is not set, or the file name is invalid."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No such session. Ownership is part of the lookup, so another user's session is also 404 and never 403 - the existence of an id is not leaked across accounts."
+          },
+          "413": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "File exceeds the PI_MAX_UPLOAD_BYTES limit."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload File"
+      }
+    },
+    "/v1/sessions/{session_id}/messages": {
+      "get": {
+        "description": "Full transcript, oldest first.\n\nThe `blocks` column holds a whole serialized Message, not a bare block\narray: runner.py writes m.model_dump_json() and reads history back with\nMessage.model_validate_json(). Returning the raw parse therefore nested\na duplicate of the message under `blocks` - parse it as a Message and\ntake the array.",
+        "operationId": "get_messages_v1_sessions__session_id__messages_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MessageListOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No such session. Ownership is part of the lookup, so another user's session is also 404 and never 403 - the existence of an id is not leaked across accounts."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Messages"
+      }
+    },
+    "/v1/sessions/{session_id}/runs": {
+      "post": {
+        "operationId": "run_v1_sessions__session_id__runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunIn"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/SseStartData"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseTextDeltaData"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseToolCallStartData"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseToolCallEndData"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseCompactionData"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SsePlanData"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseTurnEndData"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseErrorData"
+                    },
+                    {
+                      "$ref": "#/components/schemas/SseDoneData"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Server-Sent Events, over **POST** - so `EventSource` cannot be used. Read\n`response.body` with a `ReadableStream` reader, buffer on blank lines, and take\nthe `event:` / `data:` fields of each frame (a leading `:` is a comment).\n\nOne turn emits `start`, then any number of `text_delta`, `toolcall_start`,\n`toolcall_end` and `compaction`, then at most one `plan`, then `turn_end`, then\n`done`. `error` can arrive at any point **and the HTTP status is still 200**, so a\nclient that only checks `response.ok` will silently swallow failed runs.\n\nWithin a turn the agent loop streams text first, then tool calls, then runs each\ntool in order - so a `text_delta` arriving *after* a `toolcall_end` means a new\nassistant message has begun. There is no message-boundary event; a client that\nrebuilds a transcript has to infer the boundary that way.\n\n`plan` comes after the last `toolcall_end` and before `turn_end`. It is emitted by\n`submit_plan`, a terminal tool, so the run ends right after it - at most one per\nrun. The same plan is persisted and returned as\n`GET /v1/sessions/{id}`'s `plan` field, so painting it from the stream and reading\nit back after a reload agree.\n\nA run cut short that way still emits exactly one `toolcall_end` for every\n`toolcall_start`, including the calls it skipped; those carry `ok: false` and a\n`result` saying they never executed. No call is ever left looking like it is still\nrunning.\n\nThe `data` payload of each frame is the matching `Sse*Data` schema below; the\nevent name is *not* repeated inside the JSON.\n\nForward compatibility: an event type this version of the server does not know\nhow to serialize is emitted as `event: unknown` with `{}`. Clients must ignore\nevent names they do not recognise instead of failing on them, so a newer server\ncan add events without breaking an older browser tab.\n"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          },
+          "402": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Monthly token quota exhausted. The detail carries the used/limit figures; GET /v1/usage returns them as numbers."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "No such session. Ownership is part of the lookup, so another user's session is also 404 and never 403 - the existence of an id is not leaked across accounts."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Per-user fixed-window run limit (PI_RATE_LIMIT_RUNS_PER_MIN) exceeded.",
+            "headers": {
+              "Retry-After": {
+                "description": "Whole seconds to wait, always at least 1.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        },
+        "summary": "Run"
+      }
+    },
+    "/v1/usage": {
+      "get": {
+        "description": "This month's token spend per model, plus the caller's quota position.",
+        "operationId": "usage_summary_v1_usage_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorOut"
+                }
+              }
+            },
+            "description": "Missing, malformed, expired or revoked bearer token - or the account was disabled or deleted since the token was issued."
+          }
+        },
+        "summary": "Usage Summary"
+      }
+    }
+  }
+}

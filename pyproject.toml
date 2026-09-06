@@ -1,0 +1,67 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pi-py"
+version = "0.1.0"
+description = "Python implementation of the pi coding agent: unified LLM streaming, agent loop, tools, and a multi-user HTTP service"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "pydantic>=2.7",
+    "openai>=1.40",
+    "anthropic>=0.40",
+    "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "sqlalchemy>=2.0",
+    "pyjwt>=2.9",
+    # UploadFile (session file uploads) needs the multipart parser at runtime.
+    "python-multipart>=0.0.20",
+]
+
+[project.optional-dependencies]
+# aiosqlite is test-only: the suite runs against throwaway SQLite files so it
+# needs no live database. Production requires MySQL/Postgres via PI_DATABASE_URL.
+dev = ["pytest>=8.0", "aiosqlite>=0.20"]
+postgres = ["asyncpg>=0.29"]
+mysql = ["aiomysql>=0.2"]
+redis = ["redis>=5.0"]
+migrations = ["alembic>=1.13"]
+# The SDK on its own creates spans and then drops them: a TracerProvider with no
+# processor never sends anything, which is what PI_TRACER=otel used to do. The
+# gRPC exporter is the half that reaches a collector (Jaeger, Tempo, an OTel
+# Collector) on the standard 4317, and prometheus-client backs /metrics. Both are
+# optional at runtime - get_tracer falls back to jsonl and /metrics answers 503
+# without them, loudly - but a real deployment installs this extra, so
+# observability is switched on with env vars alone.
+observability = [
+    "opentelemetry-api>=1.20",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.20",
+    "prometheus-client>=0.20",
+]
+# Like redis: optional at runtime (get_store degrades to NoOpStore on ImportError)
+# but installed in a real deployment, so memory can be switched on with env vars
+# alone. Every client call lives in pi/memory/store.py - an API change in pymilvus
+# is a one-file fix rather than a repo-wide one.
+#
+# The <3 cap is load-bearing, not caution. Against the live Milvus 2.5 serverless
+# cluster, pymilvus 3.0.0's Connect handshake is refused and reported as
+# "PERMISSION_DENIED: sls:permission denied" - an auth-looking error for what is
+# really a client version mismatch. 2.5.18 connects to the same URI with the same
+# token in 40ms. Do not debug credentials or IP allowlists for that message until
+# the client version is ruled out.
+milvus = ["pymilvus>=2.5,<3"]
+production = ["pi-py[postgres,mysql,redis,migrations,observability,milvus]"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project.scripts]
+pi-py = "pi.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pi"]

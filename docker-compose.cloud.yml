@@ -1,0 +1,171 @@
+# Cloud deployment: pi-py app runs on THIS host (4 vCPU / 16 GiB class ECS),
+# MySQL + Redis are managed Volcano Engine instances reached over the VPC
+# private network. No database containers are started here.
+#
+# Usage (full runbook: deploy/cloud-deploy.md):
+#   cp deploy/env.cloud.example .env   # then fill in secrets
+#   docker compose -f docker-compose.cloud.yml up -d --build
+#
+# TLS front (optional, needs a domain pointed at this host):
+#   docker compose -f docker-compose.cloud.yml --profile tls up -d --build
+
+name: pi-py
+
+services:
+  # One-shot schema migration: applies alembic revisions to the cloud MySQL
+  # before the app starts. Safe to re-run (alembic tracks applied versions).
+  migrate:
+    build: .
+    command: ["pi-py", "migrate"]
+    environment:
+      PI_DATABASE_URL: mysql+aiomysql://pi:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env}:3306/pi_py
+    restart: "no"
+
+  app:
+    build: .
+    ports:
+      - "8300:8300"
+    environment:
+      PI_DATABASE_URL: mysql+aiomysql://pi:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@${MYSQL_HOST:?set MYSQL_HOST in .env}:3306/pi_py
+      PI_REDIS_URL: redis://default:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@${REDIS_HOST:?set REDIS_HOST in .env}:6379/0
+      PI_JWT_SECRET: ${PI_JWT_SECRET:?set PI_JWT_SECRET in .env}
+      PI_REDIS_NS: ${PI_REDIS_NS:-prod}
+      PI_MODEL: ${PI_MODEL:-openai/qwen3.8-max}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      PI_FALLBACK_CHAIN: ${PI_FALLBACK_CHAIN:-}
+      PI_POLICY: /etc/pi-py/policy.json
+      # Caddy is a separate container, so its source IP is on Docker's bridge
+      # (172.16/12), not 127.0.0.1. Without this uvicorn drops X-Forwarded-For
+      # and every client appears to be Caddy, which makes the audit log's ip
+      # field useless. Never set it to "*" - clients could then spoof XFF.
+      PI_FORWARDED_ALLOW_IPS: ${PI_FORWARDED_ALLOW_IPS:-172.16.0.0/12}
+      # Sizing for 4 vCPU / 16 GiB: agent turns are in-process async and
+      # LLM-bound (network I/O), so 16 concurrent runs is comfortable even
+      # with the docker sandbox on (warm pool: one container per active
+      # workspace, exec per call - not one container per call).
+      PI_MAX_CONCURRENT_RUNS: ${PI_MAX_CONCURRENT_RUNS:-16}
+      # Per-user fixed window (req/min). Raise if users hit 429s under normal use.
+      PI_RATE_LIMIT_RUNS_PER_MIN: ${PI_RATE_LIMIT_RUNS_PER_MIN:-30}
+      # Tool-execution isolation: default (unset) runs commands inside the app
+      # container as the unprivileged `pi` user. "docker" isolates each
+      # workspace in its own warm container (exec per call, preheated at turn
+      # start, idle-recycled, LRU-capped) - needs docker access from inside
+      # the app container (see deploy/cloud-deploy.md "Sandbox" before enabling).
+      PI_SANDBOX: ${PI_SANDBOX:-}
+      PI_SANDBOX_IMAGE: ${PI_SANDBOX_IMAGE:-python:3.12-slim}
+      # Warm pool knobs (docker sandbox mode only)
+      PI_SANDBOX_POOL: ${PI_SANDBOX_POOL:-1}            # 0 = legacy container-per-call
+      PI_SANDBOX_POOL_MAX: ${PI_SANDBOX_POOL_MAX:-16}   # max warm containers (soft cap)
+      PI_SANDBOX_IDLE_TTL: ${PI_SANDBOX_IDLE_TTL:-600}  # seconds before an idle container is recycled
+      # Per-container ceilings (docker sandbox mode only). Docker's own defaults are
+      # "no limit" and registration is open, so without these one account can exhaust
+      # the host with a single command. Keep MEMORY * PI_MAX_CONCURRENT_RUNS well under
+      # the VM's RAM, and remember the warm pool holds extra idle containers on top.
+      PI_SANDBOX_MEMORY: ${PI_SANDBOX_MEMORY:-1g}
+      PI_SANDBOX_PIDS: ${PI_SANDBOX_PIDS:-256}
+      PI_SANDBOX_CPUS: ${PI_SANDBOX_CPUS:-1.0}
+      # PI_SANDBOX_USER is deliberately not passed: it defaults to the app's own uid:gid
+      # (10001:10001 in this image), so files written through the bind mount stay
+      # readable and deletable by the app.
+      # WARNING: PI_SANDBOX above interpolates from .env, and the repo .env sets it to
+      # "docker" for the bare-metal deployment. This app container has NO daemon access,
+      # so inheriting that value makes every bash call fail closed - either unset it in
+      # the .env you deploy with, or give the container PI_DOCKER_HOST / a mounted socket.
+      # --- tracing + metrics ---
+      # jsonl unless asked: this file starts no collector unless the observability
+      # profile is up, and an OTLP exporter pointed at nothing logs a failed batch
+      # every few seconds. Turn both on together:
+      #   PI_TRACER=otel docker compose -f docker-compose.cloud.yml \
+      #     --profile observability up -d
+      PI_TRACER: ${PI_TRACER:-jsonl}
+      PI_OTLP_ENDPOINT: ${PI_OTLP_ENDPOINT:-http://jaeger:4317}
+      PI_ENVIRONMENT: ${PI_ENVIRONMENT:-cloud}
+      PI_TRACE_SAMPLE_RATE: ${PI_TRACE_SAMPLE_RATE:-1.0}
+      # On a published port, so set PI_METRICS_TOKEN: an empty token leaves
+      # /metrics open, and the series describe traffic volume and model mix.
+      PI_METRICS: ${PI_METRICS:-1}
+      PI_METRICS_TOKEN: ${PI_METRICS_TOKEN:-}
+    volumes:
+      - workspaces:/home/pi/.pi-py/workspaces
+      - audits:/home/pi/.pi-py
+      - ./policy.json:/etc/pi-py/policy.json:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    deploy:
+      replicas: ${PI_REPLICAS:-1}  # >1 on one host is fine (Redis-backed locks);
+                                   # cross-host needs shared workspace storage
+
+  # Optional TLS reverse proxy (automatic HTTPS via Let's Encrypt).
+  # Set DOMAIN in .env, point its DNS A record at this host, then:
+  #   docker compose -f docker-compose.cloud.yml --profile tls up -d
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./deploy/Caddyfile.cloud:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+    restart: unless-stopped
+
+  # Trace collector and UI, off unless the profile is asked for. The app exports
+  # OTLP/gRPC to jaeger:4317 over the compose network, which needs no published
+  # port; 4317 is published on loopback only so a bare-metal pi-py on this VM can
+  # export to the same collector.
+  #
+  # all-in-one holds spans in MEMORY, so this is a debugging view and not an
+  # archive: the durable record is agent_runs/agent_steps in the cloud MySQL
+  # (PI_TRACE_RETENTION_DAYS), and MEMORY_MAX_TRACES below is what keeps a busy
+  # week of runs from eating the VM's RAM. Restarting loses the spans only.
+  #
+  # Loopback-bound on purpose, and this matters more here than in the dev compose
+  # file: this is a public VM, neither UI authenticates, and a trace carries
+  # prompts, tool arguments and tool output. Reach them with
+  # `ssh -L 16686:127.0.0.1:16686 -L 9090:127.0.0.1:9090 <vm>` - never by opening
+  # the port, and never through Caddy without auth in front of it.
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    profiles: ["observability"]
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+      SPAN_STORAGE_TYPE: memory
+      MEMORY_MAX_TRACES: ${PI_JAEGER_MAX_TRACES:-20000}
+    ports:
+      - "127.0.0.1:16686:16686"  # UI
+      - "127.0.0.1:4317:4317"    # OTLP/gRPC
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    profiles: ["observability"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=${PI_PROMETHEUS_RETENTION:-15d}
+    # host-gateway so a bare-metal pi-py on this VM is scrapeable as
+    # host.docker.internal:<port>, not only the compose `app` service.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      # Overridable because the committed config scrapes `app:8300`, which is only
+      # right when the app itself is the compose service. A bare-metal deployment
+      # (this VM runs `pi-py serve` directly) points this at its own file outside
+      # the repo, so a PI_METRICS_TOKEN can live in it without being committed.
+      - ${PI_PROMETHEUS_CONFIG:-./deploy/prometheus.yml}:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+
+volumes:
+  workspaces:
+  audits:
+  caddy_data:
+  prometheus_data:

@@ -1,0 +1,59 @@
+# Scrape config for the `observability` compose profile.
+#
+# Mounted read-only into prom/prometheus by docker-compose.yml and
+# docker-compose.cloud.yml. Prometheus does NOT interpolate environment
+# variables in this file, so a secret cannot be written as ${PI_METRICS_TOKEN} -
+# use bearer_token_file and mount the token beside this file if you set one.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: pi-py
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      # Service name on the compose network, so no published port is involved and
+      # the scrape never crosses an interface.
+      #
+      # Only correct while PI_REPLICAS=1. With more than one replica this name
+      # round-robins, so each scrape lands on a different process and every
+      # counter looks like it resets - rate() then reports garbage rather than
+      # nothing. Scale out means one target per replica (list them here by
+      # container name or address), not one target behind a service name.
+      - targets: ["app:8300"]
+        labels:
+          service: pi-py
+    # Uncomment when PI_METRICS_TOKEN is set, and keep the token out of the repo:
+    #   docker secret, or a second bind mount of a file containing just the token.
+    # bearer_token_file: /etc/prometheus/metrics.token
+
+  # Bare-metal variant: when pi-py runs as `pi-py serve` on the host instead of as
+  # the compose `app` service, `app:8300` resolves to nothing. Both compose files
+  # give this container `host.docker.internal:host-gateway`, so the host is
+  # reachable under that name - and PI_PROMETHEUS_CONFIG can point the mount at a
+  # host-local file (outside the repo) carrying this job plus the bearer token:
+  #
+  #   - job_name: pi-py
+  #     metrics_path: /metrics
+  #     bearer_token: <PI_METRICS_TOKEN>
+  #     static_configs:
+  #       - targets: ["host.docker.internal:8398"]
+  #
+  # Not enabled here because the port is deployment-specific and the token is a
+  # secret; this file is committed.
+  #
+  # If you do point PI_PROMETHEUS_CONFIG at a host-local file, mind the uid:
+  # prom/prometheus runs as `nobody` (65534), so a root-owned 0600 config is
+  # unreadable and the container crash-loops with
+  #   Error loading config ... permission denied
+  # `chown 65534:65534 <file> && chmod 600 <file>` fixes it without making the
+  # token world-readable (root can still read it, and /root is 0700 anyway).
+
+  # Prometheus scraping itself: the usual `up` and scrape-duration series, which
+  # is what tells you the pi-py target above disappeared versus never existed.
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

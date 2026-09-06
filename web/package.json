@@ -1,0 +1,32 @@
+{
+  "name": "pi-py-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Minimal web client for the pi-py multi-user agent server.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vitest run && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:live": "vitest run --config vitest.live.config.ts",
+    "gen:api": "openapi-typescript openapi.json -o src/api/schema.d.ts",
+    "gen:api:live": "openapi-typescript http://127.0.0.1:8300/openapi.json -o src/api/schema.d.ts"
+  },
+  "dependencies": {
+    "naive-ui": "^2.45.3",
+    "pinia": "^4.0.3",
+    "vue": "^3.5.42"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2",
+    "vitest": "^5.0.0",
+    "vue-tsc": "^3.3.11"
+  }
+}

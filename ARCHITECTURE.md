@@ -4,8 +4,9 @@
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
 > 最后更新：2026-09-06 · 代码规模约 10,600 行 Python 源码 + 364 个离线测试（363 passed / 1 skipped，
-> **但套件是 flaky 的**：`TestDeregister` 与后台记忆抽取赛跑，实测 10 次全套件运行有 6 次会红这一条，
-> 见 `deploy/environments.md` L11）
+> **套件曾 flaky、现已修复**：`TestDeregister` 与后台记忆抽取赛跑，实测 10 次全套件运行有 6 次会红这一条，
+> 修后单独跑 30/30、全套件连跑 5 次一致。**注意修的是测试的确定性，注销与在飞抽取之间那个
+> 生产级竞态仍然开着**，见 `deploy/environments.md` L11 与 §15）
 > + 4 个真实基建集成测试（`pytest integration/`，花真钱，见 §15 末尾），
 > 外加 `web/` 的 Vue3+TS 前端（手写约 3,400 行 + 测试约 1,000 行，56 个单测 / 11 个联调用例，见 §18；
 > 另有 codegen 生成的 `api/schema.d.ts` 约 2,400 行，不计入手写）
@@ -1308,25 +1309,31 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 ```bash
 pip install -e ".[dev]"
 python -m pytest -q     # 363 passed, 1 skipped —— 全本地，不需要网络/数据库/模型
-                        # ⚠️ flaky：10 次里约 6 次会在 TestDeregister 红一条，见下面
+                        # ✅ 不再 flaky（曾约 6/10 次红在 TestDeregister），见下面
 
 export PATH=/usr/local/node/bin:$PATH        # node 不在默认 PATH 里
 cd web && npm test      # 56 passed —— SSE 分帧、两个 transcript reducer、SSR 渲染断言
 cd web && npm run typecheck   # vue-tsc --noEmit
 ```
 
-两条都是 2026-09-06 的实测基线（Python 23.6s / 前端 1.1s）。**别把数字当验收标准**，
+两条都是 2026-09-06 的实测基线（Python 25.3s / 前端 1.1s）。**别把数字当验收标准**，
 它们会随开发漂移 —— 本文档里就曾经同时存在 174 / 291 / 332 / 333 四个互相矛盾的总数。
 
-⚠️ **Python 套件目前是 flaky 的**：2026-09-06 共 10 次全套件运行（**当时总数 348 例**，
-现在是 364，下面按"全绿 / 一红"描述而不是按具体数字），4 次全绿、
-6 次 `1 failed`，失败永远是
+✅ **Python 套件的 flaky 已修掉**：2026-09-06 曾连续 10 次全套件运行（当时总数 348 例，
+现在 364），4 次全绿、6 次 `1 failed`，失败永远是
 `test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the_token`。
 根因是该用例的 `_counts()` 快照没有等在飞的**后台记忆抽取**收尾，而抽取无论成功失败都会写一条
 `turns=0` 的 `usage_records`（`memory/service.py:732`），落在快照之后就让 `purged` 比 `before` 多 1。
-`pytest tests/test_server.py` 单独跑 3/3 全绿，只在全套件上下文里犯病。
-完整分析与"这为什么不只是测试瑕疵而是注销语义的真缺口"见 **`deploy/environments.md` L11**。
-**看到这一条红，先单独跑一次确认，别以为自己改坏了什么。**
+
+修法：新增 `_wait_usage_settled()`，照同类里已有的 `_wait_audit_flushed` 同一模式轮询数据库，
+等计数**连续 5 次不变**（静默）而不是等某个固定行数——固定值会把这个用例耦合到 fake provider
+恰好产出几条抽取上，等于把契约测试变成了对夹具的断言。实测**单独跑 30/30 全过**
+（修前 4/20 失败），全套件连跑 5 次均 `363 passed, 1 skipped`。**只改了测试，没碰产品代码。**
+
+⚠️ **但修的是测试，不是产品。** 生产语义上的竞态仍然开着：用户点注销的那一刻若有抽取在飞，
+清库可能漏掉那条 `usage_records`，回执也会错报一行。对"可审计的数据删除"这个承诺来说是
+实打实的缺口，正解是**注销与在飞抽取互斥**（或等它们收尾），与 Run 地基 / append-only
+事件日志那条线一并考虑。完整分析见 **`deploy/environments.md` L11**。
 
 测试组织（离线套件都在 `tests/`，共 364 例；前端另有一套 Node 侧的，见 §18.5；
 花真钱的 `integration/` 另算，见本节末尾）：

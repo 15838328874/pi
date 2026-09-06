@@ -18,7 +18,7 @@
 | Python | `python` **不在 PATH**。用 `/root/pi/pi-python/.venv/bin/python` |
 | Node | 在 `/usr/local/node/bin`，每次都要 `export PATH=/usr/local/node/bin:$PATH` |
 | Bash 工具 cwd | 默认是 `/root/pi`，**不是** `/root/pi/pi-python`。每条命令都要显式传 `dir_path` |
-| **不是 git 仓库** | `git diff` / `git checkout` / `git stash` 全是静默空操作。改动只能**手工还原**，做变异测试前一定先 `cp` 备份 |
+| ~~**不是 git 仓库**~~ | ✅ **2026-09-06 21:10 起有了**：首个提交 `6eb79d7`，分支 `main`，remote `github.com/15838328874/pi`。`git diff` / `checkout` / `stash` 现在**真的可用**。本文其余地方（如 §7.3 变异测试"只能手改再手工还原"）是**当时的真实记录，保留不改**。⚠️ 但 git 给的是回滚能力**不是互斥**——并发会话照样可能同时在改，动手前仍要核对 mtime。详见 `deploy/environments.md` L8 |
 | 浏览器 | **环境里没有浏览器**。前端只能靠 `vue-tsc` + vitest + Vue SSR 渲染测试，无法真正"点开页面看" |
 | `.env` | 指向火山引擎云上 RDS（`pi_py`）+ Redis（`prod` 命名空间）。`PI_MODEL=fake/demo`，`PI_SANDBOX=docker` |
 | `.env.test` | 指向**同一个云 RDS 实例**的 `pi_py_test` schema |

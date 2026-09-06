@@ -126,14 +126,24 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
 ### 3.2 仍然成立的旧坑（详见旧 HANDOFF §1）
 
 - `python` 不在 PATH，用 `/root/pi/pi-python/.venv/bin/python`；Node 要 `export PATH=/usr/local/node/bin:$PATH`
-- ~~**不是 git 仓库**~~ → **2026-09-06 17:03:50 已 `git init`（分支 `master`），但零 commit**，
-  所有文件仍 untracked。所以 `git checkout -- <file>` / `git stash` **依然还原不了任何东西**，
-  `git diff` 也没有可比基线 → **改动不可回滚这条实操结论没变，动手前照样 `cp` 备份**。
-  详见 `deploy/environments.md` L8。`.gitignore:5-6` 已忽略 `.env`/`.env.test`（`git check-ignore`
-  与 `git status` 双重确认），所以做一次基线 commit 是安全的，**强烈建议尽快做**
-  （§8 第 2 条一直在提这件事，现在只差 `git add -A && git commit`）
-- `.env` 指向**火山引擎云上** RDS/Redis/Milvus，**一律不碰**；验证用临时 SQLite，跑完删
-  （"不碰"指不做 #42/#43 那类运维变更；用户明确要求时做**只读**排查是可以的，见 §3.2.1）
+- ~~**不是 git 仓库**~~ → ~~**2026-09-06 17:03:50 已 `git init`（分支 `master`），但零 commit**~~
+  → ✅ **2026-09-06 21:10 首个提交 `6eb79d7` 已落地**，分支已改名 `main`，
+  remote = `https://github.com/15838328874/pi.git`（接在用户自己的 GitHub `Initial commit`
+  `3fd5eba` 之后，非 force-push）。`git diff` / `checkout` / `stash` 现在**真的可用**。
+  仓库级身份 `15838328874 <135090639+15838328874@users.noreply.github.com>`（取自用户 GitHub
+  提交，能关联头像），**全局 git 配置未动**。提交前扫过索引：133 文件，无 `.env`/`.venv`/
+  `node_modules`/`__pycache__`/`dist`/`*.db`/审计日志、无真实云实例域名或公网 IP、无硬编码凭据。
+  详见 `deploy/environments.md` L8。`.gitignore:5-6` 忽略 `.env`/`.env.test`
+  （`git check-ignore` 与 `git status` 双重确认）。
+  ⚠️ **git 给的是回滚能力，不是互斥**——并发会话照样可能同时在改，动手前仍要核对 mtime。
+- `.env` 指向**火山引擎云上** RDS/Redis/Milvus，**默认不碰**；验证用临时 SQLite，跑完删
+  （"不碰"指不做 #42/#43 那类运维变更；用户明确要求时做**只读**排查是可以的，见 §3.2.1）。
+  **例外（2026-09-06 晚，用户明确授权"把运维动作的活干下"）**：追加了 `MYSQL_HOST` /
+  `REDIS_HOST`（`docker-compose.cloud.yml` 参数化后必需）和 `PI_METRICS_TOKEN`
+  （`PI_METRICS` 默认 `1` 而 token 默认空 → 下次重启 `/metrics` 会在公网 IP 上裸奔）。
+  两次都先 `cp -p` 备份到 `/root/pi/local-only-unsanitized/`，权限保持 600，
+  全程未把任何值打印出来，改完复验裸跑路径 `ServerSettings.from_env()` 正常。
+  **#42 密钥轮换与 #43 云侧暴露面仍未做**，量级不同，需用户单独授权。
 - 没有浏览器，前端只能 `vue-tsc` + vitest + SSR 渲染测试
 
 ### 3.2.1 ⚠️ 新增（2026-09-06）：先搞清楚你在哪个环境
@@ -141,12 +151,15 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
 **`deploy/environments.md` 是新建的环境专档，动手前必读**（11 条已核实的地雷 L1–L11，
 外加两个环境的逐键对照、启动流程、账号现状与基线快照）。最容易踩的四条：
 
-- **离线套件是 flaky 的**（L11）：2026-09-06 共 10 次全套件运行有 6 次红在
+- **离线套件曾 flaky，测试侧已修**（L11）：2026-09-06 共 10 次全套件运行有 6 次红在
   `test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the_token`（约 60%）。
-  `pytest tests/test_server.py` 单独跑 3/3 全绿。**看到这条红先单独跑一次确认，别以为自己改坏了。**
-  根因不只是测试瑕疵：注销的 `_counts()` 快照没等在飞的后台记忆抽取，而抽取无论成败都写一条
-  `turns=0` 的 `usage_records` → 生产语义上"注销时正好有抽取在飞"会让 `purged` 回执与实际删除数
-  不符。**这与 #54 的"可回溯/可审计"目标同源**，做 #54 时建议一并考虑注销与在飞任务的互斥。
+  当晚修掉：新增 `_wait_usage_settled()`，在 `_counts()` 快照前等在飞的抽取收尾，
+  等**静默**而非等固定行数（照同类里 `_wait_audit_flushed` 的模式）。修后单独跑 30/30、
+  全套件连跑 5 次均 `363 passed, 1 skipped`。**只改了测试，没碰产品代码。**
+  ⚠️ **根因不只是测试瑕疵，而那一层没修**：注销的 `_counts()` 快照没等在飞的后台记忆抽取，
+  而抽取无论成败都写一条 `turns=0` 的 `usage_records` → 生产语义上"注销时正好有抽取在飞"
+  会让 `purged` 回执与实际删除数不符。**这与 #54 的"可回溯/可审计"目标同源**，
+  做 #54 时**仍然**建议一并考虑注销与在飞任务的互斥——测试现在会等，产品代码不会。
   注：这条 flaky 与 17:03–17:12 那个会话的 web 工具改动无关，改前改后都红在同一条上。
 
 - **当前跑着的实例是测试环境，不是生产**：PID 809332 在 **8398** 端口，连 `pi_py_test` /
@@ -307,12 +320,14 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
 上面是 09-04 晚的快照，**保留不改**（它是当时的真实记录），但以下几条现在已经不同，
 以本节为准。全部为 2026-09-06 实测：
 
-- **测试数**：Python `347 passed, 1 skipped`（348 collected，23.6s）——不再是 271→280。
-  **但这不是稳定基线**：10 次全套件运行有 6 次是 `1 failed, 346 passed`，红在
-  `TestDeregister::test_the_cascade_wipes_every_trace_and_the_token`（约 60% flaky，
-  单独跑 `tests/test_server.py` 3/3 全绿）。机制与影响见 `deploy/environments.md` **L11** 与 §3.2.1。
-  `test_memory.py` 现在 125 例（不再是 87）。前端 `npm test` **55 passed**（1.1s，稳定），
-  其中 `render.test.ts` 25 / `transcript.test.ts` 21 / `sse.test.ts` 9；
+- **测试数**：Python **`363 passed, 1 skipped`**（364 collected，25.3s）——不再是 347/348，
+  也不再是 271→280。**现在这是稳定基线**：曾约 60% flaky（10 次里 6 次红在
+  `TestDeregister::test_the_cascade_wipes_every_trace_and_the_token`），2026-09-06 晚已修
+  （新增 `_wait_usage_settled()`，只改测试），修后单独跑 30/30、全套件连跑 5 次结果一致。
+  机制与**仍未关闭的生产竞态**见 `deploy/environments.md` **L11** 与 §3.2.1。
+  `test_memory.py` 现在 125 例（不再是 87）。前端 `npm test` **56 passed**（1.1s，稳定），
+  其中 `render.test.ts` 26 / `transcript.test.ts` 21 / `sse.test.ts` 9；
+  `npm run typecheck`（`vue-tsc --noEmit`）亦通过；
   `tests/live/api.live.ts` 是 **11 例**（文档里长期写的 7 已陈旧）。
 - **路由全景**：上面那条清单**不完整**。实测 app 上 29 条路由 = 23 条业务 + 6 条基础设施。
   漏掉的是：`DELETE /v1/me`（注销）、`GET /v1/admin/traces` 与 `/traces/{run_id}`（轨迹，

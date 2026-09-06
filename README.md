@@ -369,19 +369,26 @@ deploy/                     Caddyfiles, cloud runbook, .env template, environmen
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 363 passed, 1 skipped — but see the flake note below
+python -m pytest -q          # 363 passed, 1 skipped
 ```
 
-> ⚠️ **The suite is currently flaky.** Ten full-suite runs on 2026-09-06 (348 tests at the
-> time; 364 now) were fully green four times and `1 failed` six times — always the same test,
+> ✅ **The suite is no longer flaky.** It used to be: ten full-suite runs on 2026-09-06 were
+> green four times and `1 failed` six times, always
 > `test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the_token`.
-> Its `_counts()` snapshot does not wait for the in-flight **background fact extraction** to
+> Its `_counts()` snapshot did not wait for the in-flight **background fact extraction** to
 > settle, and extraction writes a `turns=0` `usage_records` row whether or not it succeeds
-> (`pi/memory/service.py:732`), so a row landing after the snapshot makes `purged` exceed
-> `before` by one. `pytest tests/test_server.py` on its own is green 3/3; it only misbehaves in
-> full-suite context. If that one test is red, re-run it alone before assuming you broke
-> something. Full analysis — including why this is a real gap in deregistration semantics and
-> not just a test wart — in `deploy/environments.md` **L11**.
+> (`pi/memory/service.py:732`), so a row landing after the snapshot made `purged` exceed
+> `before` by one. Fixed by `_wait_usage_settled()`, which mirrors the existing
+> `_wait_audit_flushed` and polls for **quiescence** rather than a fixed row count — pinning a
+> number would couple the test to however many extractions the fake provider happens to yield.
+> Verified 30/30 in isolation (was 4/20 failing) and five consecutive full-suite runs green.
+>
+> ⚠️ **That fixed the test, not the product.** The underlying race is still open: if an
+> extraction is in flight at the moment a user deregisters, the purge can miss that
+> `usage_records` row and the receipt misreports by one. For a promise of *auditable erasure*
+> that is a real gap, and deregistration should be mutually exclusive with in-flight
+> extractions (or wait for them). Tracked with the Run/append-only-event-log work.
+> Full analysis in `deploy/environments.md` **L11**.
 
 The suite needs no database, Redis, Docker, or API key: `tests/conftest.py` pins
 `PI_REDIS_URL` / `PI_SANDBOX` / `PI_POLICY` empty, `PI_TRACER=noop` and `PI_WEB_DIST` at a

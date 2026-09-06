@@ -151,7 +151,7 @@ cd /root/pi/pi-python
 | Python | `python` **不在 PATH**，用 `/root/pi/pi-python/.venv/bin/python`（3.12.3） |
 | Node | 在 `/usr/local/node/bin`，每次 `export PATH=/usr/local/node/bin:$PATH` |
 | cwd | `.env` 按 cwd 加载，命令必须在 `pi-python/` 下执行 |
-| **不是 git 仓库** | `git diff`/`checkout`/`stash` 全是静默空操作，改动只能手工还原，改前先 `cp` 备份 |
+| **git 仓库** | ✅ 2026-09-06 21:10 起有首个提交（`6eb79d7`，分支 `main`，remote = `github.com/15838328874/pi`）。`git diff`/`checkout`/`stash` 现在**真的能用**。但**改前仍建议 `cp` 备份**：可能有并发会话在改同一批文件，见 L8 |
 | 浏览器 | 环境里没有浏览器，前端只能靠 `vue-tsc` + vitest + SSR 渲染测试 |
 
 ---
@@ -373,7 +373,7 @@ PI_LIVE_API=http://127.0.0.1:8398 npm run test:live
 数字会随开发漂移，**别把它当验收标准**。要基线就跑：
 
 ```bash
-.venv/bin/python -m pytest -q                                   # 2026-09-06 晚: 363 passed, 1 skipped, 25.6s（flaky，见 L11）
+.venv/bin/python -m pytest -q                                   # 2026-09-06 晚: 363 passed, 1 skipped, 25.3s（连跑 5 次一致；曾 flaky，已修，见 L11）
 .venv/bin/python -m pytest --collect-only -q | tail -1           # 2026-09-06 晚: 364 tests collected（稳定）
 export PATH=/usr/local/node/bin:$PATH && cd web && npm test      # 2026-09-06 晚: 56 passed, 1.1s（稳定）
 ```
@@ -400,7 +400,20 @@ export PATH=/usr/local/node/bin:$PATH && cd web && npm test      # 2026-09-06 �
 就把 `PI_REDIS_URL`/`PI_SANDBOX`/`PI_POLICY` 清空、`PI_TRACER=noop`、`PI_WEB_DIST` 指向不存在
 的路径，所以仓库根的生产 `.env` 漏不进测试。
 
-### L8 · git 仓库刚 init，但**零 commit** —— 实际上仍然回滚不了
+### L8 · git：从零 commit 的中间态到首个提交 ✅ 已解决（但并发写入这条没变）
+
+> **状态更新（2026-09-06 21:10）**：首个提交 `6eb79d7` 已落地，分支 `main`，
+> remote `https://github.com/15838328874/pi.git`（接在用户自己的 GitHub `Initial commit`
+> `3fd5eba` 之后，非 force-push）。仓库级身份取自用户 GitHub 提交：
+> `15838328874 <135090639+15838328874@users.noreply.github.com>`，**全局 git 配置未改动**。
+> 提交前扫过索引：133 个文件，无 `.env`/`.venv`/`node_modules`/`__pycache__`/`dist`/`*.db`/
+> 审计日志，无真实云实例域名或公网 IP，无硬编码凭据。
+>
+> **下面那段"零 commit 中间态"的分析保留**，因为它描述的是一个真实存在过、而且很容易骗人的状态；
+> 但**现在 `git diff`/`checkout`/`stash` 都能用了**。
+>
+> ⚠️ **没有随之解决的是并发写入**：仍然可能有多个会话同时改这个目录（本节末尾那条纪律不变）。
+> git 给你的是**回滚能力**，不是**互斥**。动手前照样核对 mtime。
 
 ⚠️ **状态在 2026-09-06 17:03:50 变了**：`/root/pi/pi-python/.git` 已经被创建（`git init`，
 分支 `master`）。但截至 17:12，**一个 commit 都没有**，`git status` 显示所有文件都是 `??`
@@ -475,7 +488,12 @@ for r in sorted(create_app().routes, key=lambda r: getattr(r,'path','')):
 而前端挂载在 `/`（最后注册，不会遮蔽它）。改路由前缀时别顺手把它挪进 `/v1` ——
 网关要无 token 抓取，挪进去就得同时改认证逻辑。
 
-### L11 · 离线套件是 flaky 的：`TestDeregister` 与后台记忆抽取赛跑 ⚠️ 会误导人
+### L11 · 离线套件曾是 flaky 的：`TestDeregister` 与后台记忆抽取赛跑 ✅ 测试已修 / ⚠️ 产品竞态仍开着
+
+> **状态更新（2026-09-06 晚）**：下面描述的抖动**已经修掉**——只改测试，
+> 见本节末「对后来人的三条实际影响」第 3 点。保留以下全部原始分析，因为
+> **第 2 点那个生产级竞态并没有被这次修复关掉**，而且这段分析本身是
+> "如何从一条间歇性红灯倒推出真实语义缺口"的完整样本。
 
 **实测（2026-09-06）：10 次全套件运行里 6 次红、4 次绿 —— 约 60% 失败率。**
 （其中一段连续 5 次是 3 绿 2 红；此后又连续 4 次全红。看不出规律，就是时序掷骰子。）
@@ -527,21 +545,29 @@ tests/test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the
 
 #### 对后来人的三条实际影响
 
-1. **不要把 `347 passed` 当成"必须全绿"的验收门**。看到这一个用例红，先单独跑一次确认，
-   别以为自己改坏了什么：
-   ```bash
-   .venv/bin/python -m pytest tests/test_server.py::TestDeregister -q     # 绿 = 就是这条 flaky
-   ```
+1. ~~**不要把 `347 passed` 当成"必须全绿"的验收门**~~ —— **这条已作废**：flaky 已修
+   （见下面第 3 点），现在 **`363 passed, 1 skipped` 就是验收门**，看到任何一条红都该当成
+   真问题查，不要再先怀疑"是不是那条老 flaky"。修完后实测：单独跑 30/30 全过，
+   全套件连跑 5 次结果完全一致。
 2. **它是真 bug 的信号，不只是测试瑕疵**。生产语义上：用户点注销的瞬间如果有一次抽取正在飞，
    清库可能漏掉那条 `usage_records`（注销返回的 `purged` 回执也会少报一行）。
    对"可审计的数据删除"这种承诺来说，这是实打实的缺口 —— 回执说删了 N 行，实际删了 N+1，
    或者反过来漏删。**这条与 #54（Run 地基 / append-only 事件日志）的"可回溯"目标直接相关**，
    建议一并考虑：注销应当与在飞的抽取任务互斥，或等它们收尾。
-3. **修法很便宜**（但**本文档只记录不动手** —— `tests/test_server.py` 与 `src/pi/memory/`
-   正是 `HANDOFF.platform.md` §3.1 警告的并发会话在改的文件，而且本仓库没有 git）：
-   在 `_counts()` 快照之前把在飞的抽取任务 drain 掉（类似已有的 `_wait_audit_flushed`，
-   但等的是抽取），或者让断言容忍 `usage_records` 的 ±N 并把差额显式记下来。
-   前者是正解，后者只是把红灯关掉。
+3. **修法很便宜，而且已经修了**（2026-09-06 晚，只改测试、没碰产品代码）：
+   新增 `TestDeregister._wait_usage_settled()`，在 `_counts()` 快照之前把在飞的抽取等干净。
+   走的是上面说的"前者是正解"那条路，但实现上**不是**调 `MemoryService.drain()` ——
+   memory service 是 `create_app()` 里的闭包局部变量，`app.state` 上只有 `settings` 和 `db`，
+   测试够不着它。所以照同类里已有的 `_wait_audit_flushed` 同一模式**轮询数据库**，
+   等 `usage_records` 计数**连续 5 次不变**（静默）而不是等某个固定行数：固定值会把这个用例
+   耦合到 fake provider 恰好产出几条抽取上，等于把注销契约的测试变成了对夹具的断言。
+
+   > 本文档原先写"只记录不动手"，理由是 `tests/test_server.py` 与 `src/pi/memory/` 正被
+   > 并发会话改、且本仓库没有 git。动手时的实际前提是：那个会话已静默 2 小时以上、
+   > 全套件已回到全绿、并且仓库已经 `git init` 并有了首个提交可回退。**这三条不满足时
+   > 仍然应该只记录不动手。**
+
+   ⚠️ **再说一遍：修的是测试的确定性，不是第 2 点那个生产竞态。** 第 2 点仍然开着。
 
 ---
 
@@ -587,8 +613,8 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
 | 服务进程 | PID 809332，`.venv/bin/pi-py serve --host 0.0.0.0 --port 8398`，2026-09-05 19:46 启动，cwd `/root/pi/pi-python` |
 | `/healthz` | `{"status":"ok"}` |
 | `/readyz` | `{"status":"ready","checks":{"db":"ok","cache":"ok","memory":"ok"}}` |
-| Python 套件 | 348 collected → **347 passed, 1 skipped**，23.6s，66 warnings。**⚠️ flaky：10 次全套件运行有 6 次是 `1 failed, 346 passed`（同一条 `TestDeregister`），见 L11** |
-| 前端套件 | **55 passed**（3 files），1.1s，连跑稳定 |
+| Python 套件 | 364 collected → **363 passed, 1 skipped**，25.3s，74 warnings。~~⚠️ flaky~~ **✅ 已修**：曾 10 次里 6 次红在同一条 `TestDeregister`，修后单独跑 30/30、全套件连跑 5 次一致，见 L11 |
+| 前端套件 | **56 passed**（3 files），1.1s，连跑稳定；`npm run typecheck`（`vue-tsc --noEmit`）亦通过 |
 | venv | `.venv/bin/python` = Python 3.12.3；`aiomysql`/`pymysql`/`asyncpg`/`sqlalchemy` 均可用 |
 | alembic head | `0007_trace_fidelity`（`migrations/versions/` 共 0001–0007） |
 | Docker 残留 | 只有一个 `hello-world` 容器（3 天前 Exited 0），**无沙箱池孤儿容器** |
@@ -631,9 +657,11 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
 - **L7** 已修正；后续改测试数时记得 README 与 ARCHITECTURE 两处都要动。
 - **L10** 已把 README 的 API 清单补全（11 → 23 条业务路由）。以后加路由时**同步改那张表**，
   或者干脆把它换成"完整清单见 `/docs` 与 `web/openapi.json`"以免再次漂移。
-- **L11** flaky 测试**没有修**，只记录了。修它要动 `tests/test_server.py` 和/或
-  `src/pi/memory/`，而 `HANDOFF.platform.md` §3.1 明确警告另一个会话正在改这批文件，
-  加上本仓库没有 git（L8）无法安全回滚 —— 所以留给用户决定时机。
-  正解是在 `_counts()` 快照前 drain 在飞的抽取任务（照 `_wait_audit_flushed` 的样子写一个）；
-  **不要**用放宽断言的方式把红灯关掉，那会同时掩盖掉注销语义的真缺口。
-  这一条与 #54（Run 地基 / 可回溯）同源，建议合并考虑。
+- **L11** flaky 测试**已修**（2026-09-06 晚，只改 `tests/test_server.py`，没碰 `src/pi/memory/`）。
+  当初记录而不动手的三个理由现在都不成立了：并发会话已静默、全套件回到全绿、
+  而且仓库已经 `git init` 并有了首个提交（L8 那个"无法安全回滚"也随之解决）。
+  实际修法就是本节建议的"正解"——在 `_counts()` 快照前等在飞的抽取收尾，
+  照 `_wait_audit_flushed` 的样子写了个 `_wait_usage_settled()`，等**静默**而非等固定行数；
+  **没有**用放宽断言的方式把红灯关掉。
+  ⚠️ **但注销语义那个真缺口仍然开着**：测试现在会等抽取收尾，产品代码里注销和在飞抽取
+  之间**依然没有互斥**。这一条与 #54（Run 地基 / 可回溯）同源，建议合并考虑。

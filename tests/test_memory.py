@@ -1747,6 +1747,47 @@ class TestIndexDegradation:
 
         assert "用户偏好 uv 而非 pip" in asyncio.run(main())
 
+    def test_a_dead_index_and_a_dead_repo_still_meter_the_embedding(self):
+        """The fallback above can die too, and the embedding was paid for regardless.
+
+        `_recall` swallows a failing search and scans the repo instead, so reaching
+        `recall_failed` means MySQL went away as well. The embed call has already
+        happened by then: returning a fresh Usage() would drop paid tokens from
+        usage_records, and with them the quota charge and the arbiter's dirty-user
+        scan. `join_failed`, the next guard down, has always returned `total`.
+        """
+
+        class DeadSearch(InMemoryStore):
+            async def search(self, user_id, vector, limit):
+                raise RuntimeError("milvus search down")
+
+        class FlakyRepo(DictMemoryRepo):
+            def __init__(self) -> None:
+                super().__init__()
+                self.dead = False
+
+            async def get_active(self, user_id: int, limit: int = 500):
+                if self.dead:
+                    raise RuntimeError("mysql is down too")
+                return await super().get_active(user_id, limit=limit)
+
+        repo = FlakyRepo()
+        svc = _service(store=DeadSearch(), repo=repo)
+
+        async def main():
+            await svc.setup()
+            await _learn(svc)  # repo healthy here, so the fact lands
+            repo.dead = True  # ...and now the fallback dies with the index
+            text, usage, stats = await svc.retrieve_traced(7, "uv 依赖管理")
+            repo.dead = False  # let close() drain the extraction cleanly
+            await svc.close()
+            return text, usage, stats
+
+        text, usage, stats = asyncio.run(main())
+        assert text == "", "a total retrieval failure injects nothing"
+        assert (stats["outcome"], stats["stage"]) == ("recall_failed", "recall")
+        assert usage.input_tokens > 0, "the embedding was spent; it must be metered"
+
     def test_an_index_that_lags_its_upsert_still_recalls_from_the_repo(self):
         """Bounded consistency: a vector upserted moments ago is invisible to
         search for ~0.5s on the live cluster. Zero hits must resolve against

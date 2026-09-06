@@ -350,6 +350,8 @@ class MemoryService:
                 vectors, usage = await stage("embed", lambda: self._embedder.embed([query]))
             except Exception as exc:  # noqa: BLE001 - retrieval must never fail a turn
                 log.warning("memory retrieval failed for user %s (embed)", user_id, exc_info=True)
+                # A fresh Usage(), not `total`: nothing has been added to it yet,
+                # because the call that would have is the one that just raised.
                 return "", Usage(), self._verdict(stats, span, "embed_failed", "embed", exc)
             total = total.add(usage)
             if not vectors:
@@ -358,7 +360,13 @@ class MemoryService:
                 hits, path = await stage("recall", lambda: self._recall(user_id, vectors[0]))
             except Exception as exc:  # noqa: BLE001 - retrieval must never fail a turn
                 log.warning("memory retrieval failed for user %s (recall)", user_id, exc_info=True)
-                return "", Usage(), self._verdict(stats, span, "recall_failed", "recall", exc)
+                # `total`, not a fresh Usage(): the embedding already ran and was
+                # already paid for. Reaching here means the index failed AND its
+                # MySQL fallback failed with it, so this is precisely the outage in
+                # which dropping paid tokens goes unnoticed - they vanish from
+                # usage_records, and with them the quota charge and the arbiter's
+                # dirty-user scan, which reads that same table.
+                return "", total, self._verdict(stats, span, "recall_failed", "recall", exc)
             stats["index"] = path
             stats["recalled"] = len(hits)
             if not hits:

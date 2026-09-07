@@ -156,10 +156,17 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
   当晚修掉：新增 `_wait_usage_settled()`，在 `_counts()` 快照前等在飞的抽取收尾，
   等**静默**而非等固定行数（照同类里 `_wait_audit_flushed` 的模式）。修后单独跑 30/30、
   全套件连跑 5 次均 `363 passed, 1 skipped`。**只改了测试，没碰产品代码。**
-  ⚠️ **根因不只是测试瑕疵，而那一层没修**：注销的 `_counts()` 快照没等在飞的后台记忆抽取，
-  而抽取无论成败都写一条 `turns=0` 的 `usage_records` → 生产语义上"注销时正好有抽取在飞"
-  会让 `purged` 回执与实际删除数不符。**这与 #54 的"可回溯/可审计"目标同源**，
-  做 #54 时**仍然**建议一并考虑注销与在飞任务的互斥——测试现在会等，产品代码不会。
+  ✅ **2026-09-07：产品侧那一层也修了。** `deregister()` 现在是「`begin_erasure(uid)` 抑制新抽取
+  → `drain(user_id=uid)` 等完在飞的 → `audit.flush()` 冲刷审计队列 → 才 `clear()` + `purge_user()`」，
+  `end_erasure` 在 finally 里（清库抛异常时账号还活着，不能让它再也记不住东西）。
+  抑制**必须在** drain 之前，否则 drain 期间跑完的 run 还能再排一个抽取、落在 DELETE 之后。
+  `drain()`/`flush()` 都返回 bool，放弃 ≠ 没事：超时就把 `erasure="drain_timeout"` 之类写进
+  注销审计记录（不动 `DeregisterOut` 契约）并打 `log.error`。
+  顺带关掉了同类的**审计竞态**——`audit_events` 走有界队列 + 后台 drainer，
+  排队中的行会在 DELETE 之后插入并活过擦除，而它带着 IP 和 UA。
+  新增 `AuditLogger.flush()`（非破坏性，drainer 继续跑；FIFO 屏障保证顺序）。
+  **与 #54 不再需要合并考虑**，但 #54 落地后要复查：run 变成持久实体、抽取变成 system run 之后，
+  这套"按 user id 抑制"应当改为按 run 谱系裁决。
   注：这条 flaky 与 17:03–17:12 那个会话的 web 工具改动无关，改前改后都红在同一条上。
 
 - **当前跑着的实例是测试环境，不是生产**：**PID 1080214**（2026-09-06 20:22:39 启动，
@@ -338,12 +345,12 @@ Phase 6  流程自动化 Agent：调度器 + 工作流 + 审批链泛化
 上面是 09-04 晚的快照，**保留不改**（它是当时的真实记录），但以下几条现在已经不同，
 以本节为准。全部为 2026-09-06 实测：
 
-- **测试数**：Python **`363 passed, 1 skipped`**（364 collected，25.3s）——不再是 347/348，
-  也不再是 271→280。**现在这是稳定基线**：曾约 60% flaky（10 次里 6 次红在
+- **测试数**：Python **`374 passed, 1 skipped`**（375 collected，约 26s，2026-09-07 连跑 4 次一致）
+  ——不再是 347/348，也不再是 363/364。**现在这是稳定基线**：曾约 60% flaky（10 次里 6 次红在
   `TestDeregister::test_the_cascade_wipes_every_trace_and_the_token`），2026-09-06 晚已修
   （新增 `_wait_usage_settled()`，只改测试），修后单独跑 30/30、全套件连跑 5 次结果一致。
-  机制与**仍未关闭的生产竞态**见 `deploy/environments.md` **L11** 与 §3.2.1。
-  `test_memory.py` 现在 125 例（不再是 87）。前端 `npm test` **56 passed**（1.1s，稳定），
+  机制与**已于 2026-09-07 关闭的生产竞态**见 `deploy/environments.md` **L11** 与 §3.2.1。
+  `test_memory.py` 现在 130 例（不再是 87/125）。前端 `npm test` **56 passed**（1.1s，稳定），
   其中 `render.test.ts` 26 / `transcript.test.ts` 21 / `sse.test.ts` 9；
   `npm run typecheck`（`vue-tsc --noEmit`）亦通过；
   `tests/live/api.live.ts` 是 **11 例**（文档里长期写的 7 已陈旧）。

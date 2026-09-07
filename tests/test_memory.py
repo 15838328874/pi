@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import Any
@@ -2217,6 +2218,122 @@ class TestBackgroundExtraction:
             await svc.drain()  # must not raise
 
         asyncio.run(main())
+
+
+class TestErasureSuppression:
+    """Deregistration has to be terminal.
+
+    purge_user() deletes user_memories and usage_records in one transaction, so an
+    extraction still in flight writes both again *afterwards*: the erased account
+    leaves rows behind and the receipt that claimed N deletions under-reports.
+    These cover the two halves of the fix - refusing new work for the user being
+    erased, and waiting only for that user's in-flight work.
+    """
+
+    @staticmethod
+    def _gate(release: threading.Event):
+        """extract_facts keyed on the transcript text.
+
+        The real signature takes no user_id, and the transcript is the only
+        per-call input a test controls, so "HOLD" in the text is how one service
+        parks a task for one user while letting another through.
+        """
+
+        async def _extract(provider, messages):
+            text = "".join(
+                b.text for m in messages for b in m.blocks if isinstance(b, TextBlock)
+            )
+            if "HOLD" in text:
+                while not release.is_set():
+                    await asyncio.sleep(0.005)
+            return [], Usage()
+
+        return _extract
+
+    @staticmethod
+    def _spawn(svc: MemoryService, uid: int, text: str) -> bool:
+        return svc.spawn_extraction(
+            user_id=uid, username=f"u{uid}", session_id="s1",
+            messages=_transcript(text), fallback_model="fake/demo",
+        )
+
+    def test_begin_erasure_refuses_that_user_and_only_that_user(self, monkeypatch):
+        release = threading.Event()
+        monkeypatch.setattr("pi.memory.service.extract_facts", self._gate(release))
+        svc = _service()
+
+        async def main():
+            await svc.setup()
+            svc.begin_erasure(7)
+            try:
+                return self._spawn(svc, 7, "alice 的习惯"), self._spawn(svc, 8, "bob 的习惯")
+            finally:
+                release.set()
+                svc.end_erasure(7)
+                await svc.drain(timeout=2)
+
+        refused, allowed = asyncio.run(main())
+        assert refused is False, "an account being erased must not gain new facts"
+        assert allowed is True, "suppression is scoped to one user, not global"
+
+    def test_end_erasure_restores_the_normal_path(self, monkeypatch):
+        """A purge that raised leaves the account alive, so the caller's finally
+        block lifting suppression is what keeps it entitled to memory afterwards."""
+        release = threading.Event()
+        release.set()
+        monkeypatch.setattr("pi.memory.service.extract_facts", self._gate(release))
+        svc = _service()
+
+        async def main():
+            await svc.setup()
+            svc.begin_erasure(7)
+            svc.end_erasure(7)
+            queued = self._spawn(svc, 7, "alice 的习惯")
+            await svc.drain(timeout=2)
+            return queued
+
+        assert asyncio.run(main()) is True
+
+    def test_a_scoped_drain_waits_for_that_user_and_not_for_others(self, monkeypatch):
+        """One account's erasure must not stall on everyone else's traffic."""
+        release = threading.Event()
+        monkeypatch.setattr("pi.memory.service.extract_facts", self._gate(release))
+        svc = _service()
+
+        async def main():
+            await svc.setup()
+            self._spawn(svc, 7, "HOLD alice")
+            self._spawn(svc, 8, "bob goes straight through")
+            other = await svc.drain(timeout=2, user_id=8)
+            stuck = await svc.drain(timeout=0.05, user_id=7)
+            release.set()
+            settled = await svc.drain(timeout=2, user_id=7)
+            return other, stuck, settled
+
+        other, stuck, settled = asyncio.run(main())
+        assert other is True, "the unblocked user's drain must not be held up"
+        assert stuck is False, "a drain that gave up has to say so, not look settled"
+        assert settled is True
+
+    def test_finished_tasks_are_forgotten(self, monkeypatch):
+        release = threading.Event()
+        release.set()
+        monkeypatch.setattr("pi.memory.service.extract_facts", self._gate(release))
+        svc = _service()
+
+        async def main():
+            await svc.setup()
+            for uid in (7, 8, 9):
+                self._spawn(svc, uid, "习惯")
+            await svc.drain(timeout=2)
+            await asyncio.sleep(0.01)  # done callbacks are scheduled, not inline
+            return len(svc._tasks), len(svc._task_users)
+
+        tasks, task_users = asyncio.run(main())
+        assert (tasks, task_users) == (0, 0), (
+            "the task->user map has to be cleaned up with the task, or a "
+            "long-lived process grows it without bound"
+        )
 
 
 class TestLoopInjection:

@@ -3,10 +3,10 @@
 > 面向后来人的完整说明：项目是什么、怎么设计的、每个模块每个函数干什么、
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
-> 最后更新：2026-09-06 · 代码规模约 10,600 行 Python 源码 + 365 个离线测试（364 passed / 1 skipped，
-> **套件曾 flaky、现已修复**：`TestDeregister` 与后台记忆抽取赛跑，实测 10 次全套件运行有 6 次会红这一条，
-> 修后单独跑 30/30、全套件连跑 5 次一致。**注意修的是测试的确定性，注销与在飞抽取之间那个
-> 生产级竞态仍然开着**，见 `deploy/environments.md` L11 与 §15）
+> 最后更新：2026-09-07 · 代码规模约 10,700 行 Python 源码 + 375 个离线测试（374 passed / 1 skipped，
+> **套件曾 flaky、现已修复，而且背后的产品竞态也一起关掉了**：`TestDeregister` 与后台记忆抽取赛跑，
+> 实测 10 次全套件运行有 6 次会红这一条；先修测试的确定性，再把注销改成「抑制新抽取 → 等完在飞的
+> → 冲刷审计队列 → 才清库」，见 `deploy/environments.md` L11 与 §15）
 > + 4 个真实基建集成测试（`pytest integration/`，花真钱，见 §15 末尾），
 > 外加 `web/` 的 Vue3+TS 前端（手写约 3,400 行 + 测试约 1,000 行，56 个单测 / 11 个联调用例，见 §18；
 > 另有 codegen 生成的 `api/schema.d.ts` 约 2,400 行，不计入手写）
@@ -1360,21 +1360,48 @@ cd web && npm run typecheck   # vue-tsc --noEmit
 恰好产出几条抽取上，等于把契约测试变成了对夹具的断言。实测**单独跑 30/30 全过**
 （修前 4/20 失败），全套件连跑 5 次均 `363 passed, 1 skipped`。**只改了测试，没碰产品代码。**
 
-⚠️ **但修的是测试，不是产品。** 生产语义上的竞态仍然开着：用户点注销的那一刻若有抽取在飞，
-清库可能漏掉那条 `usage_records`，回执也会错报一行。对"可审计的数据删除"这个承诺来说是
-实打实的缺口，正解是**注销与在飞抽取互斥**（或等它们收尾），与 Run 地基 / append-only
-事件日志那条线一并考虑。完整分析见 **`deploy/environments.md` L11**。
+✅ **产品侧的竞态也关掉了（2026-09-07）。** 上面那次只修了测试的确定性；生产语义上的缺口是：
+用户点注销的那一刻若有抽取在飞，`purge_user()` 先删、抽取后写，于是 `user_memories` 和那条
+`turns=0` 的 `usage_records` 落在一个已经不存在的账号上——数据活过了擦除，回执还少报。
+对"可审计的数据删除"这个承诺来说是实打实的缺口。
 
-测试组织（离线套件都在 `tests/`，共 365 例；前端另有一套 Node 侧的，见 §18.5；
+`deregister()` 现在的顺序是**抑制 → 等 → 冲刷 → 才清库**：
+
+| 步骤 | 做什么 | 少了它会怎样 |
+|---|---|---|
+| `memory.begin_erasure(uid)` | 之后该用户的 `spawn_extraction` 一律返回 `False` | 抽取会在清库后继续产生，抑制是"终止"而非"缩小窗口"的关键 |
+| `await memory.drain(user_id=uid)` | 等该用户已在飞的抽取收尾；**按用户限定**，不连带等别人的流量 | 已入队的抽取照样落在 DELETE 之后 |
+| `await audit.flush()` | 把队列里的 `audit_events` 推过 drainer（**非破坏性**，drainer 继续跑） | 审计行带着 IP 和 UA 活过擦除——正是要删的那类个人数据 |
+| `memory.clear()` + `purge_user()` | 真正删 | — |
+| `finally: memory.end_erasure(uid)` | 解除抑制 | 清库若抛异常，账号还活着却再也记不住东西 |
+
+**`begin_erasure` 必须在 `drain` 之前**：反过来的话，drain 期间跑完的一次 run 还能再排一个抽取，
+它落在 DELETE 之后。这一条目前靠代码审查保证，没有直接的测试（要确定性地命中那个窗口需要
+在 drain 进行中触发一次 run 完成，构造出来会很脆）；抑制这个原语本身由
+`test_memory.py::TestErasureSuppression` 四个用例覆盖，按用户限定的 drain 也在其中。
+
+`drain()` 和 `flush()` 都返回 bool：**放弃 ≠ 没事**。两者都超时说明擦除完整性未知，
+此时注销审计记录里写的是 `erasure="drain_timeout"` / `"audit_flush_timeout"` /
+`"drain+audit_timeout"`，而不是 `"complete"`，并额外打一条 `log.error`。
+放在审计而不是响应体，是因为 `DeregisterOut` 属于前端 codegen 的契约，
+而"擦除是否完整"是审计员事后要查的东西。
+
+两个端到端回归测试钉住这两条（`test_server.py::TestDeregister`），
+并且都做过变异验证——把 `deregister()` 的接线退回 HEAD 后，两者分别以
+`an in-flight extraction resurrected a fact` 和
+`register and login must be counted as erased` 失败。
+完整分析见 **`deploy/environments.md` L11**。
+
+测试组织（离线套件都在 `tests/`，共 375 例；前端另有一套 Node 侧的，见 §18.5；
 花真钱的 `integration/` 另算，见本节末尾）：
 
 | 文件 | 例数 | 覆盖 |
 |---|---|---|
-| `test_memory.py` | 126 | 长期记忆全链路（离线，`HashEmbedder`+`InMemoryStore`+桩 Milvus）：`_user_filter` 租户隔离与查询形状、Milvus DDL/方言兼容、抽取 JSON 解析（缺字段/截断/注入指令是数据不是命令）、写路径核心语义（**repo 先落、索引镜像 best-effort、pending_sync 追平**；touch 确认而非重插、复活禁止、最旧不被逐出、满额逐出最久未确认）、**维护循环**（ensure_index→sync_pending→decay 的顺序与幂等、Redis 锁不持有就不扫）、**衰减**（软删行留 MySQL、索引向量按用户清）、metering（`turns=0` 计入 `usage_records`、失败也记账、关闭即不记、**索引与 repo 双双失败时 embedding 花费仍入账**）、**仲裁**（合并保最旧 `created_at`、秘密先脱敏再入库、单组合并不失败整批、未列出的不动、无模型即关闭）、两段式检索（索引→repo join→rerank；**索引滞后/零命中回退 MySQL 全扫**；熔断开路回退；cosine 召回 + rerank 精排 + 阈值降级到纯 cosine）、rerank 端点真 HTTP、检索/抽取失败不炸主流程、后台抽取不阻塞 run |
+| `test_memory.py` | 130 | 长期记忆全链路（离线，`HashEmbedder`+`InMemoryStore`+桩 Milvus）：`_user_filter` 租户隔离与查询形状、Milvus DDL/方言兼容、抽取 JSON 解析（缺字段/截断/注入指令是数据不是命令）、写路径核心语义（**repo 先落、索引镜像 best-effort、pending_sync 追平**；touch 确认而非重插、复活禁止、最旧不被逐出、满额逐出最久未确认）、**维护循环**（ensure_index→sync_pending→decay 的顺序与幂等、Redis 锁不持有就不扫）、**衰减**（软删行留 MySQL、索引向量按用户清）、metering（`turns=0` 计入 `usage_records`、失败也记账、关闭即不记、**索引与 repo 双双失败时 embedding 花费仍入账**）、**仲裁**（合并保最旧 `created_at`、秘密先脱敏再入库、单组合并不失败整批、未列出的不动、无模型即关闭）、两段式检索（索引→repo join→rerank；**索引滞后/零命中回退 MySQL 全扫**；熔断开路回退；cosine 召回 + rerank 精排 + 阈值降级到纯 cosine）、rerank 端点真 HTTP、检索/抽取失败不炸主流程、后台抽取不阻塞 run、**擦除抑制**（`TestErasureSuppression`：`begin_erasure` 只拒绝该用户、`end_erasure` 恢复、按用户限定的 `drain` 不被别人的流量拖住、放弃时返回 `False` 而非看起来已静默、`task→user` 映射随任务结束清理不泄漏） |
 | `test_sandbox_pool.py` | 41 | 预热池（假传输，无需真 docker）：复用/预热/并发去重/回收/重建/驱逐/关闭；容器资源限额（`_parse_size`、`SandboxLimits` 校验与两种渲染、CLI/Engine API 两条建容器路径都真的带上了限额）；`PI_SANDBOX` 非法值必须报错而不是静默降级 |
-| `test_server.py` | 83 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16）；**契约回归**：`event_to_sse` 的每种事件都对得上文档里的 `Sse*Data` 模型（正反两向 + 真流端到端）、OpenAPI 里没有未定型的响应体、错误体统一 `ErrorOut`、`messages.blocks` 是扁平数组（见 §11.3.1）、工具结果预览的截断长度与文档里引用的 `PREVIEW_LEN` 常量一致；`LoginOut.username` 与 `/v1/me` 报同一个人；**`TestWebUiMount`** 钉住前端挂载顺序（见 §11.3 / §18）；**`TestPlanRun`** 走真 HTTP+SSE 路径打 `submit_plan`（线序 + 持久化回读）；**`TestMemoryWiring`/`TestArbiterSweep`/`TestMaintenanceSweep`**：配置真到达 `MemoryService`、脏用户查询、Redis 锁、lifespan 后台循环；**`TestDeregister`**：注销级联（七张表回执、token 即死、向量镜像只剩别人、workspace 删除、再注册白纸）；**`TestAuditMysql`**：每条审计落 MySQL、管理端读表不读文件（删掉 JSONL 也能查）；**`TestTraces`/`TestTraceFlags`**：轨迹逐步记录（含每轮 `llm_call` 与失败的那一轮）、**`retrieval` 步骤记下召回明细**、**召回阶段抛异常时 run 仍成功但被打上 `memory_failed` 且能被 `anomaly=true` 捞出**、失败 run 可过滤、鉴权门、保留期删除、四个异常判定；**`TestMetricsEndpoint`**：run 完成后序列真的动了、`in_flight` 归零、序列里不含用户名与会话 id、`/metrics` 不在 OpenAPI 文档里、token 门禁（错 token 答 404）、`PI_METRICS=0` 答 503 并说明原因；**`TestSseEventPayloads`** 另钉住 `retrieval`/`llm_call` **绝不上线**（否则每次 run 都发一帧 `event: unknown`）；**`TestSessionFiles`**：附件三路由的集成层（上传/列表/下载，含**无认证**的 `GET /files/{sid}/{name}` 与 `PI_PUBLIC_BASE_URL` 未设时的 400；单元层见 `test_model_capabilities.py`，环境侧的暴露面分析见 `deploy/environments.md` L3） |
+| `test_server.py` | 85 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16）；**契约回归**：`event_to_sse` 的每种事件都对得上文档里的 `Sse*Data` 模型（正反两向 + 真流端到端）、OpenAPI 里没有未定型的响应体、错误体统一 `ErrorOut`、`messages.blocks` 是扁平数组（见 §11.3.1）、工具结果预览的截断长度与文档里引用的 `PREVIEW_LEN` 常量一致；`LoginOut.username` 与 `/v1/me` 报同一个人；**`TestWebUiMount`** 钉住前端挂载顺序（见 §11.3 / §18）；**`TestPlanRun`** 走真 HTTP+SSE 路径打 `submit_plan`（线序 + 持久化回读）；**`TestMemoryWiring`/`TestArbiterSweep`/`TestMaintenanceSweep`**：配置真到达 `MemoryService`、脏用户查询、Redis 锁、lifespan 后台循环；**`TestDeregister`**：注销级联（七张表回执、token 即死、向量镜像只剩别人、workspace 删除、再注册白纸）、**擦除是终止性的**（抽取在飞时注销 → 八张表全 0、只剩事后写的那条回执、审计里 `erasure="complete"`；审计行还堵在队列里时注销 → 回执把它算进删除数而不是让它落在 DELETE 之后。两者都做过变异验证，见 §15）；**`TestAuditMysql`**：每条审计落 MySQL、管理端读表不读文件（删掉 JSONL 也能查）；**`TestTraces`/`TestTraceFlags`**：轨迹逐步记录（含每轮 `llm_call` 与失败的那一轮）、**`retrieval` 步骤记下召回明细**、**召回阶段抛异常时 run 仍成功但被打上 `memory_failed` 且能被 `anomaly=true` 捞出**、失败 run 可过滤、鉴权门、保留期删除、四个异常判定；**`TestMetricsEndpoint`**：run 完成后序列真的动了、`in_flight` 归零、序列里不含用户名与会话 id、`/metrics` 不在 OpenAPI 文档里、token 门禁（错 token 答 404）、`PI_METRICS=0` 答 503 并说明原因；**`TestSseEventPayloads`** 另钉住 `retrieval`/`llm_call` **绝不上线**（否则每次 run 都发一帧 `event: unknown`）；**`TestSessionFiles`**：附件三路由的集成层（上传/列表/下载，含**无认证**的 `GET /files/{sid}/{name}` 与 `PI_PUBLIC_BASE_URL` 未设时的 400；单元层见 `test_model_capabilities.py`，环境侧的暴露面分析见 `deploy/environments.md` L3） |
 | `test_planning.py` | 16 | **任务规划（#45）**。工具层 8 例：计划作为 payload 记录、不碰磁盘、参数化拒绝越界/畸形计划（步数超 20、步长超 300、空标题、缺 steps、空 steps）、校验错误文案截断、成功文案能整段活过 SSE 预览、`all_tools()` 注册且带 `terminal` 标记；循环层 6 例：成功的 `submit_plan` 结束 run、同批后续调用被跳过且**不执行**、跳过调用有审计、无效计划不结束本轮、一批里两个 `submit_plan` 先者胜、跳过合成结果让历史对下一轮仍配对（配对不变量，见 §6.1） |
-| `test_security.py` | 31 | 策略拒绝、路径逃逸、脱敏、审计（含认证记录的截断与防伪造行）、JWT；`server_policy` 只加不减（策略文件无法关掉 `path_sandbox`/`redact`）；对**仓库根那份生效的** `policy.json` 做回归：22 条危险命令必须拦、15 条日常命令必须放行（见 §17.18） |
+| `test_security.py` | 35 | 策略拒绝、路径逃逸、脱敏、审计（含认证记录的截断与防伪造行）、JWT；`server_policy` 只加不减（策略文件无法关掉 `path_sandbox`/`redact`）；对**仓库根那份生效的** `policy.json` 做回归：22 条危险命令必须拦、15 条日常命令必须放行（见 §17.18）；**本地工具面不许出网**（任何注册进 `all_tools()` 的工具，其模块都不许 import HTTP 客户端——`web_fetch`/`web_search` 是删掉而不是修好的，见 §7.2 与 §17.20）；**`AuditLogger.flush()`**：按 FIFO 屏障等到已入队记录落库、且**不停 drainer**（区别于 `close()`）、没挂 MySQL 镜像时是 no-op、drainer 卡住时返回 `False` 表示"仍未知"而非"没有待办"、`erasure` 字段只在非空时出现 |
 | `test_observability.py` | 23 | 计量、配额、价格、降级链；**tracer**（span 父子树与"一次 run 一个 trace_id"、OTLP 导出到 `InMemorySpanExporter` 的整棵树 + ERROR 状态 + exception 事件 + resource 属性、缺 exporter 与拼错 `PI_TRACER` 都要**出声**地降级）；**metrics**（各序列真的产出、`in_flight` gauge 在异常后必须降回来、健康的索引不算降级、没有任何序列带用户/会话标签、关掉即 `render()` 为 None） |
 | `test_deployment.py` | 12 | 缓存后端、本地沙箱执行器、迁移可达性；其中 1 例（真 Redis 限流）在 localhost:6379 无服务时 **skip** |
 | `test_launch.py` | 7 | 注销/撤销、管理员端点、审计按天滚动 |

@@ -385,12 +385,17 @@ python -m pytest -q          # 364 passed, 1 skipped
 > number would couple the test to however many extractions the fake provider happens to yield.
 > Verified 30/30 in isolation (was 4/20 failing) and five consecutive full-suite runs green.
 >
-> ⚠️ **That fixed the test, not the product.** The underlying race is still open: if an
-> extraction is in flight at the moment a user deregisters, the purge can miss that
-> `usage_records` row and the receipt misreports by one. For a promise of *auditable erasure*
-> that is a real gap, and deregistration should be mutually exclusive with in-flight
-> extractions (or wait for them). Tracked with the Run/append-only-event-log work.
-> Full analysis in `deploy/environments.md` **L11**.
+> ✅ **And the product race behind it is closed too.** Erasure is now terminal: `DELETE /v1/me`
+> calls `memory.begin_erasure(uid)` to refuse new extractions for that account, then
+> `memory.drain(user_id=uid)` to wait out the ones already in flight, then `audit.flush()` to
+> push queued `audit_events` through the drainer — *then* clears memory and purges. Suppression
+> before the drain is what makes it terminal rather than merely narrower: the reverse order lets
+> a run finishing mid-drain queue one more extraction that lands after the `DELETE`. The audit
+> side matters equally, because those rows carry IP and user agent. Completeness is recorded as
+> an `erasure` field on the deregistration audit row (`complete`, or which wait gave up) rather
+> than in the response body, which is part of the codegen'd contract. Two regression tests hold
+> it, and both were verified red with the wiring removed. Full analysis in
+> `deploy/environments.md` **L11**.
 
 The suite needs no database, Redis, Docker, or API key: `tests/conftest.py` pins
 `PI_REDIS_URL` / `PI_SANDBOX` / `PI_POLICY` / `PI_MILVUS_URI` / `PI_EMBEDDING_MODEL` /

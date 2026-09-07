@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import sys
@@ -250,6 +251,91 @@ class TestAudit:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         lines = (tmp_path / f"audit-{day}.jsonl").read_text(encoding="utf-8").splitlines()
         assert {json.loads(line)["username"] for line in lines} == {"alice", "bob", "carol"}
+
+    def test_flush_waits_for_queued_records_without_stopping_the_drainer(self, tmp_path: Path):
+        """Erasure depends on this. purge_user() deletes audit_events by actor, so
+        a record still sitting in the queue is inserted *after* the DELETE and
+        survives the erasure - and it carries IP and user agent, the personal data
+        the erasure existed to remove. Unlike close(), flush() leaves the drainer
+        running, because the service is still serving."""
+        import asyncio
+
+        logger = AuditLogger(tmp_path / "audit.jsonl")
+        landed: list[str] = []
+
+        class Repo:
+            async def append_many(self, records):
+                landed.extend(r["username"] for r in records)
+                return len(records)
+
+        async def main() -> tuple[bool, bool]:
+            queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+            task = asyncio.create_task(logger._drain(Repo(), queue))
+            logger._db_queue = queue
+            logger._drain_task = task
+            logger.auth(action="login", username="alice", ip="1.2.3.4", ok=True)
+            first = await logger.flush(timeout=2)
+            logger.auth(action="login", username="bob", ip="1.2.3.4", ok=True)
+            second = await logger.flush(timeout=2)
+            await logger.close()
+            return first, second
+
+        first, second = asyncio.run(main())
+        assert first and second
+        assert "alice" in landed, "what was queued before flush() reached the table"
+        assert "bob" in landed, "flush() is not close(): the drainer kept running"
+
+    def test_flush_with_no_db_mirror_has_nothing_to_wait_for(self, tmp_path: Path):
+        import asyncio
+
+        logger = AuditLogger(tmp_path / "audit.jsonl")
+        assert asyncio.run(logger.flush(timeout=0.05)) is True
+
+    def test_flush_reports_false_when_the_drainer_cannot_keep_up(self, tmp_path: Path):
+        """False means "still unknown", not "nothing was pending". A caller that
+        treats erasure as a promise has to be able to tell those apart."""
+        import asyncio
+
+        logger = AuditLogger(tmp_path / "audit.jsonl")
+
+        class Stuck:
+            async def append_many(self, records):
+                await asyncio.sleep(30)
+                return len(records)
+
+        async def main() -> bool:
+            queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+            task = asyncio.create_task(logger._drain(Stuck(), queue))
+            logger._db_queue = queue
+            logger._drain_task = task
+            logger.auth(action="login", username="alice", ip="1.2.3.4", ok=True)
+            try:
+                return await logger.flush(timeout=0.05)
+            finally:
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
+
+        assert asyncio.run(main()) is False
+
+    def test_the_erasure_field_is_absent_unless_it_is_used(self, tmp_path: Path):
+        """Only deregistration carries it. A key that is "" on every register and
+        login is noise in every query over a table that is meant to be read by
+        hand after an incident."""
+        logger = AuditLogger(tmp_path / "audit.jsonl")
+        logger.auth(action="login", username="alice", ip="1.2.3.4", ok=True)
+        logger.auth(action="deregister", username="alice", ip="1.2.3.4", ok=True,
+                    erasure="complete")
+
+        from datetime import datetime, timezone
+        day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        rows = [
+            json.loads(line)
+            for line in (tmp_path / f"audit-{day}.jsonl").read_text(encoding="utf-8").splitlines()
+        ]
+        login, deregister = rows[-2], rows[-1]
+        assert "erasure" not in login
+        assert deregister["erasure"] == "complete"
 
 
 # ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -31,13 +32,13 @@ from pi.agent.events import (
 )
 from pi.agent.loop import PREVIEW_LEN
 from pi.llm.fake import FakeProvider
-from pi.memory import HashEmbedder, InMemoryStore, NoOpStore
+from pi.memory import FactCandidate, HashEmbedder, InMemoryStore, NoOpStore
 from pi.memory.repo import MemoryRowIn
 from pi.memory.service import MEMORY_HEADER
 from pi.models import Message, Plan, TextBlock, ToolCallBlock, Usage
 from pi.server.app import SSE_DATA_MODELS, create_app
 from pi.server.config import ServerSettings
-from pi.server.db import UserMemoryRepo, UserRepo
+from pi.server.db import AuditEventRepo, UserMemoryRepo, UserRepo
 from pi.server.runner import event_to_sse
 
 
@@ -1123,6 +1124,105 @@ class TestDeregister:
             "agent_runs": 0,
             "agent_steps": 0,
         }
+
+    def test_an_extraction_in_flight_at_deregister_leaves_nothing_behind(
+        self, memory_server, monkeypatch, tmp_path
+    ):
+        """The race that waiting in the test only papered over.
+
+        A run answers the user and spawns its memory extraction fire-and-forget,
+        so an extraction is routinely still in flight when the next request
+        arrives - including DELETE /v1/me. It writes user_memories and a turns=0
+        usage_records row. Purge first and both land on an account that no longer
+        exists: personal data survives an erasure whose receipt claimed to be
+        complete, and the receipt under-reports by however many rows landed late.
+        """
+        client, store = memory_server
+        ha = _auth(client, "alice")
+        sid = client.post("/v1/sessions", json={"model": "fake/demo"}, headers=ha).json()["id"]
+        uid = _uid(client, "alice")
+
+        entered, release = threading.Event(), threading.Event()
+
+        async def held_extract(provider, messages):
+            entered.set()
+            while not release.is_set():
+                await asyncio.sleep(0.005)
+            # Real work, so a regression has something to write: a fact for
+            # user_memories and the spend that becomes the turns=0 usage row.
+            return (
+                [FactCandidate(text="alice 偏好 uv", kind="preference")],
+                Usage(input_tokens=3),
+            )
+
+        monkeypatch.setattr("pi.memory.service.extract_facts", held_extract)
+        ran = client.post(f"/v1/sessions/{sid}/runs", json={"prompt": "hello"}, headers=ha)
+        assert ran.status_code == 200
+        assert entered.wait(5), "the run must have spawned the extraction"
+
+        # Release while the DELETE is parked in drain(). Without suppression plus
+        # the scoped drain the purge has already committed by this point.
+        threading.Timer(0.2, release.set).start()
+        r = self._deregister(client, ha, "password123")
+        release.set()
+        assert r.status_code == 200, r.text
+
+        # The receipt is queued after the purge, and the queue is FIFO, so seeing
+        # it means everything the extraction wrote has landed too.
+        assert self._wait_audit_flushed(client, "alice", at_least=1) == 1
+        after = self._counts(client, uid, "alice")
+        assert after["memories"] == 0, "an in-flight extraction resurrected a fact"
+        assert after["usage_records"] == 0, "an in-flight extraction resurrected its metering"
+        assert after["sessions"] == 0 and after["messages"] == 0
+        assert after["agent_runs"] == 0 and after["agent_steps"] == 0
+        assert after["audit_events"] == 1, "only the erasure receipt may survive"
+
+        # Completeness is recorded in the audit trail, not the response body:
+        # DeregisterOut is part of the OpenAPI contract the frontend is codegen'd
+        # from, and an auditor is who needs to find an incomplete erasure later.
+        rows = _auth_audit(tmp_path)
+        assert rows[-1]["action"] == "deregister"
+        assert rows[-1]["erasure"] == "complete"
+
+    def test_an_audit_record_still_queued_at_deregister_is_erased_not_orphaned(
+        self, memory_server, monkeypatch
+    ):
+        """The sibling race, same promise.
+
+        audit_events reach MySQL through a bounded queue and a background drainer,
+        so a record queued before the purge can be inserted after it. purge_user()
+        deletes by actor, and those rows carry IP and user agent - precisely the
+        personal data the erasure existed to remove.
+        """
+        client, store = memory_server
+        release = threading.Event()
+        real = AuditEventRepo.append_many
+
+        async def held_append(self, records):
+            await asyncio.to_thread(release.wait, 5)
+            return await real(self, records)
+
+        # Patched before registering, so the rows this test is about cannot land.
+        monkeypatch.setattr(AuditEventRepo, "append_many", held_append)
+        ha = _auth(client, "alice")
+        uid = _uid(client, "alice")
+        # Precondition, and what stops this test from passing vacuously if the
+        # timer below ever fires before the DELETE reaches flush().
+        assert self._counts(client, uid, "alice")["audit_events"] == 0
+
+        threading.Timer(0.5, release.set).start()
+        r = self._deregister(client, ha, "password123")
+        release.set()
+        assert r.status_code == 200, r.text
+
+        assert r.json()["purged"]["audit_events"] >= 2, (
+            "register and login must be counted as erased, not left queued to "
+            "land after the DELETE"
+        )
+        assert self._wait_audit_flushed(client, "alice", at_least=1) == 1
+        assert self._counts(client, uid, "alice")["audit_events"] == 1, (
+            "only the erasure receipt may survive it"
+        )
 
     def test_the_last_admin_cannot_delete_themselves(self, memory_server):
         client, _ = memory_server

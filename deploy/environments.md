@@ -627,12 +627,14 @@ for r in sorted(create_app().routes, key=lambda r: getattr(r,'path','')):
 而前端挂载在 `/`（最后注册，不会遮蔽它）。改路由前缀时别顺手把它挪进 `/v1` ——
 网关要无 token 抓取，挪进去就得同时改认证逻辑。
 
-### L11 · 离线套件曾是 flaky 的：`TestDeregister` 与后台记忆抽取赛跑 ✅ 测试已修 / ⚠️ 产品竞态仍开着
+### L11 · 离线套件曾是 flaky 的：`TestDeregister` 与后台记忆抽取赛跑 ✅ 测试已修 / ✅ 产品竞态已关（2026-09-07）
 
-> **状态更新（2026-09-06 晚）**：下面描述的抖动**已经修掉**——只改测试，
-> 见本节末「对后来人的三条实际影响」第 3 点。保留以下全部原始分析，因为
-> **第 2 点那个生产级竞态并没有被这次修复关掉**，而且这段分析本身是
-> "如何从一条间歇性红灯倒推出真实语义缺口"的完整样本。
+> **状态更新（2026-09-06 晚 → 2026-09-07）**：下面描述的抖动**已经修掉**——先只改测试，
+> 见本节末「对后来人的三条实际影响」第 3 点。
+> **2026-09-07：第 2 点那个生产级竞态也已经关掉了**，`deregister()` 现在是
+> 「抑制新抽取 → 等完在飞的 → 冲刷审计队列 → 才清库」，机制与表格见
+> `ARCHITECTURE.md` §15。以下原始分析**全部保留**：它是"如何从一条间歇性红灯倒推出
+> 真实语义缺口"的完整样本，而且第 2 点的推理正是最终修法的依据。
 
 **实测（2026-09-06）：10 次全套件运行里 6 次红、4 次绿 —— 约 60% 失败率。**
 （其中一段连续 5 次是 3 绿 2 红；此后又连续 4 次全红。看不出规律，就是时序掷骰子。）
@@ -696,6 +698,7 @@ tests/test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the
    对"可审计的数据删除"这种承诺来说，这是实打实的缺口 —— 回执说删了 N 行，实际删了 N+1，
    或者反过来漏删。**这条与 #54（Run 地基 / append-only 事件日志）的"可回溯"目标直接相关**，
    建议一并考虑：注销应当与在飞的抽取任务互斥，或等它们收尾。
+   **→ 2026-09-07 已按"互斥 + 等收尾"两者都做的方式修掉，见下面第 3 点末尾。**
 3. **修法很便宜，而且已经修了**（2026-09-06 晚，只改测试、没碰产品代码）：
    新增 `TestDeregister._wait_usage_settled()`，在 `_counts()` 快照之前把在飞的抽取等干净。
    走的是上面说的"前者是正解"那条路，但实现上**不是**调 `MemoryService.drain()` ——
@@ -709,7 +712,15 @@ tests/test_server.py::TestDeregister::test_the_cascade_wipes_every_trace_and_the
    > 全套件已回到全绿、并且仓库已经 `git init` 并有了首个提交可回退。**这三条不满足时
    > 仍然应该只记录不动手。**
 
-   ⚠️ **再说一遍：修的是测试的确定性，不是第 2 点那个生产竞态。** 第 2 点仍然开着。
+   ✅ **2026-09-07 补：第 2 点那个生产竞态也已经关掉了。** `deregister()` 现在先
+   `memory.begin_erasure(uid)` 抑制新抽取，再 `drain(user_id=uid)` 等完在飞的，
+   再 `audit.flush()` 把队列里的审计行推过 drainer，**然后**才 `clear()` + `purge_user()`；
+   `end_erasure` 在 finally 里。抑制必须在 drain 之前，否则 drain 期间跑完的 run 还能再排一个。
+   完整性写进注销审计记录的 `erasure` 字段（`complete` / `drain_timeout` /
+   `audit_flush_timeout` / `drain+audit_timeout`），不动 `DeregisterOut` 契约。
+   两个端到端回归测试都做过变异验证（退回接线即以
+   `an in-flight extraction resurrected a fact` / `register and login must be counted as erased` 失败）。
+   机制表见 `ARCHITECTURE.md` §15。
 
 ### L12 · `.env` 里 `PI_METRICS_TOKEN` 被定义两次，空值那份赢了 ✅ **已于 2026-09-06 22:00 修复**
 
@@ -938,7 +949,7 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
 | `/readyz` | `{"status":"ready","checks":{"db":"ok","cache":"ok","memory":"ok"}}` |
 | `/metrics`（无 token） | **HTTP 404**，size 0 —— token 门禁生效（`.env.test` 那份是好的；生产那份坏在 **L12**） |
 | OTLP 采集器 | `127.0.0.1:4317` **有监听**（`.env.test` 的 `PI_TRACER=otel` 确实有对端） |
-| Python 套件 | 364 collected → **363 passed, 1 skipped**，25.3–25.5s，**74 warnings**。~~⚠️ flaky~~ **✅ 已修**：曾 10 次里 6 次红在同一条 `TestDeregister`；修后**本次独立复核连跑 6 次全部一致**，见 L11 |
+| Python 套件 | 375 collected → **374 passed, 1 skipped**，约 26.7s，**78 warnings**（2026-09-07 连跑 4 次一致）。~~⚠️ flaky~~ **✅ 已修**：曾 10 次里 6 次红在同一条 `TestDeregister`；测试侧修后独立复核连跑 6 次一致，**产品侧竞态也已于 09-07 关闭**（+10 例：4 擦除抑制 / 4 flush / 2 端到端回归），见 L11 |
 | `pytest integration/` | **4 tests collected**（需真实云基建，默认不跑） |
 | 前端套件 | **56 passed**（3 files），1.1s，连跑稳定；`npm run typecheck`（`vue-tsc --noEmit`）亦通过 |
 | venv | `.venv/bin/python` = Python 3.12.3；`aiomysql`/`pymysql`/`asyncpg`/`sqlalchemy` 均可用 |
@@ -1023,8 +1034,11 @@ curl -s -X POST http://127.0.0.1:8398/v1/auth/login \
   照 `_wait_audit_flushed` 的样子写了个 `_wait_usage_settled()`，等**静默**而非等固定行数；
   **没有**用放宽断言的方式把红灯关掉。本次独立复核：连跑 6 次全套件全部
   `363 passed, 1 skipped`，零抖动 ✅
-  ⚠️ **但注销语义那个真缺口仍然开着**：测试现在会等抽取收尾，产品代码里注销和在飞抽取
-  之间**依然没有互斥**。这一条与 #54（Run 地基 / 可回溯）同源，建议合并考虑。
+  ✅ **注销语义那个真缺口也已于 2026-09-07 关掉**：产品代码里注销现在与在飞抽取互斥
+  （`begin_erasure` 抑制 + 按用户 `drain`），并额外冲刷审计队列（`audit.flush()`），
+  两者都在 `purge_user()` 之前。与 #54（Run 地基 / 可回溯）**不再需要合并考虑**——
+  但 #54 落地后应当复查：如果 run 变成持久实体、抽取变成 system run，
+  这套"抑制 + 等"应当改为按 run 谱系裁决，而不是按用户 id 抑制。
 - **L12 的通用防线**（可选）：给 `.env` 加一个 CI/pre-commit 检查，
   `grep -E '^[A-Z_]+=' .env | cut -d= -f1 | sort | uniq -d` 有输出就报错。
   加载器"先到先得 + 空值也算设置"的语义不会变，所以这类遮蔽只能靠外部检查兜住。

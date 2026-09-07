@@ -43,6 +43,26 @@ def _daily_path(base: Path, day: str) -> Path:
     return base.with_name(f"{base.stem}-{day}{base.suffix}")
 
 
+class _FlushBarrier:
+    """Queued behind pending records; the drainer fires it in FIFO order.
+
+    A single queue is the ordering guarantee: whatever was enqueued before the
+    barrier is dequeued before it, so when the event is set every earlier record
+    has already been handed to MySQL. That is what makes "flush, then purge"
+    safe for erasure - without it, rows still in the queue land *after* the
+    DELETE and survive it.
+
+    Fired even when the insert failed: the promise is "no longer in flight", not
+    "committed". A failed batch is not in the table, so the purge cannot miss it,
+    and the JSONL mirror still holds it.
+    """
+
+    __slots__ = ("event",)
+
+    def __init__(self) -> None:
+        self.event = asyncio.Event()
+
+
 class AuditLogger:
     def __init__(self, path: Path | None = None):
         self.path = Path(path) if path else DEFAULT_AUDIT_PATH
@@ -80,7 +100,13 @@ class AuditLogger:
             pass
         leftover: list[dict[str, Any]] = []
         while queue is not None and not queue.empty():
-            leftover.append(queue.get_nowait())
+            item = queue.get_nowait()
+            if isinstance(item, _FlushBarrier):
+                # Nobody is going to dequeue it now, so fire it here or a caller
+                # parked in flush() waits out its timeout during shutdown.
+                item.event.set()
+            else:
+                leftover.append(item)
         if leftover:
             try:
                 await repo.append_many(leftover)
@@ -89,15 +115,60 @@ class AuditLogger:
                     "audit_events final flush failed for %d record(s)", len(leftover)
                 )
 
+    async def flush(self, timeout: float = 5.0) -> bool:
+        """Wait until every record queued before this call has reached MySQL.
+
+        Non-destructive, unlike close(): the drainer keeps running afterwards.
+        Erasure needs it - purge_user() deletes audit_events by actor, so a
+        record still sitting in the queue is inserted *after* the DELETE and
+        survives an erasure whose own receipt claimed to be complete. The
+        survivor carries IP and user agent, i.e. exactly the personal data the
+        erasure was for.
+
+        Returns False on timeout, which means "still unknown", not "nothing was
+        pending" - a caller treating erasure as a promise should surface it.
+        """
+        queue = self._db_queue
+        if queue is None:
+            return True  # no MySQL mirror attached, so nothing can be in flight
+        barrier = _FlushBarrier()
+        try:
+            # put() rather than put_nowait(): the barrier must sit *behind* the
+            # records already queued, and a full queue is precisely when there
+            # are the most of them.
+            await asyncio.wait_for(queue.put(barrier), timeout)
+            await asyncio.wait_for(barrier.event.wait(), timeout)
+        except TimeoutError:
+            log.warning("audit flush did not complete within %.1fs", timeout)
+            return False
+        return True
+
     async def _drain(self, repo: Any, queue: asyncio.Queue) -> None:
         while True:
-            batch = [await queue.get()]
-            while len(batch) < BATCH_MAX and not queue.empty():
-                batch.append(queue.get_nowait())
-            try:
-                await repo.append_many(batch)
-            except Exception:  # noqa: BLE001 - the mirror keeps the record
-                log.exception("audit_events insert failed for %d record(s)", len(batch))
+            item = await queue.get()
+            batch: list[dict[str, Any]] = []
+            barriers: list[_FlushBarrier] = []
+            while True:
+                if isinstance(item, _FlushBarrier):
+                    barriers.append(item)
+                else:
+                    batch.append(item)
+                if len(batch) >= BATCH_MAX or queue.empty():
+                    break
+                item = queue.get_nowait()
+            # A batch of nothing but barriers must not reach append_many: the
+            # failure-injection test counts calls, and an empty INSERT is a
+            # round trip for nothing.
+            if batch:
+                try:
+                    await repo.append_many(batch)
+                except Exception:  # noqa: BLE001 - the mirror keeps the record
+                    log.exception(
+                        "audit_events insert failed for %d record(s)", len(batch)
+                    )
+            # Fired after the insert either way - see _FlushBarrier.
+            for barrier in barriers:
+                barrier.event.set()
 
     def _write(self, record: dict[str, Any]) -> None:
         record = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **record}
@@ -217,21 +288,29 @@ class AuditLogger:
         ok: bool,
         user_agent: str = "",
         reason: str = "",
+        erasure: str = "",
     ) -> None:
         """Register/login attempts; ip is the real client only if PI_FORWARDED_ALLOW_IPS covers the proxy.
 
         Every field is truncated: the failed-login path is attacker-controlled and
         LoginIn.username has no length bound, so an unbounded write here would
         let one request fill the audit volume.
+
+        `erasure` is deregistration-only: whether the account's background writers
+        had settled before the purge ("complete", or which wait gave up). Emitted
+        only when non-empty - a key that is always "" on register/login is noise
+        in every query over the table, and payload is stored verbatim so adding
+        it needs no migration and changes no admin-endpoint shape.
         """
-        self._write(
-            {
-                "event": "auth",
-                "action": action[:16],
-                "username": username[:64],
-                "ip": ip[:45],  # longest possible IPv6 literal
-                "ua": user_agent[:200],
-                "ok": ok,
-                "reason": reason[:32],
-            }
-        )
+        record = {
+            "event": "auth",
+            "action": action[:16],
+            "username": username[:64],
+            "ip": ip[:45],  # longest possible IPv6 literal
+            "ua": user_agent[:200],
+            "ok": ok,
+            "reason": reason[:32],
+        }
+        if erasure:
+            record["erasure"] = erasure[:32]
+        self._write(record)

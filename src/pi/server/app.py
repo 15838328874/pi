@@ -1090,12 +1090,32 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             if u.is_admin and u.is_active and u.id != user.id
         ]:
             raise HTTPException(status_code=400, detail="cannot delete the last admin")
-        # Memory first: clear() counts the repo rows it drops, and purge_user()
-        # would take them away before anything could report them. clear() also
-        # unconditionally drops the vector mirror - NoOpStore makes that free.
-        memories = await memory.clear(user.id)
-        purged = await purge_user(db.engine, user.id)
-        purged["memories"] += memories
+        # Erasure has to be terminal: nothing may write this user's rows after
+        # purge_user() deletes them, or the data comes back and the receipt lies
+        # about having removed it. Two background writers can. Memory extraction
+        # is fire-and-forget and writes user_memories plus a turns=0
+        # usage_records row; the audit drainer holds records in a bounded queue
+        # and writes audit_events, which carry IP and user agent - exactly the
+        # personal data this erasure is about.
+        #
+        # begin_erasure() before drain(), not after: the reverse leaves a window
+        # where a run finishing mid-drain queues one more extraction that lands
+        # after the DELETE. Suppression is what makes the drain terminal instead
+        # of merely narrowing the race.
+        memory.begin_erasure(user.id)
+        try:
+            drained = await memory.drain(user_id=user.id)
+            flushed = await audit.flush()
+            # Memory first: clear() counts the repo rows it drops, and purge_user()
+            # would take them away before anything could report them. clear() also
+            # unconditionally drops the vector mirror - NoOpStore makes that free.
+            memories = await memory.clear(user.id)
+            purged = await purge_user(db.engine, user.id)
+            purged["memories"] += memories
+        finally:
+            # Even when the purge raised: a failed erasure leaves the account
+            # alive and entitled to memory like any other.
+            memory.end_erasure(user.id)
         # The workspace holds user-written files, not database rows: it is erased
         # even when every count above is zero. rmtree can walk many files, so it
         # runs off the event loop.
@@ -1109,7 +1129,23 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             settings.token_ttl_minutes * 60 + 60,
             str(time.time()),
         )
-        audit.auth(action="deregister", username=username, ip=ip, user_agent=ua, ok=True)
+        # Written after purge_user() on purpose, so the receipt itself survives
+        # the erasure it records. The completeness of that erasure goes in the
+        # audit row rather than the response body: DeregisterOut is part of the
+        # OpenAPI contract the frontend is generated from, and a field that says
+        # "complete" all but never would be a permanent codegen round trip for a
+        # rare diagnostic - whereas an incomplete erasure is exactly what an
+        # auditor needs to be able to find later.
+        waits = [n for n, ok in (("drain", drained), ("audit", flushed)) if not ok]
+        audit.auth(
+            action="deregister", username=username, ip=ip, user_agent=ua, ok=True,
+            erasure="complete" if not waits else "+".join(waits) + "_timeout",
+        )
+        if waits:
+            log.error(
+                "deregistration of %r erased with unsettled background writers: %s",
+                username, ", ".join(waits),
+            )
         return {"username": username, "deleted": True, "purged": purged}
 
     @app.get("/v1/sessions", responses=UNAUTHORIZED)

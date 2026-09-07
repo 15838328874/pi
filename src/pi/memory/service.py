@@ -120,6 +120,16 @@ class MemoryService:
         self._inject_max_chars = max(200, int(inject_max_chars))
         self._sem = asyncio.Semaphore(max(1, int(extract_concurrency)))
         self._tasks: set[asyncio.Task[None]] = set()
+        # task -> user_id, so drain() can wait for one user's extractions without
+        # making that user's erasure latency depend on everyone else's traffic.
+        # Kept beside _tasks rather than as a dict of sets: one structure to add
+        # to, one callback to clean up, and no empty-set churn per user.
+        self._task_users: dict[asyncio.Task[None], int] = {}
+        # Users being erased right now. spawn_extraction refuses them, which is
+        # what makes "drain, then purge" actually terminal instead of a race we
+        # merely narrowed. Bounded by concurrent deregistrations, and every entry
+        # is removed in the caller's finally.
+        self._erasing: set[int] = set()
         # Empty = arbitration off. A separate model from extraction on purpose:
         # extraction is every-run and cheap (flash tier), arbitration is rare and
         # needs judgment (plus tier). See PI_MEMORY_ARBITER_MODEL in .env.
@@ -219,19 +229,48 @@ class MemoryService:
             except Exception:  # noqa: BLE001 - shutdown must not raise
                 log.debug("memory reranker close failed", exc_info=True)
 
-    async def drain(self, timeout: float = 10.0) -> None:
-        """Wait for in-flight background extractions. Called from lifespan shutdown.
+    async def drain(self, timeout: float = 10.0, user_id: int | None = None) -> bool:
+        """Wait for in-flight background extractions. Called from lifespan shutdown
+        (all users) and before erasing one account (`user_id=`, see begin_erasure).
 
         Fire-and-forget tasks that outlive the process lose their facts and, worse,
         lose their metering - so shutdown gives them a bounded window to finish.
+
+        Returns False if the window expired with tasks still running. Callers that
+        treat the result as a promise - erasure does - need to tell "settled" from
+        "gave up", and close() at shutdown simply ignores it.
         """
-        pending = [t for t in self._tasks if not t.done()]
+        if user_id is None:
+            pending = [t for t in self._tasks if not t.done()]
+        else:
+            uid = int(user_id)
+            pending = [
+                t for t, owner in self._task_users.items() if owner == uid and not t.done()
+            ]
         if not pending:
-            return
+            return True
         try:
             await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout)
         except TimeoutError:
             log.warning("draining %d memory extraction task(s) timed out", len(pending))
+            return False
+        return True
+
+    def begin_erasure(self, user_id: int) -> None:
+        """Refuse new extractions for this user. Pair with end_erasure in a finally.
+
+        Order matters at the call site: begin_erasure *before* drain(). The other
+        way round leaves a window where a run finishing mid-drain queues an
+        extraction that writes user_memories and a turns=0 usage_records row after
+        the purge already deleted them - resurrecting personal data the receipt
+        claimed was gone.
+        """
+        self._erasing.add(int(user_id))
+
+    def end_erasure(self, user_id: int) -> None:
+        """Lift the refusal. Must run even when the purge raised: a failed erasure
+        leaves the account alive and entitled to memory like any other."""
+        self._erasing.discard(int(user_id))
 
     def _index_open(self) -> bool:
         """True while the breaker says the index is down. Expires itself."""
@@ -611,6 +650,13 @@ class MemoryService:
         """
         if not self._ready:
             return False
+        if int(user_id) in self._erasing:
+            # The account is being erased. Anything queued now would write
+            # user_memories and a turns=0 usage_records row *after* purge_user()
+            # deleted them, so the data comes back and the receipt lies. Refusing
+            # is correct, not a lost fact: there is no user left to remember it.
+            log.info("skipping memory extraction for user %d: erasure in progress", user_id)
+            return False
         if transcript_chars(messages) < self._extract_min_chars:
             return False
         # Snapshot the messages: the caller's buffer keeps growing is not true here
@@ -628,8 +674,13 @@ class MemoryService:
         # Keep a reference: asyncio only holds weak ones, and a task garbage-collected
         # mid-flight is cancelled silently.
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        self._task_users[task] = int(user_id)
+        task.add_done_callback(self._forget_task)
         return True
+
+    def _forget_task(self, task: "asyncio.Task[None]") -> None:
+        self._tasks.discard(task)
+        self._task_users.pop(task, None)
 
     async def _extract_guarded(
         self,

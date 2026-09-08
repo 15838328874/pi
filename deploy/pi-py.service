@@ -1,0 +1,42 @@
+[Unit]
+Description=pi-py coding agent service (production)
+Documentation=file:///root/pi/pi-python/ARCHITECTURE.md
+Documentation=file:///root/pi/pi-python/deploy/cloud-deploy.md
+# Wants, not Requires: PI_SANDBOX=docker is fail-closed per command, so a docker
+# restart should degrade tool execution and report it, not take the API down.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Not cosmetic. pi/__init__.py::_load_env_file() resolves .env against the
+# working directory, so without this the service starts with no database URL and
+# refuses to boot - or worse, picks up ~/.pi-py/.env instead.
+WorkingDirectory=/root/pi/pi-python
+ExecStart=/root/pi/pi-python/.venv/bin/pi-py serve --host 0.0.0.0 --port 8300
+
+Restart=always
+RestartSec=3
+
+# Shutdown is not instantaneous: lifespan close() drains in-flight memory
+# extractions (they meter their own spend, so losing them loses billing) and the
+# audit drainer flushes its queue. Default 90s is fine; the point is that
+# SIGKILL after a short timeout would drop both.
+TimeoutStopSec=30
+KillSignal=SIGTERM
+
+# SSE holds one connection open per streaming run, and the sandbox pool holds a
+# Docker connection per warm container. The 1024 default is easy to reach.
+LimitNOFILE=65536
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pi-py
+
+# Runs as root: the sandbox talks to /var/run/docker.sock and the workspaces and
+# .venv are root-owned. Tightening this means a dedicated user in the docker
+# group plus chown of PI_WORKSPACE_ROOT - tracked as a hardening item, not done
+# silently here.
+
+[Install]
+WantedBy=multi-user.target

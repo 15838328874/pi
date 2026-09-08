@@ -97,12 +97,63 @@ vi .env    # 填 MYSQL_HOST / MYSQL_PASSWORD / REDIS_HOST / REDIS_PASSWORD / PI_
 
 ### 2.3 构建并启动
 
+**当前生产实际走的是下面的「路径 B：裸机 + systemd」**（2026-09-08 起）。
+路径 A 的 compose 仍然可用，但需要先按 §2.2 的警告给 `.env` 补出分立的密码变量。
+
+#### 路径 A：docker compose
+
 ```bash
 docker compose -f docker-compose.cloud.yml up -d --build
 ```
 
-compose 会先跑 `migrate` 一次性容器（把 alembic 版本推进到 head，当前云端已是 0002，
-所以是幂等空跑），成功后（`service_completed_successfully`）才启动 `app`。
+compose 会先跑 `migrate` 一次性容器（把 alembic 版本推进到 head；**云端现在已是
+`0007_trace_fidelity`**，所以是幂等空跑），成功后（`service_completed_successfully`）
+才启动 `app`。
+
+#### 路径 B：裸机 + systemd（当前生产）
+
+unit 文件入库在 **`deploy/pi-py.service`**，装法：
+
+```bash
+cp deploy/pi-py.service /etc/systemd/system/pi-py.service
+systemctl daemon-reload
+systemctl enable --now pi-py.service      # 开机自启 + 立即启动
+systemctl status pi-py --no-pager
+journalctl -u pi-py -f                    # 跟日志
+```
+
+三个不能省的细节，unit 里都有注释说明：
+
+- **`WorkingDirectory` 必须是仓库根**。`pi/__init__.py::_load_env_file()` 是按 **cwd**
+  找 `.env` 的，不设的话服务要么因为拿不到 `PI_DATABASE_URL` 拒绝启动，
+  要么更糟——捡到 `~/.pi-py/.env` 连到别的环境去。
+- **`TimeoutStopSec=30`**。关停不是瞬时的：lifespan 的 `close()` 要 drain 在飞的记忆抽取
+  （它们自己记账，丢了就丢账），审计 drainer 也要冲刷队列。超时后 SIGKILL 会把两者都丢掉。
+- **`LimitNOFILE=65536`**。每个流式 run 占一条长连接，沙箱池每个温容器占一条 Docker 连接，
+  默认 1024 很容易顶到。
+
+依赖用 `Wants=docker.service` 而**不是** `Requires=`：`PI_SANDBOX=docker` 是
+**按命令 fail-closed** 的，所以 docker 重启应该让工具执行降级并报错，
+而不是把整个 API 一起拖下线。
+
+⚠️ unit 以 **root** 运行（沙箱要访问 `/var/run/docker.sock`，且 `.venv` 与 workspace
+都是 root 所有）。收紧它意味着建专用用户 + 加 docker 组 + `chown` `PI_WORKSPACE_ROOT`，
+属于加固项，**没有在这里悄悄做**。
+
+启动后验证（2026-09-08 实测，约 9s 就绪，Milvus 建集合占了大头）：
+
+```bash
+curl -s http://127.0.0.1:8300/healthz    # {"status":"ok"}
+curl -s http://127.0.0.1:8300/readyz     # db / cache / memory 三项都应 ok
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8300/          # 200，前端同源托管
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8300/v1/me     # 401，鉴权门在
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8300/metrics   # 404，token 门禁
+```
+
+`Database.init()` 内部是 `create_all`，schema 已在 head 时它是空跑——但**这正是 L1
+当初炸掉的原因**，所以每次启动后都该复核 `alembic_version` 与表数没变，
+见 `deploy/environments.md` L1。（2026-09-08 这次启动后复核过：仍 `0007_trace_fidelity`、
+9 张表、`users` 仍 1 行，`create_all` 确实是空跑。）
 
 ### 2.4 验证清单
 

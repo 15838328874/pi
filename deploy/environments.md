@@ -889,6 +889,44 @@ conftest 的钉死清单是一份**手工维护的白名单**，而 `.env` 是�
 
 ---
 
+### L15 · 启动日志把 Redis 密码和 Milvus URI 明文写进 journal ⚠️ 新发现，未修
+
+> **本文档入库且已推到公开仓库，所以这一条只描述位置与形状，绝不复制任何真实值。**
+> 要看现场就 `journalctl -u pi-py | grep -i 'backend configured\|memory store configured'`
+> ——**在你自己的机器上看，别贴进任何会被提交或分享的地方。**
+
+**两处 `log.info` 直接把完整连接串打出来：**
+
+| 位置 | 打了什么 | 敏感部分 |
+|---|---|---|
+| `src/pi/server/cache.py:147` | `redis backend configured: <完整 PI_REDIS_URL> (ns=…)` | URL 的 userinfo 段含**明文密码** |
+| `src/pi/memory/store.py:445` | `milvus memory store configured: <完整 PI_MILVUS_URI> (ns=…, dim=…)` | serverless 的主机名里嵌着**类似 API key 的 token 段** |
+
+两者都在**启动路径**上，所以每次起服务都会重打一遍。
+
+**暴露面**：`/var/log/journal` 存在 → journal **持久化到磁盘**，重启后仍在。
+权限 `drwxr-sr-x+ root:systemd-journal`，不是全局可读，但 `systemd-journal`（gid 999）
+和 `adm`（成员含 `syslog`）两个组能读，而且任何拿到 root 的人都能读。
+
+**为什么这条特别刺眼**：本项目在**出站方向**对密钥做了层层脱敏——
+`security/redact.py::redact_text()` 覆盖云/LLM API key、`key=value` 形式密钥、身份证、
+手机号、内网 IPv4，发给模型之前一律替换成 `[REDACTED:…]`；`ARCHITECTURE` §9.3 也明写
+"绝不记录密码"。**但启动日志绕过了这套机制**，因为它打的是配置本身而不是用户数据。
+脱敏守住了"数据出去"的方向，没守住"配置落盘"的方向。
+
+**建议修法**（未执行，因为要改产品代码并重启生产）：这两行不要打完整 URL，
+改为打**去掉 userinfo 的形状**，例如 host + port + db + ns；
+或者直接复用 `redact_text()`。后者更省事但依赖它的正则确实覆盖 `redis://user:pass@host`
+这种形状——**用之前必须先验证，别假定**。配套加一个测试：起一次 app，
+断言捕获日志里不出现 `.env` 中任何长度 ≥8 的秘密值。
+
+**已经泄露的那份要不要轮换**：属于 #42（密钥轮换），是用户运维范畴。
+判断依据是"谁能读到这台机器的 journal"——如果只有你自己，风险是低的；
+如果这台机器还有别的登录者、或者日志会被采集外发，就该轮换。
+轮换 Redis 密码要同时改 `.env` 的 `PI_REDIS_URL` 并重启服务。
+
+---
+
 ## 5. 测试环境账号现状（2026-09-06 22:10 复核）
 
 `pi_py_test.users`，7 行。密码哈希均为 `pbkdf2$200000$<32 hex salt>$<64 hex digest>`（111 字符），

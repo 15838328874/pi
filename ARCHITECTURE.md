@@ -1111,6 +1111,53 @@ python -m pytest -q     # 131 passed, 1 skipped —— 全本地，不需要网�
     不从 `.env` 插值，所以裸跑那条绝对路径不会漏进容器。两个 compose 挂载的
     `./policy.json` 就是仓库根那一份（§17.18）。
 
+23. **压测的 prompt 必须 trivial，真实模型会把歧义 prompt 当成编程任务**：第一次真实
+    模型压测（prompt="load test round"）平均 214s、p95 600s——模型把它理解成"写压测
+    脚本"，反复用 `/ws/*`、`/tmp/*` 容器绝对路径调 write，被路径沙箱拒了 25 次还在
+    换变体重试，最后烧满 run 超时。三条教训一起生效才修好：**(a)** 压测/自动化脚本的
+    prompt 要写成 "Reply with exactly: OK" 这类无歧义任务（测服务不测模型行为）；
+    **(b)** 拒绝消息必须可操作——只说 "escapes the sandbox" 模型会盲试,加上
+    workspace 根 + "use a relative path" 它才有机会恢复；**(c)** 连续拒绝熔断是必要
+    的止损:AgentLoop 连续 5 次 policy 拒绝即中止（`MAX_CONSECUTIVE_DENIALS`）。修后
+    复验:8 并发 avg 3.8s。注意:只有**真实注册**的工具调用才进入拒绝计数——未知工具
+    在 policy 之前就报错,不触发熔断（测试里 tools=[] 会静默绕过,踩过）。
+
+24. **指标里的"失败"要先定性再看数**:压测时 `pi_tool_calls_total{ok=False}` 出现
+    12 个 write"失败",审计日志里却 0 个失败——那 12 个是 **policy 拒绝**(审计里
+    `allowed=False, ok=None`,没有 result_preview)。metrics 的 ok=False 覆盖三类:
+    真崩溃、工具自报错、政策拒绝。查数时要 join 审计的 `(allowed, ok)` 两个字段,别
+    直接下"工具坏了"的结论。这也是"每族指标一个记录点"设计的必然结果:tool 指标来自
+    trajectory(含 denied),而审计是脱敏投影——两边口径不同。
+
+25. **代理环境变量有三个门,每个门修法不同**:同一台机器上死掉的本地代理
+    (`HTTP_PROXY=http://127.0.0.1:7890` + socks5)从三个地方漏进过进程——
+    **(a)** httpx 直连(embedding client)→ `trust_env=False`;
+    **(b)** gRPC(pymilvus)→ `grpc_options=[("grpc.enable_http_proxy", 0)]`;
+    **(c)** OpenAI/Anthropic SDK → 自建 `http_client=httpx.AsyncClient(trust_env=False)`
+    传进 SDK。漏了 (c) 的现场:每次模型调用都 `ImportError: Using SOCKS proxy, but
+    the 'socksio' package is not installed`,SSE 流全断,服务端日志只有 CancelledError。
+    诊断线索:客户端 ReadError + 服务端只有 CancelledError = **客户端先断**。另注意本
+    环境 anthropic SDK 是 **httpx2** 分支——http_client 要用 SDK 实际 import 的那个
+    httpx 构建,否则 `Invalid http_client argument`。服务端和压测客户端**两侧**都要
+    剥代理 env(`env -u http_proxy -u all_proxy ...`)。
+
+26. **压测客户端的超时要盖住"排队 + 执行"**:20 并发压 8 槽信号量,队列里的请求
+    等待+执行很容易超过默认 120s 客户端超时 → ReadError → 压测脚本崩溃(老版本没有
+    单请求容错)。`tools/loadtest.py` 已加 `--timeout` 参数(真实模型给 300+)和单请求
+    错误容忍(status 0 计数不崩)。真实模型吞吐压测的预算要按
+    "队列深度 / 并发槽 × 单 run 时长"算,不是按单 run 时长算。
+
+27. **prometheus_client 0.26 的注册名剥 `_total`**:`Counter("pi_llm_calls_total")`
+    在 registry 里注册名是 `pi_llm_calls`(导出时才加回 `_total`),测试里按全名匹配
+    `metric.name` 会匹配不到——`m.name == name or m.name + "_total" == name`。Histogram
+    的样本名还有 `_bucket/_count/_sum/_created` 后缀,断言时别一起捞。
+
+28. **`asyncio.timeout` 落在 loop 内 try 时,超时以 ErrorEvent 出现**:loop 自己
+    catch `TimeoutError`(Exception 子类)→ 记 RunError → yield ErrorEvent("TimeoutError:
+    ...")→ 照常 TurnEndEvent;runner 的 `except TimeoutError` 只在超时落在 compaction
+    阶段才触发。所以 run 状态判定不能只看 runner 的 except——要看 ErrorEvent 消息里
+    有没有 "TimeoutError"(`run_status` 启发式),并且这两种路径**都**要计 status。
+
 ---
 
 ## 附录：一次 run 的时序（文字版）

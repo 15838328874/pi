@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import time
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -35,6 +35,9 @@ class RunStarted:
     cwd: str
     tools: list[str]
     prompt: str
+    # wall clock at event creation; the loop passes the START of each LlmCall/
+    # ToolCall explicitly so timeline "time" mode shows true wall-clock gaps
+    ts: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -49,6 +52,7 @@ class LlmCall:
     latency_ms: int
     text: str  # aggregated assistant text for this turn
     tool_calls: list[dict]  # [{id, name, arguments(raw json string)}]
+    ts: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -62,6 +66,7 @@ class ToolCall:
     is_error: bool
     denied: bool  # rejected by the security policy
     latency_ms: int
+    ts: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -69,11 +74,13 @@ class Compaction:
     dropped: int
     chars_before: int
     chars_after: int
+    ts: float = field(default_factory=time.time)
 
 
 @dataclass
 class RunError:
     message: str
+    ts: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -82,6 +89,7 @@ class RunFinished:
     output_tokens: int
     turns: int
     latency_ms: int
+    ts: float = field(default_factory=time.time)
 
 
 class Trajectory:

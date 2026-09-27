@@ -34,6 +34,7 @@ from pi.security.audit import AuditLogger
 from pi.security.policy import Policy, load_policy
 from pi.server.cache import CacheBackend, MemoryBackend
 from pi.server.db import MemoryRepo, MessageRepo, SessionRow
+from pi.server.trajectory_store import append_trajectory
 from pi.tools.registry import ToolRegistry
 from pi.tools.sandbox import get_runner
 
@@ -70,6 +71,7 @@ class RunManager:
         sandbox_image: str = "python:3.12-slim",
         registry: ToolRegistry | None = None,
         metrics: Metrics | None = None,
+        trajectory_path: Path | None = None,
     ):
         self.policy = policy
         self.audit = audit
@@ -82,6 +84,7 @@ class RunManager:
         self.sandbox_network = False
         self.registry = registry or ToolRegistry()  # builtin-only when unset
         self.metrics = metrics or Metrics(enabled=False)
+        self.trajectory_path = trajectory_path
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def run_turn(
@@ -299,6 +302,20 @@ class RunManager:
                         )
                     except Exception:  # noqa: BLE001 - metering must never fail a run
                         logging.getLogger("pi.server").exception("usage recording failed")
+
+                # Trajectory persistence (TRAJECTORY_VIEW_DESIGN P0): the run is
+                # already over, so a failed write is logged, never re-raised.
+                # Raw values by design - the viewer endpoint enforces ownership.
+                if self.trajectory_path is not None:
+                    traj = getattr(agent, "trajectory", None)
+                    if traj is not None:
+                        try:
+                            record = traj.to_dict()
+                            record["session_id"] = session.id
+                            record["user_id"] = user_id
+                            append_trajectory(self.trajectory_path, record)
+                        except Exception:  # noqa: BLE001 - persistence must never fail a run
+                            logging.getLogger("pi.server").exception("trajectory save failed")
         finally:
             await self.cache.release_lock(lock_key)
 

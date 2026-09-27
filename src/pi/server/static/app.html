@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-py · 编码智能体</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --border: #e5e7eb;
+    --text: #111827; --muted: #6b7280;
+    --model: #7c3aed; --tool: #ea580c;
+    --error: #dc2626; --ok: #16a34a;
+    --user: #2563eb; --sel: rgba(124, 58, 237, .08);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #171a21; --border: #2a2f3a;
+      --text: #e5e7eb; --muted: #9ca3af;
+      --model: #a78bfa; --tool: #fb923c;
+      --error: #f87171; --ok: #4ade80;
+      --user: #60a5fa; --sel: rgba(167, 139, 250, .10);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  button {
+    padding: 7px 14px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  button.primary { background: var(--model); border-color: var(--model); color: #fff; }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input, textarea {
+    padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font: inherit;
+  }
+
+  /* ---- login ---- */
+  #view-login { max-width: 380px; margin: 12vh auto 0; padding: 0 16px; }
+  .login-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px;
+    padding: 24px;
+  }
+  .login-card h1 { font-size: 20px; margin: 0 0 16px; }
+  .login-card .tabs { display: flex; gap: 4px; margin-bottom: 14px; }
+  .login-card .tabs button { flex: 1; background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; }
+  .login-card .tabs button.on { border-bottom-color: var(--model); color: var(--model); }
+  .login-card label { display: block; margin: 10px 0 4px; color: var(--muted); font-size: 12px; }
+  .login-card input { width: 100%; }
+  .login-card .go { width: 100%; margin-top: 16px; }
+  .login-card .msg { color: var(--error); margin-top: 10px; min-height: 18px; font-size: 13px; }
+
+  /* ---- app shell ---- */
+  #view-app { display: none; flex-direction: column; height: 100vh; }
+  #view-app.on { display: flex; }
+  header {
+    display: flex; align-items: center; gap: 12px; padding: 10px 16px;
+    background: var(--card); border-bottom: 1px solid var(--border);
+  }
+  header .brand { font-weight: 600; }
+  header .spacer { flex: 1; }
+  #usageChip {
+    display: flex; align-items: center; gap: 8px; font-size: 13px;
+  }
+  #usageChip .bar { width: 110px; height: 7px; border-radius: 4px; background: var(--border); overflow: hidden; }
+  #usageChip .bar i { display: block; height: 100%; background: var(--ok); }
+  #usageChip .bar i.hot { background: var(--error); }
+  #usagePanel {
+    position: absolute; right: 150px; top: 48px; width: 380px; z-index: 30;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; box-shadow: 0 10px 30px rgba(0,0,0,.15); display: none;
+  }
+  #usagePanel.on { display: block; }
+  #usagePanel h3 { margin: 0 0 8px; font-size: 14px; }
+  #usagePanel table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  #usagePanel th, #usagePanel td { text-align: right; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+  #usagePanel th:first-child, #usagePanel td:first-child { text-align: left; }
+  #usagePanel .muted { color: var(--muted); font-size: 12px; }
+
+  .layout { flex: 1; display: flex; min-height: 0; }
+  aside {
+    width: 250px; flex: none; border-right: 1px solid var(--border);
+    background: var(--card); display: flex; flex-direction: column; min-height: 0;
+  }
+  .side-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; }
+  .side-head b { flex: 1; font-size: 13px; }
+  #newTitle { flex: 1; display: none; font-size: 13px; padding: 5px 8px; }
+  #sessionList { flex: 1; overflow-y: auto; }
+  .sess {
+    padding: 9px 12px; cursor: pointer; border-left: 3px solid transparent;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .sess:hover { background: var(--sel); }
+  .sess.on { border-left-color: var(--model); background: var(--sel); }
+  .sess .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sess .d { font-size: 11px; color: var(--muted); flex: none; }
+  .sess .x {
+    flex: none; visibility: hidden; border: none; background: transparent;
+    color: var(--muted); padding: 2px 6px; font-size: 14px;
+  }
+  .sess:hover .x { visibility: visible; }
+  .sess .x:hover { color: var(--error); }
+
+  .chat { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .chat-head {
+    display: flex; align-items: center; gap: 10px; padding: 10px 16px;
+    border-bottom: 1px solid var(--border); background: var(--card);
+  }
+  .chat-head b { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #messages { flex: 1; overflow-y: auto; padding: 14px 16px 20px; }
+
+  /* ---- 消息区：头像 + 固定宽度内容列（避免气泡长短不一）---- */
+  .msg { display: flex; gap: 10px; padding: 8px 16px; align-items: flex-start; }
+  .msg:hover { background: color-mix(in srgb, var(--text) 2%, transparent); }
+  /* 聊天左右分侧：助手/工具靠左，用户靠右（头像在文本右侧） */
+  .msg.assistant, .msg.tool { flex-direction: row; }
+  .msg.user { flex-direction: row-reverse; }
+  .msg.user .name { text-align: right; }
+  /* 气泡随内容收缩（不拉伸成整列），上限 72ch；短文本贴着头像 */
+  .msg-body { min-width: 0; max-width: min(72ch, calc(100% - 60px)); }
+  .msg.tool .msg-body { flex: 1 1 auto; }  /* 工具卡保持等宽 */
+  .bubble {
+    display: inline-block; padding: 8px 12px; border-radius: 12px;
+    border: 1px solid var(--border); overflow-wrap: anywhere;
+  }
+  .msg.assistant .bubble {
+    background: color-mix(in srgb, var(--text) 4%, var(--card));
+    border-bottom-left-radius: 4px;
+  }
+  .msg.user .bubble {
+    background: color-mix(in srgb, var(--user) 10%, var(--card));
+    border-color: color-mix(in srgb, var(--user) 25%, transparent);
+    border-bottom-right-radius: 4px;
+  }
+  .msg .avatar {
+    width: 30px; height: 30px; border-radius: 8px; flex: none; margin-top: 1px;
+    display: flex; align-items: center; justify-content: center; font-size: 15px;
+  }
+  .msg.user .avatar { background: color-mix(in srgb, var(--user) 14%, transparent); }
+  .msg.assistant .avatar { background: color-mix(in srgb, var(--model) 14%, transparent); }
+  .msg.tool .avatar { background: color-mix(in srgb, var(--tool) 14%, transparent); }
+  .msg .name { font-size: 12px; color: var(--muted); font-weight: 500; margin-bottom: 3px; }
+  .msg .text { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65; }
+  .msg.compact { justify-content: center; padding: 6px 16px; }
+  .msg.compact .pill {
+    color: var(--muted); font-size: 12px; border: 1px dashed var(--border);
+    border-radius: 10px; padding: 2px 10px;
+  }
+  /* 工具卡：固定结构、单行摘要、默认折叠 */
+  .tool-card {
+    margin: 6px 0 0; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--card);
+  }
+  .tool-card summary {
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px;
+    cursor: pointer; list-style: none;
+  }
+  .tool-card summary::-webkit-details-marker { display: none; }
+  .tool-card .t-chev { color: var(--muted); font-size: 11px; transition: transform .15s; }
+  .tool-card[open] .t-chev { transform: rotate(90deg); }
+  .tool-card .t-name { font-family: var(--mono); font-weight: 600; font-size: 13px; color: var(--tool); }
+  .tool-card .t-args {
+    flex: 1; color: var(--muted); font-family: var(--mono); font-size: 12px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .tool-card .t-badge { flex: none; font-size: 11px; padding: 1px 8px; border-radius: 10px; }
+  .tool-card .t-badge.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .tool-card .t-badge.err { background: color-mix(in srgb, var(--error) 15%, transparent); color: var(--error); }
+  .tool-card .t-badge.run { background: color-mix(in srgb, var(--tool) 15%, transparent); color: var(--tool); }
+  .tool-card .tool-result { padding: 0 10px 10px; }
+  .tool-card .tool-result .who { color: var(--muted); font-size: 12px; margin: 8px 0 2px; }
+  .tool-card .tool-result .err .who { color: var(--error); }
+  .tool-card .tool-result pre {
+    margin: 6px 0 0; padding: 8px; border-radius: 6px; background: var(--bg);
+    font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+    overflow-wrap: anywhere; max-height: 260px; overflow: auto;
+  }
+  .meta { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 4px; }
+  .blink::after { content: "▍"; animation: blink 1s step-start infinite; color: var(--model); }
+  @keyframes blink { 50% { opacity: 0; } }
+  .spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--border); border-top-color: var(--tool); border-radius: 50%; animation: rot .8s linear infinite; }
+  @keyframes rot { to { transform: rotate(360deg); } }
+  #banner { padding: 10px 16px; background: color-mix(in srgb, var(--error) 12%, transparent); color: var(--error); }
+  .empty { color: var(--muted); text-align: center; padding: 60px 0; }
+
+  .inputbar { display: flex; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--card); }
+  .inputbar textarea { flex: 1; resize: none; max-height: 120px; }
+  @media (max-width: 800px) {
+    aside { width: 180px; }
+    #usagePanel { right: 12px; width: min(380px, calc(100vw - 24px)); }
+  }
+</style>
+</head>
+<body>
+
+<!-- ===================== 登录 / 注册 ===================== -->
+<div id="view-login">
+  <div class="login-card">
+    <h1>pi-py 编码智能体</h1>
+    <div class="tabs">
+      <button id="tabLogin" class="on">登录</button>
+      <button id="tabRegister">注册</button>
+    </div>
+    <label for="fUser">用户名</label>
+    <input id="fUser" autocomplete="username">
+    <label for="fPass">密码</label>
+    <input id="fPass" type="password" autocomplete="current-password">
+    <button class="primary go" id="fGo">登录</button>
+    <div class="msg" id="fMsg"></div>
+  </div>
+</div>
+
+<!-- ===================== 主界面 ===================== -->
+<div id="view-app">
+  <header>
+    <span class="brand">pi-py</span>
+    <button id="usageChip" title="本月用量">
+      <span id="usagePct">–</span>
+      <span class="bar"><i id="usageFill"></i></span>
+    </button>
+    <div class="spacer"></div>
+    <span id="whoami" style="color:var(--muted)"></span>
+    <button id="logout">退出</button>
+  </header>
+  <div id="usagePanel">
+    <h3>本月用量</h3>
+    <div id="usageBody"></div>
+  </div>
+
+  <div class="layout">
+    <aside>
+      <div class="side-head">
+        <b>会话</b>
+        <input id="newTitle" placeholder="会话标题，回车创建">
+        <button id="newBtn">＋</button>
+      </div>
+      <div id="sessionList"></div>
+    </aside>
+
+    <div class="chat">
+      <div class="chat-head">
+        <b id="chatTitle">（未选择会话）</b>
+        <span class="meta" id="chatModel"></span>
+        <button id="openTraj" title="用轨迹视图查看最近一次 run 的时序">查看轨迹</button>
+      </div>
+      <div id="banner" style="display:none"></div>
+      <div id="messages">
+        <div class="empty">登录后选择一个会话，或新建一个开始对话</div>
+      </div>
+      <div class="inputbar">
+        <textarea id="prompt" rows="2" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
+        <button class="primary" id="send">发送</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtNum = (n) => Number(n || 0).toLocaleString();
+const fmtCost = (c) => "$" + Number(c || 0).toFixed(4);
+
+let token = localStorage.getItem("pi_token") || "";
+let username = localStorage.getItem("pi_username") || "";
+let sessions = [];
+let sid = null;        // current session id
+let streaming = false;
+
+// ---- API 封装：统一带 token，401 时退回登录 -------------------------------
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ Authorization: `Bearer ${token}` }, opts.headers || {});
+  const resp = await fetch(path, opts);
+  if (resp.status === 401) { logout(false); throw new Error("未登录或登录已过期，请重新登录"); }
+  return resp;
+}
+async function apiJson(path, opts = {}) {
+  const resp = await api(path, opts);
+  if (!resp.ok) {
+    let detail = resp.statusText;
+    try { detail = (await resp.json()).detail || detail; } catch (_) {}
+    throw new Error(`${resp.status}: ${detail}`);
+  }
+  return resp.json();
+}
+
+// ---- 登录 / 注册 -----------------------------------------------------------
+let authMode = "login";
+function setAuthMode(m) {
+  authMode = m;
+  $("tabLogin").classList.toggle("on", m === "login");
+  $("tabRegister").classList.toggle("on", m === "register");
+  $("fGo").textContent = m === "login" ? "登录" : "注册";
+  $("fMsg").textContent = "";
+}
+$("tabLogin").onclick = () => setAuthMode("login");
+$("tabRegister").onclick = () => setAuthMode("register");
+
+async function doAuth() {
+  const u = $("fUser").value.trim(), p = $("fPass").value;
+  $("fMsg").textContent = "";
+  if (!u || !p) { $("fMsg").textContent = "请输入用户名和密码"; return; }
+  try {
+    if (authMode === "register") {
+      const r = await fetch("/v1/auth/register", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u, password: p }),
+      });
+      if (!r.ok) {
+        $("fMsg").textContent = (await r.json()).detail || ("注册失败 " + r.status);
+        return;
+      }
+    }
+    const r = await fetch("/v1/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: u, password: p }),
+    });
+    if (!r.ok) { $("fMsg").textContent = (await r.json()).detail || "登录失败"; return; }
+    token = (await r.json()).access_token;
+    username = u;
+    localStorage.setItem("pi_token", token);
+    localStorage.setItem("pi_username", username);
+    await enterApp();
+  } catch (e) {
+    // fetch 网络失败才是"网络错误"；401/过期等是登录问题，直接显示原因
+    $("fMsg").textContent = e instanceof TypeError ? "网络错误：" + e : e.message;
+  }
+}
+$("fGo").onclick = doAuth;
+$("fPass").addEventListener("keydown", (e) => { if (e.key === "Enter") doAuth(); });
+
+async function logout(callApi = true) {
+  if (callApi && token) { try { await api("/v1/auth/logout", { method: "POST" }); } catch (_) {} }
+  token = ""; username = ""; sid = null;
+  localStorage.removeItem("pi_token"); localStorage.removeItem("pi_username");
+  $("view-app").classList.remove("on");
+  $("view-login").style.display = "block";
+  $("fMsg").textContent = "";
+}
+
+// ---- 进入主界面 ------------------------------------------------------------
+async function enterApp() {
+  $("view-login").style.display = "none";
+  $("view-app").classList.add("on");
+  $("whoami").textContent = username;
+  await refreshSessions();
+  refreshUsage();
+}
+
+// ---- 会话列表 --------------------------------------------------------------
+async function refreshSessions() {
+  const data = await apiJson("/v1/sessions");
+  sessions = data.sessions || [];
+  if (sid && !sessions.find((s) => s.id === sid)) sid = null;
+  if (!sid && sessions.length) sid = sessions[0].id;
+  renderSessions();
+  if (sid) await openSession(sid);
+  else { $("messages").innerHTML = '<div class="empty">登录后选择一个会话，或新建一个开始对话</div>'; }
+}
+function renderSessions() {
+  const list = $("sessionList");
+  list.innerHTML = "";
+  for (const s of sessions) {
+    const div = document.createElement("div");
+    div.className = "sess" + (s.id === sid ? " on" : "");
+    div.innerHTML =
+      `<span class="t">${esc(s.title)}</span>` +
+      `<span class="d">${esc((s.created_at || "").slice(5, 16))}</span>` +
+      `<button class="x" title="删除会话">✕</button>`;
+    div.onclick = () => { sid = s.id; renderSessions(); openSession(sid); };
+    div.querySelector(".x").onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`删除会话「${s.title}」？消息会一并删除，轨迹/用量记录保留。`)) return;
+      await apiJson(`/v1/sessions/${s.id}`, { method: "DELETE" });
+      if (sid === s.id) { sid = null; $("messages").innerHTML = ""; }
+      await refreshSessions();
+    };
+    list.appendChild(div);
+  }
+}
+let creating = false;
+$("newBtn").onclick = () => {
+  creating = !creating;
+  $("newTitle").style.display = creating ? "block" : "none";
+  if (creating) $("newTitle").focus();
+};
+$("newTitle").addEventListener("keydown", async (e) => {
+  if (e.key !== "Enter") return;
+  const title = $("newTitle").value.trim() || "新会话";
+  $("newTitle").value = ""; creating = false; $("newTitle").style.display = "none";
+  const s = await apiJson("/v1/sessions", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  });
+  await refreshSessions();
+  sid = s.id;
+  renderSessions();
+  openSession(sid);
+});
+
+// ---- 消息历史（完整追溯：提示词 / 助手文本 / 工具调用 / 工具结果）-------------
+function fmtArgs(args) {
+  try {
+    const o = JSON.parse(args || "{}");
+    if (o && Object.keys(o).length) return JSON.stringify(o).slice(0, 400);
+  } catch (_) {}
+  return (args || "").slice(0, 400);
+}
+
+async function openSession(id) {
+  sid = id;
+  const s = sessions.find((x) => x.id === id);
+  $("chatTitle").textContent = s ? s.title : "";
+  $("chatModel").textContent = s && s.model ? s.model : "";
+  const data = await apiJson(`/v1/sessions/${id}/messages`);
+  renderMessages(data.messages || []);
+}
+
+function renderMessages(messages) {
+  const box = $("messages");
+  box.innerHTML = "";
+  const toolEls = {};  // tool_call id -> 行元素（工具结果挂到对应调用下）
+  if (!messages.length) {
+    box.innerHTML = '<div class="empty">输入第一条任务开始</div>';
+    return;
+  }
+  for (const m of messages) {
+    // 兼容旧版服务端（blocks 可能是整个 Message 对象），正常是数组
+    const blocks = Array.isArray(m.blocks) ? m.blocks : (m.blocks?.blocks || []);
+    for (const b of blocks) {
+      if (b.type === "text" && m.role === "user") {
+        box.appendChild(userRow(b.text));
+      } else if (b.type === "text" && m.role === "assistant") {
+        box.appendChild(assistantRow(b.text));
+      } else if (b.type === "tool_call") {
+        const row = toolCallRow(b.id, b.name, b.arguments, false);
+        box.appendChild(row);
+        toolEls[b.id] = row;
+      } else if (b.type === "tool_result") {
+        const content = toolResultRow(b.content, !!b.is_error);
+        const host = toolEls[b.tool_use_id];
+        const slot = host ? host.querySelector(".tool-result") : null;
+        if (slot) {
+          slot.appendChild(content);
+          // 历史记录里补状态徽章（流式时 onToolEnd 已加过）
+          const summary = host.querySelector("summary");
+          if (summary && !summary.querySelector(".t-badge")) {
+            summary.insertAdjacentHTML("beforeend",
+              b.is_error ? '<span class="t-badge err">失败</span>'
+                          : '<span class="t-badge ok">完成</span>');
+          }
+        } else {
+          // 独立结果（对应调用记录缺失时）放进通用工具卡
+          const row = document.createElement("div");
+          row.className = "msg tool";
+          row.innerHTML =
+            `<div class="avatar">📋</div><div class="msg-body">` +
+            `<div class="tool-card" style="margin:0"><div class="tool-result"></div></div></div>`;
+          row.querySelector(".tool-result").appendChild(content);
+          box.appendChild(row);
+        }
+      }
+    }
+  }
+  scrollBottom();
+}
+
+function userRow(text) {
+  const row = document.createElement("div");
+  row.className = "msg user";
+  row.innerHTML =
+    `<div class="avatar">👤</div>` +
+    `<div class="msg-body"><div class="name">${esc(username || "你")}</div>` +
+    `<div class="bubble"><div class="text">${esc(text)}</div></div></div>`;
+  return row;
+}
+function assistantRow(text) {
+  const row = document.createElement("div");
+  row.className = "msg assistant";
+  row.innerHTML =
+    `<div class="avatar">🤖</div>` +
+    `<div class="msg-body"><div class="name">助手</div>` +
+    `<div class="bubble"><div class="text">${esc(text)}</div></div></div>`;
+  return row;
+}
+function toolCallRow(id, name, args, running) {
+  const row = document.createElement("div");
+  row.className = "msg tool";
+  row.dataset.call = id;
+  const argsPreview = fmtArgs(args).slice(0, 140);
+  row.innerHTML =
+    `<div class="avatar">🔧</div>` +
+    `<div class="msg-body"><details class="tool-card"${running ? " open" : ""}>` +
+    `<summary>` +
+    `<span class="t-chev">▸</span>` +
+    `<span class="t-name">${esc(name)}</span>` +
+    (argsPreview ? `<span class="t-args">${esc(argsPreview)}</span>` : "") +
+    (running ? `<span class="t-badge run">运行中</span>` : "") +
+    `</summary>` +
+    `<div class="tool-result">` +
+    (args ? `<div class="who">参数</div><pre>${esc(fmtArgs(args))}</pre>` : "") +
+    `</div>` +
+    `</details></div>`;
+  return row;
+}
+function toolResultRow(content, isError) {
+  // 结果挂进所属工具卡的折叠区里；独立出现时直接作为内容块
+  const inner = document.createElement("div");
+  inner.className = isError ? "err" : "";
+  const truncated = content.length > 2000;
+  const shown = truncated ? content.slice(0, 2000) + "\n…（已截断，共 " + content.length + " 字符）" : content;
+  inner.innerHTML =
+    `<div class="who">${isError ? "结果（失败）" : "结果"}</div>` +
+    `<pre>${esc(shown)}</pre>`;
+  return inner;
+}
+
+function scrollBottom() {
+  const box = $("messages");
+  box.scrollTop = box.scrollHeight;
+}
+
+// ---- 发送 + SSE 流式渲染 ----------------------------------------------------
+$("send").onclick = sendPrompt;
+$("prompt").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendPrompt(); }
+});
+
+async function sendPrompt() {
+  const prompt = $("prompt").value.trim();
+  if (!prompt || streaming) return;
+  if (!sid) { // 没有会话时自动建一个
+    const s = await apiJson("/v1/sessions", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title: "新会话" }),
+    });
+    sid = s.id;
+    await refreshSessions();
+    renderSessions();
+  }
+  streaming = true;
+  $("send").disabled = true;
+  $("prompt").value = "";
+  hideBanner();
+
+  const box = $("messages");
+  box.querySelector(".empty")?.remove();
+  box.appendChild(userRow(prompt));
+  const live = document.createElement("div");
+  live.id = "live";
+  box.appendChild(live);
+  scrollBottom();
+
+  let asst = null;             // 当前助手行
+  let toolRows = {};           // 流中的工具行
+  const addRow = (row) => { live.appendChild(row); scrollBottom(); };
+
+  function onText(t) {
+    if (!asst) {
+      asst = assistantRow("");
+      asst.classList.add("blink");
+      addRow(asst);
+    }
+    asst.querySelector(".text").textContent += t;
+    scrollBottom();
+  }
+  function onToolStart(d) {
+    const row = toolCallRow(d.id, d.name, "", true);
+    toolRows[d.id] = row;
+    addRow(row);
+  }
+  function onToolEnd(d) {
+    const row = toolRows[d.id];
+    if (!row) return;
+    row.querySelector(".t-badge.run")?.remove();
+    const details = row.querySelector("details");
+    const summary = details.querySelector("summary");
+    summary.insertAdjacentHTML("beforeend",
+      d.ok ? '<span class="t-badge ok">完成</span>' : '<span class="t-badge err">失败</span>');
+    if (d.result) {
+      details.querySelector(".tool-result").appendChild(toolResultRow(d.result, !d.ok));
+    }
+    details.open = false;  // 工具调用+结果默认折叠
+    scrollBottom();
+  }
+
+  const resp = await fetch(`/v1/sessions/${sid}/runs`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify({ prompt }),
+  });
+  if (resp.status === 401) {
+    showBanner("未登录或登录已过期，请刷新页面重新登录");
+    finishRun();
+    return;
+  }
+  if (!resp.ok) {
+    showBanner(`HTTP ${resp.status}: ${await resp.text()}`);
+    finishRun();
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n\n")) >= 0) {
+        const frame = buf.slice(0, i); buf = buf.slice(i + 2);
+        let evt = "", data = "";
+        for (const line of frame.split("\n")) {
+          if (line.startsWith("event: ")) evt = line.slice(7).trim();
+          else if (line.startsWith("data: ")) data += line.slice(6);
+        }
+        if (!evt) continue;
+        const d = data ? JSON.parse(data) : {};
+        if (evt === "text_delta") onText(d.text);
+        else if (evt === "toolcall_start") onToolStart(d);
+        else if (evt === "toolcall_end") onToolEnd(d);
+        else if (evt === "compaction") {
+          addRow(Object.assign(document.createElement("div"), {
+            className: "msg compact",
+            innerHTML: `<div class="pill">上下文压缩：丢弃 ${d.dropped} 条 · ${d.chars_before} → ${d.chars_after} 字符</div>`,
+          }));
+        } else if (evt === "turn_end") {
+          asst?.classList.remove("blink");
+          const bubble = asst?.querySelector(".bubble") || asst;
+          bubble?.insertAdjacentHTML("beforeend",
+            `<div class="meta">本轮 ${d.usage.input_tokens} in / ${d.usage.output_tokens} out · ${d.turns} turns</div>`);
+        } else if (evt === "error") {
+          showBanner("运行错误：" + d.message);
+        }
+      }
+    }
+  } catch (e) {
+    showBanner("流式接收出错：" + e);
+  }
+  finishRun();
+}
+
+function finishRun() {
+  streaming = false;
+  $("send").disabled = false;
+  if (sid) {
+    // 以服务端落库为准重拉历史（流式只是预览），顺带刷新用量。
+    // 失败必须可见，不能静默吞掉——之前 blocks 形状 bug 就是这样藏了三天
+    openSession(sid).catch((e) => showBanner("刷新消息失败：" + e.message));
+    refreshUsage().catch(() => {});
+  }
+}
+function showBanner(text) { $("banner").textContent = text; $("banner").style.display = "block"; }
+function hideBanner() { $("banner").style.display = "none"; }
+
+// ---- 用量面板 --------------------------------------------------------------
+$("usageChip").onclick = (e) => {
+  e.stopPropagation();
+  $("usagePanel").classList.toggle("on");
+  if ($("usagePanel").classList.contains("on")) refreshUsage();
+};
+document.addEventListener("click", (e) => {
+  if (!$("usagePanel").contains(e.target) && e.target !== $("usageChip") && !$("usageChip").contains(e.target))
+    $("usagePanel").classList.remove("on");
+});
+
+async function refreshUsage() {
+  const u = await apiJson("/v1/usage");
+  const used = u.used_tokens || 0, quota = u.quota_tokens || 0;
+  const pct = quota ? Math.round(used / quota * 100) : 0;
+  $("usagePct").textContent = `${pct}%`;
+  const fill = $("usageFill");
+  fill.style.width = Math.min(pct, 100) + "%";
+  fill.classList.toggle("hot", pct >= 90);
+  $("usageChip").title = `本月用量 ${fmtNum(used)} / ${fmtNum(quota)} tokens`;
+  const models = u.models || [];
+  $("usageBody").innerHTML =
+    `<p class="muted">${fmtNum(used)} / ${fmtNum(quota)} tokens · 输入 ${fmtNum(u.total_input_tokens)} · 输出 ${fmtNum(u.total_output_tokens)} · 估算 ${fmtCost(u.total_est_cost_usd)}</p>` +
+    (models.length ? `<table><tr><th>模型</th><th>runs</th><th>in</th><th>out</th><th>费用</th></tr>` +
+      models.map((m) =>
+        `<tr><td>${esc(m.model)}</td><td>${m.runs}</td><td>${fmtNum(m.input_tokens)}</td><td>${fmtNum(m.output_tokens)}</td><td>${fmtCost(m.est_cost_usd)}</td></tr>`
+      ).join("") + "</table>"
+      : '<p class="muted">本月还没有用量记录</p>');
+}
+
+// ---- 轨迹入口（复用第一步的轨迹视图，token 键已打通）--------------------------
+$("openTraj").onclick = () => {
+  if (sid) window.open(`/ui/trajectory.html?session=${encodeURIComponent(sid)}`, "_blank");
+};
+
+// ---- 全局兜底：任何未捕获的 JS 错误都显示出来，不做静默失败 ---------------
+window.addEventListener("error", (e) => showBanner("页面错误：" + e.message));
+window.addEventListener("unhandledrejection", (e) =>
+  showBanner("页面错误：" + (e.reason?.message || e.reason)));
+
+// ---- 启动 ------------------------------------------------------------------
+// ?session=<id> 直达某个会话（轨迹视图"返回聊天"等入口使用）
+const urlSid = new URLSearchParams(location.search).get("session");
+if (urlSid) sid = urlSid;
+if (token && username) enterApp().catch(() => logout(false));
+</script>
+</body>
+</html>

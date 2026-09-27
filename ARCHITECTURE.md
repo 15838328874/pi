@@ -3,7 +3,16 @@
 > 面向后来人的完整说明：项目是什么、怎么设计的、每个模块每个函数干什么、
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
-> 最后更新：2026-09-03 · 代码规模约 4,850 行源码 + 132 个测试
+> 最后更新：2026-09-27 · 代码规模约 5,500 行源码 + 246 个测试
+>
+> **文档地图**（四个文档各管一段，知识点不重复）：
+>
+> | 文档 | 定位 | 什么问题看它 |
+|---|---|---|
+| `README.md` | 门面 | 这是什么、怎么装、怎么跑（快速上手入口） |
+| `PROJECT_GUIDE.md` | 叙事与价值 | 为什么这么设计（取舍）、踩过什么坑（故事版）、测试样例与实测数据 |
+| `ARCHITECTURE.md` | 技术手册 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19） |
+| `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
 >
 > 本包已收敛为**纯服务端形态**：本地单人 CLI/TUI、本地 SQLite 会话存储、
 > Windows/WSL 支持均已移除（见 §12）。
@@ -54,8 +63,11 @@ cd pi-python
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[production]"  # 可部署的服务：asyncpg + aiomysql + redis + alembic + otel
-pip install -e ".[dev]"         # 只跑测试：pytest + aiosqlite（测试用一次性 SQLite 文件）
+pip install -e ".[dev]"         # 只跑测试：pytest + aiosqlite（兜底）；测试统一连本地 MySQL/Redis（见 §15）
 ```
+
+**本地/生产环境搭建**（MySQL + Redis + Milvus 三件套、环境变量区分、账号与排障）：
+`deploy/local-dev.md`（本地测试）与 `deploy/cloud-deploy.md`（生产 runbook）。
 
 裸 `pip install -e .` 只装内核与 FastAPI/SQLAlchemy，**不带任何数据库驱动**，
 起不了服务——要么 `[production]`，要么至少 `[mysql]` / `[postgres]` 之一。
@@ -214,7 +226,7 @@ pi-python/
 ├── deploy/                  Caddyfile（SSE 友好 TLS）、云端部署手册、.env 模板
 ├── policy.json              服务端安全策略（`PI_POLICY` 指向它；两个 compose 也挂这一份）
 ├── Dockerfile               多阶段镜像（含 alembic，支持 `pi-py migrate`）
-├── docker-compose.yml       本地全栈（app+PG+Redis）
+├── docker-compose.local.yml 本地测试基础设施（MySQL+Redis+Milvus）
 └── docker-compose.cloud.yml 云端变体（指向托管 MySQL/Redis 内网）
 ```
 
@@ -886,7 +898,8 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 - `Dockerfile`：多阶段（构建层编译依赖不污染运行层）；运行时带
   `asyncpg/aiomysql/redis/uvicorn/alembic`；非特权用户（uid 10001）；
   内置 HEALTHCHECK 打 `/healthz`；迁移脚本打进 `/opt/pi-py`。
-- `docker-compose.yml`：本地全栈（app + Postgres + Redis，健康检查门控）。
+- `docker-compose.local.yml`：**本地测试环境基础设施**（MySQL 8 + Redis 7 + Milvus standalone），
+  app 跑在宿主机 python；环境变量模板 `deploy/env.local.example`，见 `deploy/local-dev.md`。
 - `docker-compose.cloud.yml`：云变体——不含数据库容器，指向火山引擎托管
   MySQL/Redis 的**内网**域名；密钥全部来自 `.env`（`deploy/env.cloud.example` 模板）；
   可选 `--profile tls` 加 Caddy（`deploy/Caddyfile.cloud`，`{$DOMAIN}` 注入，
@@ -907,8 +920,16 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q     # 131 passed, 1 skipped —— 全本地，不需要网络/数据库/模型
+python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis（db1）；外部服务用测试替身
 ```
+
+**2026-09-27 起测试与生产同构**（MySQL + Redis + Milvus，不再有 SQLite 测试库和 demo 环境）：
+- 单元测试：DB 走本地 MySQL `pi_py_test`（每测试清表隔离），缓存走本地 Redis（随机 namespace）。
+  LLM/embedding/Milvus 用测试替身（FakeProvider/FakeEmbedder/FakeVectorStore）——这是测试分层，
+  不是 demo；真实链路由 `integration/` 验证。
+- 真实栈集成测试：`PI_INTEGRATION=1 pytest integration/`（真实 MySQL/Redis/Milvus/云 embedding，
+  配置变量 `PI_ITEST_*`，见 `integration/conftest.py`）。
+- 基础设施没起时单测会失败，先 `docker compose -f deploy/docker-compose.local.yml up -d`。
 
 测试组织（都在 `tests/`，共 132 例）：
 
@@ -1216,18 +1237,19 @@ dev 与 origin/main 是两条**无关历史**的并行线（见项目记忆）�
 
 **已覆盖**（main 有、dev 已补）：Prometheus 指标系统（且超越：llm 实时钩子、降级
 计数器、全路径工具投影）、integration 真实栈测试、L15 日志脱敏（修了，main 只记录）、
-embedding 用量计量、conftest pin 纪律。
+embedding 用量计量、conftest pin 纪律、**run/轨迹落库**（2026-09-27：jsonl 按天滚动 +
+查询端点 + 时序图前端，未上 DB 表——见 ROADMAP §3）、**Web 前端**（零构建三页
+app/trajectory/admin，已决策不搬 Vue 工程）。
 
 **未覆盖**（按建议处理顺序）：
 
 | # | 缺口 | main 的形态 | 说明 / 建议 |
 |---|---|---|---|
-| 1 | run/轨迹落库 | `agent_runs` + `trace_fidelity` 表 | 我们的 trajectory 只活在进程内，run 结束即丢（仅 usage_records 摘要）。纯后端、改法明确，**最该先补** |
+| 1 | 轨迹结构化落库 | `agent_runs` + `trace_fidelity` 表 | 已做 jsonl 版（落盘+端点+前端）；DB 表形态见 ROADMAP §3 |
 | 2 | DB 结构化审计 | `audit_events` 表 | 我们是 JSONL（够用不可查询）；main 可 SQL 过滤。与 #1 同批做 |
 | 3 | 迁移合流 | 生产库在 `0007_trace_fidelity` | 两边 0003/0004 **同名不同内容**（session_plan/user_memories vs compactions/memories）。合流必须设计整合迁移，**前提是定生产库未来形态** |
 | 4 | 语义检索的兜底档 | MySQL 暴力余弦兜底 | 索引挂了我们只有词法兜底（可用，语义质量降档更狠）。可选增强 |
-| 5 | Vue 前端（~29k 行） | 账号/管理/聊天视图 + vite 工程 | **待决策**：产品要不要 Web UI？一直用 curl/SSE 则此缺口不存在。要的话是独立工程，搬入不冲突 |
-| 6 | 运维资产 | `deploy/pi-py.service`（生产实际走 systemd）+ L1~L15 事故记录 | 搬运即可；dev 文档目前仍以 compose 为主 |
+| 5 | 运维资产 | `deploy/pi-py.service`（生产实际走 systemd）+ L1~L15 事故记录 | 搬运即可；dev 文档目前仍以 compose 为主 |
 
 **反向对账**：main 也没有 dev 的一半——MCP/Skills 工具源、RL 数据飞轮、泛化路径
 沙箱、Milvus 向量记忆、连续拒绝熔断、§18 协作纪律。**谁也不是谁的超集**。

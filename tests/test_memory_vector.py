@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 
+from conftest import TEST_DB_URL
+
 from pi.llm.embedding import EmbeddingError, EmbeddingResult
 from pi.server.db import Database, MemoryRepo
 
@@ -57,7 +59,7 @@ class FakeVectorStore:
 
 
 def _repo(db_path, vector_store=None, embedder=None):
-    db = Database(f"sqlite+aiosqlite:///{db_path}")
+    db = Database(TEST_DB_URL)
     return db, MemoryRepo(db, vector_store=vector_store, embedder=embedder)
 
 
@@ -220,7 +222,7 @@ def test_vector_hits_from_other_user_are_skipped(tmp_path):
 
 
 def test_unconfigured_repo_is_lexical_only(tmp_path):
-    db = Database(f"sqlite+aiosqlite:///{(tmp_path / 'plain.db').as_posix()}")
+    db = Database(TEST_DB_URL)
 
     async def main():
         await db.init()
@@ -241,7 +243,7 @@ def test_create_app_wires_vector_memory(tmp_path, monkeypatch):
     from pi.server.app import create_app
     from pi.server.config import ServerSettings
 
-    monkeypatch.setenv("PI_DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'w.db').as_posix()}")
+    monkeypatch.setenv("PI_DATABASE_URL", TEST_DB_URL)
     monkeypatch.setenv("PI_JWT_SECRET", "test-secret-key-0123456789abcdef")
     monkeypatch.setenv("PI_EMBEDDING_URL", "http://127.0.0.1:19531")
     monkeypatch.setenv("PI_EMBEDDING_API_KEY", "test-key")
@@ -261,7 +263,7 @@ class TestEmbedUsageMetering:
     """Embedding spend is metered like LLM tokens (L-fix parity with main)."""
 
     def _repo(self, db_path, embedder, usage_list):
-        db = Database(f"sqlite+aiosqlite:///{db_path}")
+        db = Database(TEST_DB_URL)
 
         async def on_usage(user_id: int, tokens: int) -> None:
             usage_list.append((user_id, tokens))
@@ -302,7 +304,7 @@ class TestEmbedUsageMetering:
             raise RuntimeError("milvus down")
 
         store.add = fail_add
-        db = Database(f"sqlite+aiosqlite:///{(tmp_path / 'm.db').as_posix()}")
+        db = Database(TEST_DB_URL)
 
         async def on_usage(user_id: int, tokens: int) -> None:
             usage.append((user_id, tokens))

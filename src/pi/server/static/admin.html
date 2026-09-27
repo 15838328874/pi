@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>管理控制台 · pi-py</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --border: #e5e7eb;
+    --text: #111827; --muted: #6b7280;
+    --model: #7c3aed; --tool: #ea580c;
+    --error: #dc2626; --ok: #16a34a; --warn: #d97706;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #171a21; --border: #2a2f3a;
+      --text: #e5e7eb; --muted: #9ca3af;
+      --model: #a78bfa; --tool: #fb923c;
+      --error: #f87171; --ok: #4ade80; --warn: #fbbf24;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 16px 64px; }
+  header { display: flex; align-items: center; gap: 14px; margin-bottom: 16px; flex-wrap: wrap; }
+  header h1 { font-size: 18px; margin: 0; }
+  .tabs { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .tabs button { border: none; border-radius: 0; padding: 7px 18px; background: transparent; color: var(--text); cursor: pointer; }
+  .tabs button.on { background: var(--model); color: #fff; }
+  .spacer { flex: 1; }
+  button {
+    padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--text); font: inherit;
+  }
+  button.primary { background: var(--model); border-color: var(--model); color: #fff; }
+  button.danger { color: var(--error); border-color: color-mix(in srgb, var(--error) 50%, var(--border)); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  input {
+    padding: 6px 9px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--card); color: var(--text); font: inherit;
+  }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .card h2 { margin: 0 0 10px; font-size: 15px; }
+  .view { display: none; }
+  .view.on { display: block; }
+  #denied { text-align: center; padding: 80px 0; color: var(--muted); }
+  #denied b { color: var(--error); }
+  .err { color: var(--error); }
+
+  /* 概览 */
+  .statgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .stat {
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: var(--card);
+  }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .stat .v { font-size: 20px; font-weight: 600; font-family: var(--mono); }
+  .stat.ok .v { color: var(--ok); } .stat.bad .v { color: var(--error); }
+  .stat.warn .v { color: var(--warn); }
+  .links a { margin-right: 14px; color: var(--model); }
+
+  /* 表格 */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; font-size: 12px; }
+  td.num, th.num { text-align: right; font-family: var(--mono); }
+  td .q-input { width: 110px; font-family: var(--mono); }
+  .tag { padding: 1px 8px; border-radius: 10px; font-size: 12px; }
+  .tag.ok { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .tag.bad { background: color-mix(in srgb, var(--error) 15%, transparent); color: var(--error); }
+  .tag.admin { background: color-mix(in srgb, var(--model) 15%, transparent); color: var(--model); }
+  pre.preview {
+    margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+    overflow-wrap: anywhere; max-height: 120px; overflow: auto; color: var(--muted);
+  }
+  .filters { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .filters label { color: var(--muted); font-size: 12px; }
+  #msg { min-height: 20px; margin-bottom: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>pi-py 管理控制台</h1>
+    <div class="tabs">
+      <button data-v="overview" class="on">概览</button>
+      <button data-v="users">用户</button>
+      <button data-v="audit">审计</button>
+    </div>
+    <div class="spacer"></div>
+    <span id="whoami" style="color:var(--muted)"></span>
+    <button onclick="location.href='/ui/app.html'">用户端</button>
+    <button onclick="logout()">退出</button>
+  </header>
+
+  <div id="denied" style="display:none">
+    <div><b>403：你不是管理员</b></div>
+    <div class="card" style="display:inline-block; text-align:left; margin-top:12px">
+      管理员账号由服务端直接写库授予（users.is_admin），没有自助提权入口。<br>
+      请用管理员账号登录 <a href="/ui/app.html">用户端</a> 后回到本页。
+    </div>
+  </div>
+
+  <div id="views">
+    <!-- ============ 概览 ============ -->
+    <div class="view on" data-v="overview">
+      <div class="card">
+        <h2>系统状态 <button onclick="loadOverview()" style="float:right">刷新</button></h2>
+        <div class="statgrid" id="checks"></div>
+      </div>
+      <div class="card">
+        <h2>今日（UTC）</h2>
+        <div class="statgrid" id="today"></div>
+      </div>
+      <div class="card">
+        <h2>规模</h2>
+        <div class="statgrid" id="fleet"></div>
+      </div>
+      <div class="card links">
+        <a href="/docs" target="_blank">API 文档 (OpenAPI)</a>
+        <a href="/metrics" target="_blank">Prometheus 指标</a>
+      </div>
+    </div>
+
+    <!-- ============ 用户 ============ -->
+    <div class="view" data-v="users">
+      <div class="card">
+        <h2>用户与配额 <button onclick="loadUsers()" style="float:right">刷新</button></h2>
+        <div id="msg"></div>
+        <table>
+          <thead><tr>
+            <th>用户名</th><th>角色</th><th>状态</th><th>配额(tokens)</th>
+            <th class="num">本月 runs</th><th class="num">in</th><th class="num">out</th>
+            <th class="num">费用(USD)</th><th>操作</th>
+          </tr></thead>
+          <tbody id="userRows"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ============ 审计 ============ -->
+    <div class="view" data-v="audit">
+      <div class="card">
+        <h2>审计流水</h2>
+        <div class="filters">
+          <label>日期 <input type="date" id="aDay"></label>
+          <label>用户 <input id="aUser" style="width:130px"></label>
+          <label>工具 <input id="aTool" style="width:130px"></label>
+          <label>条数 <input id="aLimit" type="number" min="1" max="500" value="100" style="width:70px"></label>
+          <button class="primary" onclick="loadAudit()">查询</button>
+        </div>
+        <table>
+          <thead><tr>
+            <th>时间</th><th>事件</th><th>用户</th><th>工具/动作</th><th>允许</th>
+            <th>结果</th><th>原因</th><th>详情预览</th>
+          </tr></thead>
+          <tbody id="auditRows"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtNum = (n) => Number(n || 0).toLocaleString();
+
+let token = localStorage.getItem("pi_token") || "";
+let username = localStorage.getItem("pi_username") || "";
+
+async function api(path, opts = {}) {
+  opts.headers = Object.assign({ Authorization: `Bearer ${token}` }, opts.headers || {});
+  const resp = await fetch(path, opts);
+  if (resp.status === 401) { showDenied("登录已过期，请回用户端重新登录"); throw new Error("401"); }
+  return resp;
+}
+async function apiJson(path, opts = {}) {
+  const resp = await api(path, opts);
+  if (!resp.ok) {
+    let detail = resp.statusText;
+    try { detail = (await resp.json()).detail || detail; } catch (_) {}
+    const e = new Error(detail);
+    e.status = resp.status;
+    throw e;
+  }
+  return resp.json();
+}
+
+function showDenied(msg) {
+  $("views").style.display = "none";
+  $("denied").style.display = "block";
+  if (msg) $("denied").firstElementChild.innerHTML = `<b>${esc(msg)}</b>`;
+}
+function logout() {
+  api("/v1/auth/logout", { method: "POST" }).catch(() => {});
+  localStorage.removeItem("pi_token"); localStorage.removeItem("pi_username");
+  location.href = "/ui/app.html";
+}
+
+// ---- tabs ---------------------------------------------------------------
+document.querySelectorAll(".tabs button").forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach((x) => x.classList.toggle("on", x === b));
+    document.querySelectorAll(".view").forEach((v) => v.classList.toggle("on", v.dataset.v === b.dataset.v));
+  };
+});
+
+// ---- 概览 ------------------------------------------------------------------
+async function loadOverview() {
+  const ready = await fetch("/readyz").then((r) => r.json()).catch(() => null);
+  const checks = $("checks");
+  if (!ready) {
+    checks.innerHTML = '<div class="stat bad"><div class="k">服务</div><div class="v">不可达</div></div>';
+  } else {
+    checks.innerHTML = Object.entries(ready.checks || {}).map(([k, v]) => {
+      const cls = v === "ok" ? "ok" : v.startsWith("degraded") ? "warn" : "bad";
+      return `<div class="stat ${cls}"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`;
+    }).join("");
+  }
+  const stats = await apiJson("/v1/admin/stats");
+  const t = stats.today;
+  $("today").innerHTML =
+    `<div class="stat"><div class="k">runs</div><div class="v">${fmtNum(t.runs)}</div></div>` +
+    `<div class="stat"><div class="k">tokens in</div><div class="v">${fmtNum(t.input_tokens)}</div></div>` +
+    `<div class="stat"><div class="k">tokens out</div><div class="v">${fmtNum(t.output_tokens)}</div></div>` +
+    `<div class="stat"><div class="k">费用(USD)</div><div class="v">$${Number(t.est_cost_usd).toFixed(4)}</div></div>`;
+  $("fleet").innerHTML =
+    `<div class="stat"><div class="k">用户</div><div class="v">${fmtNum(stats.users)}</div></div>` +
+    `<div class="stat"><div class="k">会话</div><div class="v">${fmtNum(stats.sessions)}</div></div>`;
+}
+
+// ---- 用户 ------------------------------------------------------------------
+let users = [];
+
+async function loadUsers() {
+  const msg = $("msg");
+  msg.textContent = "";
+  const [ulist, usage] = await Promise.all([
+    apiJson("/v1/admin/users"),
+    apiJson("/v1/admin/usage"),
+  ]);
+  const byName = Object.fromEntries(usage.users.map((u) => [u.username, u]));
+  users = ulist.users;
+  const rows = $("userRows");
+  rows.innerHTML = "";
+  for (const u of users) {
+    const m = byName[u.username] || {};
+    const me = u.username === username;
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${esc(u.username)}</td>` +
+      `<td>${u.is_admin ? '<span class="tag admin">admin</span>' : '<span class="tag">user</span>'}</td>` +
+      `<td>${u.is_active ? '<span class="tag ok">启用</span>' : '<span class="tag bad">禁用</span>'}</td>` +
+      `<td><span class="quota">${fmtNum(u.quota_tokens)}</span>` +
+      `<input class="q-input" style="display:none" type="number" min="0" value="${u.quota_tokens}"></td>` +
+      `<td class="num">${m.runs ?? 0}</td>` +
+      `<td class="num">${fmtNum(m.input_tokens ?? 0)}</td>` +
+      `<td class="num">${fmtNum(m.output_tokens ?? 0)}</td>` +
+      `<td class="num">$${Number(m.est_cost_usd ?? 0).toFixed(4)}</td>` +
+      `<td class="ops"></td>`;
+    const ops = tr.querySelector(".ops");
+    const quotaSpan = tr.querySelector(".quota");
+    const qInput = tr.querySelector(".q-input");
+
+    // 配额：点数字变输入框，Enter/失焦保存
+    quotaSpan.style.cursor = "pointer";
+    quotaSpan.title = "点击修改配额";
+    quotaSpan.onclick = () => {
+      quotaSpan.style.display = "none";
+      qInput.style.display = "inline-block";
+      qInput.focus();
+      qInput.select();
+    };
+    const saveQuota = async () => {
+      const v = parseInt(qInput.value, 10);
+      qInput.style.display = "none";
+      quotaSpan.style.display = "";
+      if (isNaN(v) || v === u.quota_tokens) return;
+      try {
+        await apiJson(`/v1/admin/users/${u.username}`, {
+          method: "PATCH", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ quota_tokens: v }),
+        });
+        quotaSpan.textContent = fmtNum(v);
+        u.quota_tokens = v;
+        msg.textContent = `已更新 ${u.username} 的配额`;
+      } catch (e) { msg.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+    };
+    qInput.onkeydown = (e) => { if (e.key === "Enter") saveQuota(); };
+    qInput.onblur = saveQuota;
+
+    // 禁用/启用
+    if (!me) {
+      const b = document.createElement("button");
+      b.className = u.is_active ? "danger" : "";
+      b.textContent = u.is_active ? "禁用" : "启用";
+      b.onclick = async () => {
+        if (!confirm(`${u.is_active ? "禁用" : "启用"}用户 ${u.username}？`)) return;
+        try {
+          await apiJson(`/v1/admin/users/${u.username}`, {
+            method: "PATCH", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ is_active: !u.is_active }),
+          });
+          loadUsers();
+        } catch (e) { msg.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+      };
+      ops.appendChild(b);
+    } else {
+      ops.innerHTML = '<span style="color:var(--muted);font-size:12px">（自己）</span>';
+    }
+
+    // 强制下线（踢全部 token）
+    const r = document.createElement("button");
+    r.textContent = "强制下线";
+    r.title = "吊销该用户全部令牌";
+    r.style.marginLeft = "6px";
+    r.onclick = async () => {
+      if (!confirm(`强制下线 ${u.username}？其所有登录令牌将失效。`)) return;
+      try {
+        await apiJson(`/v1/admin/users/${u.username}/revoke`, { method: "POST" });
+        msg.textContent = `已吊销 ${u.username} 的全部令牌`;
+      } catch (e) { msg.innerHTML = `<span class="err">${esc(e.message)}</span>`; }
+    };
+    ops.appendChild(r);
+
+    rows.appendChild(tr);
+  }
+}
+
+// ---- 审计 ------------------------------------------------------------------
+async function loadAudit() {
+  const p = new URLSearchParams({
+    limit: $("aLimit").value || "100",
+  });
+  if ($("aDay").value) p.set("day", $("aDay").value);
+  if ($("aUser").value.trim()) p.set("user", $("aUser").value.trim());
+  if ($("aTool").value.trim()) p.set("tool", $("aTool").value.trim());
+  const data = await apiJson("/v1/admin/audit?" + p.toString());
+  const rows = $("auditRows");
+  rows.innerHTML = "";
+  if (!data.records.length) {
+    rows.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">这一天没有记录</td></tr>';
+    return;
+  }
+  for (const r of data.records) {
+    const preview = r.event === "tool_call"
+      ? (r.args ? JSON.stringify(r.args).slice(0, 300) : "") + (r.result_preview ? "\n→ " + r.result_preview : "")
+      : r.event === "auth" ? `ip=${r.ip || ""} ua=${(r.ua || "").slice(0, 120)}`
+      : r.event === "compaction" ? `丢弃 ${r.dropped} 条 · ${r.chars_before} → ${r.chars_after} 字符`
+      : "";
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td>${esc((r.ts || "").slice(11, 19))}</td>` +
+      `<td>${esc(r.event)}</td>` +
+      `<td>${esc(r.user || r.username || "")}</td>` +
+      `<td>${esc(r.tool || r.action || "")}</td>` +
+      `<td>${r.allowed === undefined ? "" : r.allowed ? '<span class="tag ok">允许</span>' : '<span class="tag bad">拒绝</span>'}</td>` +
+      `<td>${r.ok === undefined || r.ok === null ? "" : r.ok ? '<span class="tag ok">ok</span>' : '<span class="tag bad">失败</span>'}</td>` +
+      `<td>${esc(r.reason || "")}</td>` +
+      `<td><pre class="preview">${esc(preview)}</pre></td>`;
+    rows.appendChild(tr);
+  }
+}
+
+// ---- 启动 ------------------------------------------------------------------
+(async function boot() {
+  if (!token || !username) { showDenied("未登录，请先到用户端登录"); return; }
+  $("whoami").textContent = username;
+  $("aDay").value = new Date().toISOString().slice(0, 10);
+  try {
+    await apiJson("/v1/admin/stats");  // 403 → 非管理员
+    $("views").style.display = "block";
+    loadOverview();
+    loadUsers();
+    loadAudit();
+  } catch (e) {
+    showDenied(e.status === 403 ? "403：你不是管理员" : e.message);
+  }
+})();
+</script>
+</body>
+</html>

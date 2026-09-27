@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import asyncio
 
+from conftest import TEST_DB_URL
+
 from pi.server.db import Database, MemoryRepo
 from pi.tools.base import ToolContext
 from pi.tools.memory import RecallTool, RememberTool
 
 
 def test_memory_repo_search(tmp_path):
-    db = Database(f"sqlite+aiosqlite:///{(tmp_path / 'm.db').as_posix()}")
+    db = Database(TEST_DB_URL)
 
     async def main():
         await db.init()
@@ -31,7 +33,7 @@ def test_memory_repo_search(tmp_path):
 
 
 def test_remember_and_recall_tools(tmp_path):
-    db = Database(f"sqlite+aiosqlite:///{(tmp_path / 'm2.db').as_posix()}")
+    db = Database(TEST_DB_URL)
 
     async def main():
         await db.init()

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, select, update as sa_update
+from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -254,6 +254,34 @@ class SessionRepo:
                 )
             ).scalars().all()
             return rows
+
+    async def delete_for_user(self, user_id: int, session_id: str) -> bool:
+        """Delete a session with its messages and compaction summaries, in one
+        transaction. Usage records and trajectory jsonl stay: billing and the
+        raw run log are append-only history, not session state."""
+        async with AsyncSession(self.db.engine) as s:
+            row = (
+                await s.execute(
+                    select(SessionRow).where(
+                        SessionRow.id == session_id, SessionRow.user_id == user_id
+                    )
+                )
+            ).scalar_one_or_none()
+            if row is None:
+                return False
+            await s.execute(
+                sa_delete(MessageRow).where(MessageRow.session_id == session_id)
+            )
+            await s.execute(
+                sa_delete(CompactionRow).where(CompactionRow.session_id == session_id)
+            )
+            await s.execute(sa_delete(SessionRow).where(SessionRow.id == session_id))
+            await s.commit()
+            return True
+
+    async def count(self) -> int:
+        async with AsyncSession(self.db.engine) as s:
+            return (await s.execute(select(func.count(SessionRow.id)))).scalar_one()
 
 
 class MessageRepo:

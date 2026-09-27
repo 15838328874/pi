@@ -11,6 +11,8 @@ import asyncio
 
 import pytest
 
+from conftest import TEST_DB_URL
+
 pc = pytest.importorskip("prometheus_client")
 
 from pi.observability.metrics import Metrics  # noqa: E402
@@ -169,7 +171,7 @@ class TestHttpMiddlewareAndEndpoint:
         from pi.server.app import create_app
         from pi.server.config import ServerSettings
 
-        monkeypatch.setenv("PI_DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'm.db').as_posix()}")
+        monkeypatch.setenv("PI_DATABASE_URL", TEST_DB_URL)
         monkeypatch.setenv("PI_MODEL", "fake/demo")
         monkeypatch.setenv("PI_JWT_SECRET", "test-secret-key-0123456789abcdef")
         monkeypatch.setenv("PI_METRICS_TOKEN", "")

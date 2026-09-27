@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
+from conftest import TEST_DB_URL
+
 from pi.llm.fake import FakeProvider
 from pi.models import Role, TextBlock
 from pi.security.policy import Policy
@@ -105,7 +107,7 @@ def test_skill_index_injected_into_system_prompt(tmp_path, monkeypatch):
     """Runner composes <available skills> into the system prompt (unit, no HTTP)."""
     prov = SkillToolProvider([_make_skill_dir(tmp_path / "skills")])
     registry = ToolRegistry([prov])
-    db = Database(f"sqlite+aiosqlite:///{(tmp_path / 'r.db').as_posix()}")
+    db = Database(TEST_DB_URL)
     runs = RunManager(
         policy=Policy(),
         audit=None,
@@ -114,7 +116,8 @@ def test_skill_index_injected_into_system_prompt(tmp_path, monkeypatch):
         registry=registry,
     )
     session = SessionRow(
-        id="sess1", user_id=1, title="t", model="fake/demo",
+        id="s1",  # conftest 播种的 fixture 会话（messages 外键要求 sessions 有行）
+        user_id=1, title="t", model="fake/demo",
         cwd=str(tmp_path), created_at="2026-09-27T00:00:00+00:00",
     )
     provider = _RecordingProvider(responses=[[TextBlock(text="hi")]])

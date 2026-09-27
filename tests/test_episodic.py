@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+from conftest import TEST_DB_URL
+
 from pi.agent.loop import AgentLoop
 from pi.llm.fake import FakeProvider
 from pi.models import Message, Role, TextBlock
@@ -52,7 +54,7 @@ def test_compaction_reports_covered_upto_idx(tmp_path):
 
 
 def test_compaction_repo_roundtrip(tmp_path):
-    db = Database(f"sqlite+aiosqlite:///{(tmp_path / 'test.db').as_posix()}")
+    db = Database(TEST_DB_URL)
 
     async def main():
         await db.init()

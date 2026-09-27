@@ -28,6 +28,13 @@ class ServerSettings:
     sandbox_image: str = "python:3.12-slim"
     sandbox_net: bool = False
     audit_path: Path = field(default_factory=lambda: Path.home() / ".pi-py" / "audit.jsonl")
+    # Canonical run trajectories (P1), one JSON line per run, daily rotation.
+    # Trajectories are RAW (tool args unredacted) - same sensitivity class as
+    # the workspace itself, and the viewer endpoint checks session ownership.
+    # PI_TRAJECTORY_PATH="" disables persistence (tests, sensitive deployments).
+    trajectory_path: Path | None = field(
+        default_factory=lambda: Path.home() / ".pi-py" / "trajectories.jsonl"
+    )
     policy_path: str = ""
     # Reverse proxies whose X-Forwarded-For we trust. uvicorn's own default is
     # 127.0.0.1, which is wrong under compose: Caddy is a separate container with
@@ -80,6 +87,11 @@ class ServerSettings:
             sandbox_image=os.environ.get("PI_SANDBOX_IMAGE", "python:3.12-slim"),
             sandbox_net=os.environ.get("PI_SANDBOX_NET", "") == "host",
             audit_path=Path(os.environ.get("PI_AUDIT_PATH", base / "audit.jsonl")),
+            trajectory_path=(
+                None
+                if os.environ.get("PI_TRAJECTORY_PATH") == ""
+                else Path(os.environ.get("PI_TRAJECTORY_PATH", base / "trajectories.jsonl"))
+            ),
             policy_path=os.environ.get("PI_POLICY", ""),
             forwarded_allow_ips=os.environ.get("PI_FORWARDED_ALLOW_IPS", "127.0.0.1"),
             embedding_url=os.environ.get("PI_EMBEDDING_URL", ""),

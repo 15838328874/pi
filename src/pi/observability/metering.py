@@ -99,6 +99,56 @@ class UsageTracker:
             "total_est_cost_usd": round(sum(m["est_cost_usd"] for m in models), 6),
         }
 
+    async def monthly_by_user(self) -> list[dict[str, Any]]:
+        """Admin console: this month's aggregate per user (one GROUP BY, not N+1)."""
+        prefix = _month_prefix() + "-%"
+        async with AsyncSession(self.engine) as s:
+            rows = (
+                await s.execute(
+                    select(
+                        UsageRecord.username,
+                        func.count(UsageRecord.id),
+                        func.sum(UsageRecord.input_tokens),
+                        func.sum(UsageRecord.output_tokens),
+                        func.sum(UsageRecord.est_cost_usd),
+                    )
+                    .where(UsageRecord.created_at.like(prefix))
+                    .group_by(UsageRecord.username)
+                )
+            ).all()
+        return [
+            {
+                "username": u,
+                "runs": int(n),
+                "input_tokens": int(i or 0),
+                "output_tokens": int(o or 0),
+                "est_cost_usd": round(float(c or 0), 6),
+            }
+            for u, n, i, o, c in rows
+        ]
+
+    async def today_summary(self) -> dict[str, Any]:
+        """Admin console overview: today's runs/tokens/cost in one aggregate."""
+        prefix = datetime.now(timezone.utc).strftime("%Y-%m-%d") + "%"
+        async with AsyncSession(self.engine) as s:
+            runs, in_t, out_t, cost = (
+                await s.execute(
+                    select(
+                        func.count(UsageRecord.id),
+                        func.coalesce(func.sum(UsageRecord.input_tokens), 0),
+                        func.coalesce(func.sum(UsageRecord.output_tokens), 0),
+                        func.coalesce(func.sum(UsageRecord.est_cost_usd), 0),
+                    ).where(UsageRecord.created_at.like(prefix))
+                )
+            ).one()
+        return {
+            "date": prefix.rstrip("%"),
+            "runs": int(runs),
+            "input_tokens": int(in_t),
+            "output_tokens": int(out_t),
+            "est_cost_usd": round(float(cost), 6),
+        }
+
     async def quota_check(self, user_id: int, quota_tokens: int) -> QuotaCheck:
         prefix = _month_prefix() + "-%"
         async with AsyncSession(self.engine) as s:

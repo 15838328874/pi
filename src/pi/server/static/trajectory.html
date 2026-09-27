@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="icon" href="data:,">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>轨迹视图 · pi-py</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --border: #e5e7eb;
+    --text: #111827; --muted: #6b7280;
+    --model: #7c3aed; --tool: #ea580c;
+    --error: #dc2626; --denied: #991b1b;
+    --boundary: #cbd5e1; --sel: rgba(124, 58, 237, .10);
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115; --card: #171a21; --border: #2a2f3a;
+      --text: #e5e7eb; --muted: #9ca3af;
+      --model: #a78bfa; --tool: #fb923c;
+      --error: #f87171; --denied: #fca5a5;
+      --boundary: #374151; --sel: rgba(167, 139, 250, .12);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 20px 16px 64px; }
+  h1 { font-size: 18px; margin: 0 0 12px; }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; margin-bottom: 14px;
+  }
+  .toolbar { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  .toolbar input[type=text], .toolbar input[type=password] {
+    flex: 1; min-width: 140px; padding: 7px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  .toolbar input.mono { font-family: var(--mono); font-size: 12px; }
+  button {
+    padding: 7px 14px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--card); color: var(--text);
+  }
+  button.primary { background: var(--model); border-color: var(--model); color: #fff; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  #error { color: var(--error); margin-top: 8px; white-space: pre-wrap; }
+  #meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 6px 24px; }
+  #meta div { overflow-wrap: anywhere; }
+  #meta .k { color: var(--muted); margin-right: 6px; }
+  #meta code { font-family: var(--mono); font-size: 12px; }
+  .modes { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .modes button { border: none; border-radius: 0; padding: 5px 12px; background: transparent; }
+  .modes button.on { background: var(--model); color: #fff; }
+  .rowbar { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; }
+  .lane-label {
+    width: 48px; flex: none; font-size: 11px; color: var(--muted);
+    padding-top: 4px; text-align: right;
+  }
+  .lane { position: relative; flex: 1; height: 26px; }
+  .span {
+    position: absolute; top: 3px; height: 20px; border-radius: 4px;
+    min-width: 3px; cursor: pointer;
+  }
+  .span.model { background: var(--model); }
+  .span.tool { background: var(--tool); }
+  .span.err { background: var(--error); }
+  .span.denied { background: var(--denied); }
+  .span.sel-bar { outline: 2px solid var(--text); outline-offset: 1px; }
+  .tl-body { position: relative; }
+  .turn-line {
+    position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--boundary);
+  }
+  .turn-line span {
+    position: absolute; top: -14px; left: 2px; font-size: 10px; color: var(--muted);
+  }
+  .ruler { position: relative; height: 16px; border-top: 1px solid var(--border); }
+  .tick {
+    position: absolute; top: 0; height: 5px; border-left: 1px solid var(--muted);
+    font-size: 10px; color: var(--muted); padding-left: 3px;
+  }
+  .row {
+    border-top: 1px solid var(--border); padding: 8px 4px; cursor: pointer;
+  }
+  .row:first-child { border-top: none; }
+  .row.sel { background: var(--sel); }
+  .row .who { font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .row .who b.user { color: #2563eb; } .row .who b.model { color: var(--model); }
+  .row .who b.tool { color: var(--tool); }
+  .row.err { background: color-mix(in srgb, var(--error) 8%, transparent); }
+  .row.err .who { color: var(--error); }
+  .row .text { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .row details summary { cursor: pointer; }
+  .row details pre {
+    margin: 6px 0 0; padding: 8px; border-radius: 6px; background: var(--bg);
+    font-family: var(--mono); font-size: 12px; white-space: pre-wrap;
+    overflow-wrap: anywhere; max-height: 300px; overflow: auto;
+  }
+  .meta-line { font-size: 12px; color: var(--muted); font-family: var(--mono); }
+  footer { color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>轨迹视图 <span style="font-size:12px;color:var(--muted)">pi-py · trajectory viewer</span></h1>
+
+  <div class="card toolbar">
+    <button id="back" title="回到聊天页面">← 返回聊天</button>
+    <input type="password" id="token" placeholder="Bearer token（/v1/auth/login 获取）" autocomplete="off">
+    <input type="text" id="session" class="mono" placeholder="session id" autocomplete="off">
+    <button class="primary" id="load">加载</button>
+  </div>
+  <p class="hint">
+    用法：<code>POST /v1/auth/login</code> 拿 token；<code>POST /v1/sessions</code> 建会话；
+    <code>POST /v1/sessions/{id}/runs</code> 跑一轮；然后打开
+    <code>/ui/trajectory.html?session=&lt;会话id&gt;</code>。token 只存本浏览器 localStorage。
+  </p>
+  <div id="error"></div>
+
+  <div id="view" style="display:none">
+    <div class="card" id="meta"></div>
+    <div class="card">
+      <div class="toolbar" style="margin-bottom:10px">
+        <div class="modes" id="modes">
+          <button data-mode="sequence">sequence</button>
+          <button data-mode="duration">duration</button>
+          <button data-mode="time">time</button>
+        </div>
+        <input type="text" id="search" placeholder="过滤列表（子串匹配）" style="max-width:280px">
+      </div>
+      <div class="tl-body" id="tl"></div>
+      <div class="ruler" id="ruler"></div>
+    </div>
+    <div class="card" id="list"></div>
+    <footer>
+      轨迹是原始记录（工具参数未脱敏）。sequence=按顺序等宽；duration=按耗时、压缩空闲；
+      time=真实墙钟。点击时序条或列表行可双向联动。
+    </footer>
+  </div>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const tokenInput = $("token"), sessionInput = $("session"), errorBox = $("error");
+
+// ---- helpers ---------------------------------------------------------------
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, (c) => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+  ));
+}
+function fmtMs(ms) {
+  if (ms >= 1000) return (ms / 1000).toFixed(1) + "s";
+  return Math.round(ms) + "ms";
+}
+function fmtWhen(ts) { return ts ? new Date(ts * 1000).toLocaleString() : "-"; }
+
+// ---- state -----------------------------------------------------------------
+let traj = null, mode = "duration", selected = -1, spans = [];
+
+function spanForEvent(ev, i) {
+  if (ev.type === "LlmCall")
+    return { i, kind: "model", lane: 0, latency: ev.latency_ms, ts: ev.ts,
+             label: "模型 轮" + ev.turn, turn: ev.turn };
+  if (ev.type === "ToolCall")
+    return { i, kind: "tool", lane: 1, latency: ev.latency_ms, ts: ev.ts,
+             label: ev.name, isError: !!ev.is_error, denied: !!ev.denied };
+  return null;
+}
+
+function positions() {
+  // one span position per mode: {startMs, endMs} + totalMs
+  const pos = [];
+  let total = 0;
+  if (mode === "sequence") {
+    spans.forEach((s, k) => pos.push({ start: k, end: k + 1 }));
+    total = spans.length;
+  } else if (mode === "duration") {
+    let cum = 0;
+    for (const s of spans) {
+      pos.push({ start: cum, end: cum + Math.max(s.latency, 1) });
+      cum += Math.max(s.latency, 1);
+    }
+    total = cum;
+  } else { // time: true wall clock, idle gaps visible
+    const first = spans.length ? spans[0].ts : 0;
+    for (const s of spans) {
+      const start = (s.ts - first) * 1000;
+      pos.push({ start, end: start + Math.max(s.latency, 1) });
+    }
+    total = pos.length ? Math.max(...pos.map((p) => p.end)) : 1;
+  }
+  return { pos, total };
+}
+
+// ---- render ----------------------------------------------------------------
+function render() {
+  $("view").style.display = "block";
+  errorBox.textContent = "";
+
+  const events = traj.events || [];
+  const started = events[0] || {};
+  const finished = events.length && events[events.length - 1].type === "RunFinished"
+    ? events[events.length - 1] : null;
+
+  const meta = [
+    ["run_id", esc(traj.run_id)], ["model", esc(started.model || traj.model || "-")],
+    ["会话", esc(traj.session_id || started.session_id || "-")],
+    ["开始", fmtWhen(started.ts || traj.started_at)],
+    ["cwd", esc(started.cwd || "-")],
+    ["prompt", esc(started.prompt || "-")],
+  ];
+  if (finished) {
+    meta.push(
+      ["turns", String(finished.turns)],
+      ["tokens", `${finished.input_tokens} in / ${finished.output_tokens} out`],
+      ["总耗时", fmtMs(finished.latency_ms)],
+    );
+  }
+  meta.push(["tools", esc((started.tools || []).join(", ") || "-")]);
+  $("meta").innerHTML = meta.map(
+    ([k, v]) => `<div><span class="k">${esc(k)}</span><code>${v}</code></div>`
+  ).join("");
+
+  spans = events.map(spanForEvent).filter(Boolean);
+  renderTimeline();
+  renderList(events);
+}
+
+function renderTimeline() {
+  const tl = $("tl");
+  tl.innerHTML = "";
+  const { pos, total } = positions();
+  const pct = (x) => (x / total * 100) + "%";
+
+  for (const lane of [0, 1]) {
+    const row = document.createElement("div");
+    row.className = "rowbar";
+    row.innerHTML = `<div class="lane-label">${lane === 0 ? "模型" : "工具"}</div>`;
+    const laneDiv = document.createElement("div");
+    laneDiv.className = "lane";
+    spans.forEach((s, k) => {
+      if (s.lane !== lane) return;
+      const p = pos[k];
+      const bar = document.createElement("div");
+      bar.className = "span " + s.kind
+        + (s.denied ? " denied" : s.isError ? " err" : "")
+        + (k === selected ? " sel-bar" : "");
+      bar.style.left = pct(p.start);
+      bar.style.width = `max(${pct(p.end - p.start)}, 3px)`;
+      bar.dataset.i = s.i;
+      bar.title = `${s.label} · ${fmtMs(s.latency)}`
+        + (s.isError ? " · 失败" : s.denied ? " · 被策略拒绝" : "");
+      bar.onclick = () => select(s.i);
+      laneDiv.appendChild(bar);
+    });
+    row.appendChild(laneDiv);
+    tl.appendChild(row);
+  }
+
+  // turn boundaries: dashed line at each LlmCall start
+  spans.forEach((s, k) => {
+    if (s.kind !== "model") return;
+    const line = document.createElement("div");
+    line.className = "turn-line";
+    line.style.left = pct(pos[k].start);
+    line.innerHTML = `<span>轮${s.turn}</span>`;
+    tl.appendChild(line);
+  });
+
+  // ruler ticks at quarters
+  const ruler = $("ruler");
+  ruler.innerHTML = "";
+  for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+    const tick = document.createElement("div");
+    tick.className = "tick";
+    tick.style.left = pct(f * total);
+    tick.textContent = mode === "sequence"
+      ? (f * total).toFixed(0) + " 步"
+      : fmtMs(f * total);
+    ruler.appendChild(tick);
+  }
+}
+
+function renderList(events) {
+  const list = $("list");
+  list.innerHTML = "";
+  let turn = 0;
+  events.forEach((ev, i) => {
+    const row = document.createElement("div");
+    row.className = "row" + (i === selected ? " sel" : "");
+    row.dataset.i = i;
+    row.dataset.search = "";
+
+    if (ev.type === "RunStarted") {
+      row.dataset.search = ev.prompt || "";
+      row.innerHTML =
+        `<div class="who"><b class="user">用户</b> · 轮 ${turn} · 开始</div>` +
+        `<div class="text">${esc(ev.prompt)}</div>`;
+    } else if (ev.type === "LlmCall") {
+      turn = ev.turn;
+      row.dataset.search = (ev.text || "") + " " + (ev.tool_calls || []).map((c) => c.name).join(" ");
+      const text = ev.text ? `<div class="text">${esc(ev.text)}</div>`
+        : `<div class="text" style="color:var(--muted)">（无文本，直接工具调用）</div>`;
+      row.innerHTML =
+        `<div class="who"><b class="model">助手</b> · 轮 ${ev.turn}</div>` + text +
+        `<div class="meta-line">${fmtMs(ev.latency_ms)} · ${ev.input_tokens} in / ${ev.output_tokens} out · stop=${esc(ev.stop_reason)}</div>`;
+    } else if (ev.type === "ToolCall") {
+      const args = JSON.stringify(ev.arguments ?? {}).slice(0, 200);
+      const preview = (ev.result || "").replace(/\s+/g, " ").slice(0, 200);
+      row.dataset.search = ev.name + " " + args + " " + preview;
+      const bad = ev.denied ? " · 被策略拒绝" : ev.is_error ? " · 失败" : "";
+      row.innerHTML =
+        `<div class="who"><b class="tool">工具</b>${bad ? ` · <span style="color:var(--error)">${bad}</span>` : ""}</div>` +
+        `<details><summary>${esc(ev.name)}(${esc(args)}) · ${fmtMs(ev.latency_ms)}</summary>` +
+        `<pre>${esc(ev.result)}</pre></details>`;
+    } else if (ev.type === "Compaction") {
+      row.dataset.search = "compaction";
+      row.innerHTML =
+        `<div class="who">压缩</div>` +
+        `<div class="text" style="color:var(--muted)">丢弃 ${ev.dropped} 条 · ${ev.chars_before} → ${ev.chars_after} 字符</div>`;
+    } else if (ev.type === "RunError") {
+      row.className += " err";
+      row.dataset.search = ev.message || "";
+      row.innerHTML = `<div class="who">运行错误</div><div class="text">${esc(ev.message)}</div>`;
+    } else if (ev.type === "RunFinished") {
+      row.dataset.search = "";
+      row.innerHTML =
+        `<div class="who">完成</div>` +
+        `<div class="meta-line">turns=${ev.turns} · ${ev.input_tokens} in / ${ev.output_tokens} out · ${fmtMs(ev.latency_ms)}</div>`;
+    } else {
+      row.innerHTML = `<div class="text">${esc(JSON.stringify(ev))}</div>`;
+    }
+    row.onclick = () => select(i);
+    list.appendChild(row);
+  });
+}
+
+function select(i) {
+  selected = selected === i ? -1 : i;
+  document.querySelectorAll(".row").forEach((r) =>
+    r.classList.toggle("sel", +r.dataset.i === selected));
+  document.querySelectorAll(".span").forEach((b) =>
+    b.classList.toggle("sel-bar", +b.dataset.i === selected));
+  if (selected >= 0) {
+    const row = document.querySelector(`.row[data-i="${selected}"]`);
+    if (row && !row.matches(":hover")) row.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+}
+
+// ---- load ------------------------------------------------------------------
+async function load() {
+  const token = tokenInput.value.trim();
+  const sid = sessionInput.value.trim() || new URLSearchParams(location.search).get("session") || "";
+  sessionInput.value = sid;
+  if (!token || !sid) { errorBox.textContent = "需要 token 和 session id。"; return; }
+  localStorage.setItem("pi_token", token);
+  errorBox.textContent = "加载中…";
+  let resp;
+  try {
+    resp = await fetch(`/v1/sessions/${encodeURIComponent(sid)}/trajectory`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+  } catch (e) {
+    errorBox.textContent = "请求失败：" + e;
+    return;
+  }
+  if (!resp.ok) {
+    errorBox.textContent = `HTTP ${resp.status}: ${await resp.text()}`;
+    return;
+  }
+  traj = await resp.json();
+  if (!(traj.events || []).length) { errorBox.textContent = "轨迹为空。"; return; }
+  selected = -1;
+  render();
+}
+
+// ---- wiring ----------------------------------------------------------------
+$("load").onclick = load;
+$("back").onclick = () => {
+  const sid = sessionInput.value.trim()
+    || new URLSearchParams(location.search).get("session") || "";
+  location.href = "/ui/app.html" + (sid ? `?session=${encodeURIComponent(sid)}` : "");
+};
+sessionInput.addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+tokenInput.addEventListener("keydown", (e) => { if (e.key === "Enter") load(); });
+$("modes").querySelectorAll("button").forEach((b) => {
+  if (b.dataset.mode === mode) b.classList.add("on");
+  b.onclick = () => {
+    mode = b.dataset.mode;
+    $("modes").querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+    if (traj) renderTimeline();
+  };
+});
+$("search").addEventListener("input", (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  document.querySelectorAll(".row").forEach((r) => {
+    r.style.display = !q || (r.dataset.search || "").toLowerCase().includes(q) ? "" : "none";
+  });
+});
+
+// restore from URL/localStorage
+tokenInput.value = localStorage.getItem("pi_token") || "";
+if (new URLSearchParams(location.search).get("session")) sessionInput.value =
+  new URLSearchParams(location.search).get("session");
+</script>
+</body>
+</html>

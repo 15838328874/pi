@@ -32,6 +32,7 @@ from pi.server.config import ServerSettings
 from pi.server.db import Database, MemoryRepo, MessageRepo, SessionRepo, UserRepo
 from pi.server.ratelimit import RateLimiter
 from pi.server.runner import RunManager, event_to_sse, server_policy
+from pi.server.trajectory_store import latest_trajectory
 from pi.security.audit import AuditLogger
 from pi.security.redact import mask_url
 from pi.tools.mcp import McpToolProvider
@@ -171,6 +172,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         sandbox_image=settings.sandbox_image,
         registry=registry,
         metrics=metrics,
+        trajectory_path=settings.trajectory_path,
     )
     runs.sandbox_network = settings.sandbox_net
 
@@ -407,15 +409,46 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         row = await _owned_session(session_id, username)
         return {"id": row.id, "title": row.title, "model": row.model, "created_at": row.created_at}
 
+    @app.delete("/v1/sessions/{session_id}")
+    async def delete_session(session_id: str, username: str = Depends(current_user)) -> dict:
+        """Delete a session (messages + compactions). Trajectory jsonl and usage
+        records remain as append-only history. Cross-user is 404, like reads."""
+        user = await users.by_username(username)
+        if not await sessions.delete_for_user(user.id, session_id):
+            raise HTTPException(status_code=404, detail="session not found")
+        return {"deleted": session_id}
+
     @app.get("/v1/sessions/{session_id}/messages")
     async def get_messages(session_id: str, username: str = Depends(current_user)) -> dict:
         await _owned_session(session_id, username)
         rows = await messages.list_for_session(session_id)
+
+        def _blocks(raw: str) -> list:
+            # messages.blocks stores the whole Message JSON ({"role":..,"blocks":[..]});
+            # the API contract is that "blocks" IS the array. Defensive against
+            # rows written as a bare array too.
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                parsed = parsed.get("blocks", [])
+            return parsed if isinstance(parsed, list) else []
+
         return {
             "messages": [
-                {"idx": r.idx, "role": r.role, "blocks": json.loads(r.blocks)} for r in rows
+                {"idx": r.idx, "role": r.role, "blocks": _blocks(r.blocks)} for r in rows
             ]
         }
+
+    @app.get("/v1/sessions/{session_id}/trajectory")
+    async def get_trajectory(session_id: str, username: str = Depends(current_user)) -> dict:
+        """Latest stored run of this session (raw trajectory, see
+        trajectory_store.py). Ownership check first - a 404 leaks nothing."""
+        await _owned_session(session_id, username)
+        if settings.trajectory_path is None:  # PI_TRAJECTORY_PATH="" disables storage
+            raise HTTPException(status_code=404, detail="no trajectory for this session")
+        traj = latest_trajectory(settings.trajectory_path, session_id)
+        if traj is None:
+            raise HTTPException(status_code=404, detail="no trajectory for this session")
+        return traj
 
     @app.post("/v1/sessions/{session_id}/runs")
     async def run(
@@ -522,14 +555,18 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         user: str | None = None,
         tool: str | None = None,
         limit: int = 50,
+        day: str | None = None,
     ) -> dict:
-        """Tail the daily audit JSONL with optional user/tool filters."""
+        """Tail the daily audit JSONL with optional user/tool/day filters."""
         import json as json_mod
         from datetime import datetime, timezone as tz
 
         from pi.security.audit import _daily_path
 
-        day = datetime.now(tz.utc).strftime("%Y-%m-%d")
+        if day is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise HTTPException(status_code=400, detail="day must look like 2026-09-27")
+        if day is None:
+            day = datetime.now(tz.utc).strftime("%Y-%m-%d")
         path = _daily_path(settings.audit_path, day)
         records: list[dict] = []
         if path.is_file():
@@ -549,6 +586,20 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                     break
         return {"records": records}
 
+    @app.get("/v1/admin/stats")
+    async def admin_stats(admin: str = Depends(require_admin)) -> dict:
+        """Console overview: today's usage aggregates + fleet sizes."""
+        return {
+            "today": await usage_tracker.today_summary(),
+            "users": await users.count(),
+            "sessions": await sessions.count(),
+        }
+
+    @app.get("/v1/admin/usage")
+    async def admin_usage(admin: str = Depends(require_admin)) -> dict:
+        """Console users tab: this month's aggregate per user."""
+        return {"users": await usage_tracker.monthly_by_user()}
+
     @app.get("/v1/usage")
     async def usage_summary(username: str = Depends(current_user)) -> dict:
         user = await users.by_username(username)
@@ -557,5 +608,23 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         summary["quota_tokens"] = quota.quota_tokens
         summary["used_tokens"] = quota.used_tokens
         return summary
+
+    # Zero-build frontend: one static dir of single-file pages (trajectory
+    # viewer first, TRAJECTORY_VIEW_DESIGN). Mounted last so it never shadows
+    # an API route. 404s and auth are handled inside the pages themselves.
+    # HTML is served no-cache: these pages change often and a stale cached copy
+    # has repeatedly looked like "the fix isn't there".
+    static_dir = Path(__file__).parent / "static"
+    if static_dir.is_dir():
+        from starlette.staticfiles import StaticFiles
+
+        class _NoCacheStatic(StaticFiles):
+            async def get_response(self, path: str, scope):
+                response = await super().get_response(path, scope)
+                if path.endswith(".html"):
+                    response.headers["Cache-Control"] = "no-cache"
+                return response
+
+        app.mount("/ui", _NoCacheStatic(directory=static_dir), name="ui")
 
     return app

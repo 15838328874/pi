@@ -8,6 +8,8 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
+
+from conftest import TEST_DB_URL
 from fastapi.testclient import TestClient
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
@@ -17,7 +19,7 @@ from pi.server.config import ServerSettings
 
 @pytest.fixture()
 def server(tmp_path: Path, monkeypatch):
-    monkeypatch.setenv("PI_DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'srv.db').as_posix()}")
+    monkeypatch.setenv("PI_DATABASE_URL", TEST_DB_URL)
     monkeypatch.setenv("PI_REDIS_NS", "test-" + uuid.uuid4().hex[:8])
     monkeypatch.setenv("PI_MODEL", "fake/demo")
     monkeypatch.setenv("PI_JWT_SECRET", "test-secret-key")
@@ -126,6 +128,44 @@ class TestSessions:
         )
         assert server.get(f"/v1/sessions/{sid}", headers={"Authorization": f"Bearer {alice}"}).status_code == 200
 
+    def test_delete_session_removes_it_and_messages(self, server):
+        _register(server, "alice", "password123")
+        token = _login(server, "alice", "password123")
+        h = {"Authorization": f"Bearer {token}"}
+        sid = server.post("/v1/sessions", json={"title": "temp"}, headers=h).json()["id"]
+        with server.stream(
+            "POST", f"/v1/sessions/{sid}/runs", json={"prompt": "hi"}, headers=h
+        ) as resp:
+            list(resp.iter_lines())
+        assert server.get(f"/v1/sessions/{sid}/messages", headers=h).json()["messages"]
+
+        r = server.delete(f"/v1/sessions/{sid}", headers=h)
+        assert r.status_code == 200
+        assert r.json() == {"deleted": sid}
+        assert server.get("/v1/sessions", headers=h).json()["sessions"] == []
+        assert server.get(f"/v1/sessions/{sid}", headers=h).status_code == 404
+        assert server.get(f"/v1/sessions/{sid}/messages", headers=h).status_code == 404
+
+    def test_delete_cross_user_404_and_keeps_session(self, server):
+        _register(server, "alice", "password123")
+        _register(server, "bob", "password123")
+        alice = _login(server, "alice", "password123")
+        bob = _login(server, "bob", "password123")
+        sid = server.post(
+            "/v1/sessions", json={"title": "mine"}, headers={"Authorization": f"Bearer {alice}"}
+        ).json()["id"]
+        assert (
+            server.delete(f"/v1/sessions/{sid}", headers={"Authorization": f"Bearer {bob}"}).status_code
+            == 404
+        )
+        assert server.get(f"/v1/sessions/{sid}", headers={"Authorization": f"Bearer {alice}"}).status_code == 200
+
+    def test_delete_unknown_404(self, server):
+        _register(server, "alice", "password123")
+        token = _login(server, "alice", "password123")
+        r = server.delete("/v1/sessions/deadbeef", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 404
+
 
 class TestRuns:
     def test_run_streams_sse_and_persists(self, server):
@@ -178,10 +218,29 @@ class TestRuns:
         roles = [m["role"] for m in msgs]
         assert roles == ["user", "assistant", "user", "assistant"]
 
+    def test_messages_blocks_contract_is_an_array(self, server):
+        """The API contract: "blocks" is the block ARRAY, not the stored Message
+        object ({"role":..,"blocks":[..]}). The chat UI crashed on the object
+        shape after every run - live text flashed then vanished on re-render."""
+        _register(server, "alice", "password123")
+        token = _login(server, "alice", "password123")
+        h = {"Authorization": f"Bearer {token}"}
+        sid = server.post("/v1/sessions", json={"model": "fake/demo"}, headers=h).json()["id"]
+        with server.stream(
+            "POST", f"/v1/sessions/{sid}/runs", json={"prompt": "hello"}, headers=h
+        ) as resp:
+            list(resp.iter_lines())
+        msgs = server.get(f"/v1/sessions/{sid}/messages", headers=h).json()["messages"]
+        assert msgs, "run should persist messages"
+        for m in msgs:
+            assert isinstance(m["blocks"], list), m
+            for b in m["blocks"]:
+                assert isinstance(b, dict) and "type" in b, b
+
 
 class TestRateLimit:
     def test_rate_limit_kicks_in(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("PI_DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'rl.db').as_posix()}")
+        monkeypatch.setenv("PI_DATABASE_URL", TEST_DB_URL)
         monkeypatch.setenv("PI_REDIS_NS", "test-" + uuid.uuid4().hex[:8])
         monkeypatch.setenv("PI_MODEL", "fake/demo")
         monkeypatch.setenv("PI_JWT_SECRET", "test-secret-key")
@@ -263,7 +322,7 @@ class TestForwardedFor:
     single bucket shared by the whole world."""
 
     def _register_ip(self, tmp_path: Path, monkeypatch, trusted: str, xff: str) -> str:
-        monkeypatch.setenv("PI_DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'xff.db').as_posix()}")
+        monkeypatch.setenv("PI_DATABASE_URL", TEST_DB_URL)
         monkeypatch.setenv("PI_REDIS_NS", "test-" + uuid.uuid4().hex[:8])
         monkeypatch.setenv("PI_MODEL", "fake/demo")
         monkeypatch.setenv("PI_JWT_SECRET", "test-secret-key")

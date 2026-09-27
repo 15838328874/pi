@@ -227,6 +227,7 @@ class AgentLoop:
                 stop_reason = "end_turn"
                 call_usage = Usage()
                 t0 = time.perf_counter()
+                ts0 = time.time()  # wall clock at call START, for timeline time mode
 
                 outbound = self.messages
                 if self.policy is not None and self.policy.redact:
@@ -268,6 +269,7 @@ class AgentLoop:
                             {"id": c.id, "name": c.name, "arguments": c.arguments}
                             for c in calls
                         ],
+                        ts=ts0,
                     )
                 )
 
@@ -286,6 +288,7 @@ class AgentLoop:
                 abort_denials = False
                 for call in calls:
                     tool_t0 = time.perf_counter()
+                    tool_ts0 = time.time()  # wall clock at execution START
                     outcome = await self._run_tool(call)
                     outcomes.append(outcome)
                     if outcome.usage is not None:
@@ -299,6 +302,7 @@ class AgentLoop:
                             is_error=outcome.block.is_error,
                             denied=outcome.denied,
                             latency_ms=int((time.perf_counter() - tool_t0) * 1000),
+                            ts=tool_ts0,
                         )
                     )
                     preview = outcome.block.content[:PREVIEW_LEN].replace("\n", " ")

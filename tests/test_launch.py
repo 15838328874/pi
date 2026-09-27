@@ -7,6 +7,8 @@ import uuid
 from pathlib import Path
 
 import pytest
+
+from conftest import TEST_DB_URL
 from fastapi.testclient import TestClient
 
 from pi.security.audit import AuditLogger
@@ -16,7 +18,7 @@ from pi.server.db import UserRepo
 
 
 def _env(tmp_path: Path, monkeypatch, **extra) -> ServerSettings:
-    monkeypatch.setenv("PI_DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'lr.db').as_posix()}")
+    monkeypatch.setenv("PI_DATABASE_URL", TEST_DB_URL)
     monkeypatch.setenv("PI_MODEL", "fake/demo")
     monkeypatch.setenv("PI_JWT_SECRET", "test-secret-key-0123456789abcdef")
     monkeypatch.setenv("PI_WORKSPACE_ROOT", str(tmp_path / "ws"))
@@ -83,7 +85,8 @@ class TestAdminEndpoints:
             r = client.get("/v1/admin/users", headers=admin)
             assert r.status_code == 200
             names = {u["username"] for u in r.json()["users"]}
-            assert names == {"root", "bob"}
+            # 库里另有 conftest 播种的 fixture 用户（u1..u20，FK 完整性），只断言注册的
+            assert {"root", "bob"} <= names
 
             # quota update
             r = client.patch("/v1/admin/users/bob", json={"quota_tokens": 12345}, headers=admin)

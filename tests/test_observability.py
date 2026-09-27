@@ -8,6 +8,8 @@ import uuid
 from pathlib import Path
 
 import pytest
+
+from conftest import TEST_DB_URL
 from fastapi.testclient import TestClient
 
 from pi.llm.base import LLMProvider, StreamEnd, StreamEvent, TextDelta
@@ -184,7 +186,7 @@ class TestTracing:
 
 class TestServerMetering:
     def test_usage_recorded_and_summary(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("PI_DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'u.db').as_posix()}")
+        monkeypatch.setenv("PI_DATABASE_URL", TEST_DB_URL)
         monkeypatch.setenv("PI_REDIS_NS", "test-" + uuid.uuid4().hex[:8])
         monkeypatch.setenv("PI_MODEL", "fake/demo")
         monkeypatch.setenv("PI_JWT_SECRET", "test-secret-key-0123456789abcdef")
@@ -214,7 +216,7 @@ class TestServerMetering:
             assert any(m["model"] == "fake/demo" for m in summary["models"])
 
     def test_quota_exhaustion_returns_402(self, tmp_path: Path, monkeypatch):
-        monkeypatch.setenv("PI_DATABASE_URL", f"sqlite+aiosqlite:///{(tmp_path / 'q.db').as_posix()}")
+        monkeypatch.setenv("PI_DATABASE_URL", TEST_DB_URL)
         monkeypatch.setenv("PI_REDIS_NS", "test-" + uuid.uuid4().hex[:8])
         monkeypatch.setenv("PI_MODEL", "fake/demo")
         monkeypatch.setenv("PI_JWT_SECRET", "test-secret-key-0123456789abcdef")

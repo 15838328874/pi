@@ -9,10 +9,14 @@ Python implementation of the [pi coding agent](https://github.com/earendil-works
 | `pi-coding-agent` | `pi.tools` + `pi.prompt`                              |
 | daemon / server   | `pi.server` (FastAPI + SSE), `pi.cli` (serve/migrate) |
 
-> **New to this codebase? Read [`ARCHITECTURE.md`](ARCHITECTURE.md) first.**
-> It is the onboarding handbook: full layer-by-layer architecture, every module and
-> function explained with design rationale, quick-start, configuration reference,
-> deployment notes, and the pitfalls the previous maintainer stepped on.
+> **文档地图**（四个文档各管一段，知识点不重复）：
+>
+> | 文档 | 定位 | 什么问题看它 |
+> |---|---|---|
+> | `README.md` | 门面 | 这是什么、怎么装、怎么跑（快速上手入口） |
+> | `PROJECT_GUIDE.md` | 叙事与价值 | 为什么这么设计（取舍）、踩过什么坑（故事版）、测试样例与实测数据 |
+> | `ARCHITECTURE.md` | 技术手册 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19） |
+> | `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
 
 Linux only. The former single-user CLI/TUI mode, the local SQLite session store, and
 all Windows/WSL support have been removed — this package is the service and nothing else.
@@ -75,6 +79,10 @@ Notes:
 pi-py migrate                                  # alembic upgrade head against PI_DATABASE_URL
 pi-py serve --host 0.0.0.0 --port 8300
 ```
+
+**本地测试环境**（MySQL + Redis + Milvus 全套 Docker 化 + 真实模型，与生产严格区分）：
+见 [`deploy/local-dev.md`](deploy/local-dev.md)，基础设施编排在 `deploy/docker-compose.local.yml`，
+环境变量模板在 `deploy/env.local.example`（生产是云端托管 MySQL/Redis/Milvus + `docker-compose.cloud.yml`）。
 
 Registration is open: every signup is a normal user. Admin is granted only by writing the
 database directly — there is no route for it:
@@ -169,14 +177,22 @@ policy file the server still runs with `path_sandbox + redact` on. Every tool ca
 | Audit | append-only daily-rotated JSONL: tool calls, policy decisions, compaction, and **every register/login attempt** with client IP + user agent (never the password). All fields truncated, because the failed-login path is attacker-controlled and `LoginIn.username` is unbounded. Now that it holds IPs it is personal data — give it a retention period |
 | Reverse proxy | `PI_FORWARDED_ALLOW_IPS` (default `127.0.0.1`) lists whose `X-Forwarded-For` to trust; both compose files set it to `172.16.0.0/12` so the Caddy container qualifies. A wrong value **fails silently** — every client is logged as the proxy, and any IP-keyed limit collapses into one bucket. Never `*`: uvicorn then returns the leftmost, client-supplied entry |
 | Streaming | SSE (`text/event-stream`): start / text_delta / toolcall_start / toolcall_end / compaction / turn_end / error / done |
-| Storage | SQLAlchemy 2.0 async over MySQL (aiomysql) or PostgreSQL (asyncpg); `PI_DATABASE_URL` required, schema managed by Alembic |
+| Storage | SQLAlchemy 2.0 async over MySQL (aiomysql) or PostgreSQL (asyncpg); `PI_DATABASE_URL` required, schema managed by Alembic. Raw run trajectories append to `PI_TRAJECTORY_PATH` (default `~/.pi-py/trajectories.jsonl`, daily rotation; `""` = off) — persistence failures are logged, never allowed to fail a run |
 | Workspaces | per-user sandbox dir `PI_WORKSPACE_ROOT/<user>/` |
 | Observability | JSON access log with request id + latency; `/healthz`, `/readyz`; full audit trail |
 
 API (see `/docs` for OpenAPI): `POST /v1/auth/register|login|logout`, `GET /v1/me`,
-`GET/POST /v1/sessions`, `GET /v1/sessions/{id}`, `GET /v1/sessions/{id}/messages`,
+`GET/POST /v1/sessions`, `GET /v1/sessions/{id}`, `DELETE /v1/sessions/{id}`,
+`GET /v1/sessions/{id}/messages`,
+`GET /v1/sessions/{id}/trajectory` (latest raw run, ownership-checked),
 `POST /v1/sessions/{id}/runs` (SSE), `GET /v1/usage`, `GET /v1/admin/users`,
-`PATCH /v1/admin/users/{u}`, `POST /v1/admin/users/{u}/revoke`, `GET /v1/admin/audit`.
+`PATCH /v1/admin/users/{u}`, `POST /v1/admin/users/{u}/revoke`, `GET /v1/admin/audit`
+(`?day=YYYY-MM-DD&user=&tool=`), `GET /v1/admin/stats` (today's aggregates + fleet
+sizes), `GET /v1/admin/usage` (monthly per-user).
+Zero-build web UI (single-file vanilla JS pages): user app at `GET /ui/app.html`
+(login/sessions/chat with full tool-call trace + monthly usage), the trajectory
+viewer at `GET /ui/trajectory.html?session=<id>`, and the admin console at
+`GET /ui/admin.html` (overview/users+quota/audit).
 
 ## Observability, metering, resilience
 
@@ -201,7 +217,7 @@ API (see `/docs` for OpenAPI): `POST /v1/auth/register|login|logout`, `GET /v1/m
 | Warm container pool | docker mode defaults to a per-workspace warm pool: containers are preheated at turn start (concurrent with the first LLM response), commands run via `docker exec` (no per-call container lifecycle), idle entries are recycled (`PI_SANDBOX_IDLE_TTL`, default 600s), LRU-evicted at capacity (`PI_SANDBOX_POOL_MAX`, default 16) with soft overshoot when all are busy, and vanished containers are rebuilt transparently. `PI_SANDBOX_POOL=0` restores the legacy fresh-container-per-call behaviour. Warm containers self-terminate after `PI_SANDBOX_WARM_LIFETIME` (default 2h) so a crashed app cannot orphan them forever |
 | Container resource limits | `PI_SANDBOX_MEMORY` (1g) / `PI_SANDBOX_PIDS` (256) / `PI_SANDBOX_CPUS` (1.0). Docker's own defaults are **no limit at all** (`Memory=0`, `NanoCpus=0`, no `PidsLimit`), and registration is open, so uncapped containers let any account exhaust the host with one command — `--network none` does not cover resource exhaustion. Applied at **all four** container-creation paths (cold CLI, cold Engine API, warm CLI, warm API); `--memory-swap` is set equal to `--memory` because docker otherwise allows 2x via swap. Keep `PI_SANDBOX_MEMORY × PI_MAX_CONCURRENT_RUNS` well under physical RAM (shipped: 1g × 8 = 8 GiB of 16 GiB). `PI_SANDBOX_USER` defaults to the **app's own uid:gid** so files written through the bind mount stay readable and deletable by it — `0:0` bare metal, `10001:10001` under compose, no config change needed |
 | Fail-loud config validation | Two settings whose wrong value silently removed isolation now refuse to start or self-correct: an unrecognised `PI_SANDBOX` raises in `create_app` (and the legitimate local path logs a warning spelling out the consequence), and `server_policy()` forces `path_sandbox`/`redact` on so a `PI_POLICY` file can add rules but never subtract them |
-| Container image | multi-stage `Dockerfile` (non-root uid 10001, HEALTHCHECK `/healthz`, migrations baked into `/opt/pi-py`); `docker-compose.yml` brings up app + postgres + redis with health-gated startup |
+| Container image | multi-stage `Dockerfile` (non-root uid 10001, HEALTHCHECK `/healthz`, migrations baked into `/opt/pi-py`); `docker-compose.local.yml` (MySQL+Redis+Milvus 基础设施) 与 `docker-compose.cloud.yml`（生产 app+caddy，DB 云端托管） |
 | Load tested *(historical, inherited)* | `tools/loadtest.py`: previous maintainer's run — 50 users x 2 rounds on self-hosted PG+Redis, 100/100 success, p95 ~2.4s, p99 ~3.1s (includes PBKDF2 registration); same-session concurrency correctly serialized by the lock. **Not re-measured on the managed MySQL+Redis deployment.** The tool prints percentiles to stdout and writes no result file |
 | Sandbox capacity *(measured on this deployment)* | `tools/sandbox_bench.py`, 4 vCPU / 16 GiB ECS, `PI_SANDBOX=docker` warm pool, `python:3.12-slim`, network off. Throughput saturates at **~52 exec/s by N=4 concurrent workspaces** and stays flat to N=64 with host CPU at 96-100%, so p50 latency is pure queue depth: 44ms @ N=1, 154 @ 8, 292 @ 16, 567 @ 32, 1162 @ 64 — **zero failures at every level**. A heavier command (`python -c`) drops the ceiling to ~42/s. Memory is not the constraint (~26 MiB per warm user); cold-starting 64 containers at once takes 3.0s. The Engine API transport is only 1.3x faster per call than `docker exec`, so the ceiling is dockerd/runc, not the CLI transport. Note `PI_SANDBOX_POOL_MAX=16` does **not** cap a simultaneous arrival storm — it logs "allowing temporary overshoot" and creates all 64. In the shipped config `PI_MAX_CONCURRENT_RUNS=8` caps concurrent turns first, so the sandbox runs at ~154ms p50 with 6x headroom. **Measured before the per-container ceilings existed** — the host-CPU-saturation figures in particular predate `PI_SANDBOX_CPUS=1.0`, so re-run the bench if you tighten the caps |
 | Multi-instance verified *(historical, inherited)* | two instances sharing one Redis/DB: cross-instance session lock confirmed (Redis lock key observed with expected TTL), compose `replicas` knob added |

@@ -1,0 +1,62 @@
+# 本地测试环境基础设施（与生产同构：MySQL + Redis + Milvus 独立部署）。
+# 生产环境见 docker-compose.cloud.yml（app + caddy，DB/Redis/Milvus 用云端托管服务）。
+#
+# 启动：docker compose -f deploy/docker-compose.local.yml up -d
+#   如果本机已有 Redis（如 apt 的 redis-server 占着 6379）或已有 Milvus 容器，
+#   只起缺的即可：docker compose -f deploy/docker-compose.local.yml up -d mysql
+#
+# 端口约定（本地测试环境固定）：
+#   MySQL   127.0.0.1:3306   （root/pi_root_local，库 pi_py，用户 pi/pi_py_local）
+#   Redis   127.0.0.1:6379
+#   Milvus  127.0.0.1:19531  （容器内 19530；9092 为 metrics）
+#   应用    http://localhost:8300（pi-py serve，跑在宿主机 python，不进容器）
+
+services:
+  mysql:
+    image: mysql:8
+    container_name: pi-py-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: pi_root_local
+      MYSQL_DATABASE: pi_py
+      MYSQL_USER: pi
+      MYSQL_PASSWORD: pi_py_local
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ppi_root_local"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    container_name: pi-py-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis-data:/data
+
+  # Milvus standalone（embedded 模式：内置 etcd + 本地存储，单容器即可，
+  # 与生产 Milvus 的服务端行为一致，只是不保证高可用）
+  milvus:
+    image: milvusdb/milvus:v2.5.4
+    container_name: pi-py-milvus
+    restart: unless-stopped
+    environment:
+      ETCD_USE_EMBED: "true"
+      COMMON_STORAGETYPE: local
+    ports:
+      - "127.0.0.1:19531:19530"
+      - "127.0.0.1:9092:9091"
+    volumes:
+      - milvus-data:/var/lib/milvus
+
+volumes:
+  mysql-data:
+  redis-data:
+  milvus-data:

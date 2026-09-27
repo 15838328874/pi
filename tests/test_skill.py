@@ -119,7 +119,10 @@ def test_skill_index_injected_into_system_prompt(tmp_path, monkeypatch):
     )
     provider = _RecordingProvider(responses=[[TextBlock(text="hi")]])
     # run_turn resolves the provider from the model string; swap in the recorder
-    monkeypatch.setattr("pi.server.runner.resolve_chain", lambda model: provider)
+    monkeypatch.setattr(
+        "pi.server.runner.resolve_chain",
+        lambda model, on_fallback=None, **kw: provider,
+    )
 
     async def main():
         await db.init()

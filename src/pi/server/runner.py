@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
@@ -26,6 +27,7 @@ from pi.agent.loop import AgentLoop
 from pi.llm.registry import resolve_chain
 from pi.models import Message, Role, TextBlock
 from pi.observability.metering import UsageTracker
+from pi.observability.metrics import Metrics
 from pi.observability.tracing import Tracer
 from pi.prompt import SYSTEM_PROMPT
 from pi.security.audit import AuditLogger
@@ -67,6 +69,7 @@ class RunManager:
         sandbox: str = "",
         sandbox_image: str = "python:3.12-slim",
         registry: ToolRegistry | None = None,
+        metrics: Metrics | None = None,
     ):
         self.policy = policy
         self.audit = audit
@@ -78,6 +81,7 @@ class RunManager:
         self.sandbox_image = sandbox_image
         self.sandbox_network = False
         self.registry = registry or ToolRegistry()  # builtin-only when unset
+        self.metrics = metrics or Metrics(enabled=False)
         self._semaphore = asyncio.Semaphore(max_concurrent)
 
     async def run_turn(
@@ -157,7 +161,16 @@ class RunManager:
                         f"<available skills>\n{skill_index}\n</available skills>"
                     )
 
-                provider = resolve_chain(model)
+                provider = resolve_chain(
+                    model,
+                    # "silent degradations must make noise": a fallback hop is
+                    # exactly that, and the counter is the only thing that
+                    # shows it on a dashboard (callback failures are swallowed
+                    # by FallbackProvider itself).
+                    on_fallback=lambda frm, to, reason: self.metrics.fallback(
+                        from_model=frm, to_model=to
+                    ),
+                )
                 agent = AgentLoop(
                     provider=provider,
                     tools=await self.registry.tools(),
@@ -194,6 +207,8 @@ class RunManager:
 
                 final_usage = None
                 final_turns = 0
+                run_status = "ok"
+                run_started = time.perf_counter()
 
                 async def _stream():
                     async with asyncio.timeout(self.timeout):
@@ -201,15 +216,51 @@ class RunManager:
                             yield ev
 
                 try:
-                    async for ev in _stream():
-                        if isinstance(ev, TurnEndEvent):
-                            final_usage = ev.usage
-                            final_turns = ev.turns
-                        yield ev
+                    async with self.metrics.in_flight():
+                        async for ev in _stream():
+                            if isinstance(ev, TurnEndEvent):
+                                final_usage = ev.usage
+                                final_turns = ev.turns
+                            elif isinstance(ev, ErrorEvent):
+                                # a timeout that lands inside the loop's own try
+                                # surfaces here as an ErrorEvent with the
+                                # exception name in the message
+                                run_status = (
+                                    "timeout" if "TimeoutError" in ev.message else "error"
+                                )
+                            yield ev
                 except TimeoutError:
+                    run_status = "timeout"
                     yield ErrorEvent(message=f"run timed out after {self.timeout}s")
                 except Exception as exc:  # noqa: BLE001
+                    run_status = "error"
                     yield ErrorEvent(message=f"{type(exc).__name__}: {exc}")
+                finally:
+                    run_duration = time.perf_counter() - run_started
+                    # metrics are a projection, never a dependency: any failure
+                    # here is logged and swallowed, like metering below
+                    try:
+                        self.metrics.run_finished(
+                            status=run_status,
+                            model=model,
+                            duration_s=run_duration,
+                            turns=final_turns,
+                            tokens_in=final_usage.input_tokens if final_usage else 0,
+                            tokens_out=final_usage.output_tokens if final_usage else 0,
+                        )
+                        traj = getattr(agent, "trajectory", None)
+                        if traj is not None:
+                            for e in traj.to_dict()["events"]:
+                                if e.get("type") == "ToolCall":
+                                    # spans miss denied/unknown/invalid-args calls;
+                                    # the trajectory has every attempted execution
+                                    self.metrics.tool_call(
+                                        tool=str(e.get("name", "?")),
+                                        ok=not bool(e.get("is_error")),
+                                        duration_s=float(e.get("latency_ms", 0)) / 1000.0,
+                                    )
+                    except Exception:  # noqa: BLE001 - metrics must never fail a run
+                        logging.getLogger("pi.server").exception("metrics projection failed")
 
                 if buffer:
                     base_idx = await message_repo.count_for_session(session.id)

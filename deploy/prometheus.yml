@@ -1,0 +1,30 @@
+# Scrape config for pi-py. Run prom/prometheus with this file mounted
+# read-only, scraping over the private network - never across an interface.
+#
+# Prometheus does NOT interpolate environment variables in this file, so a
+# secret cannot be written as ${PI_METRICS_TOKEN} - use bearer_token_file and
+# mount the token beside this file if you set one.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: pi-py
+    metrics_path: /metrics
+    scheme: http
+    static_configs:
+      # The service name on the compose network, so no published port is
+      # involved. Only correct while PI_REPLICAS=1: with more than one replica
+      # this name round-robins and every counter looks like it resets, so
+      # rate() reports garbage - list one target per replica instead.
+      - targets: ["app:8300"]
+        labels:
+          service: pi-py
+    # Uncomment when PI_METRICS_TOKEN is set, and keep the token out of the
+    # repo (docker secret, or a second bind mount of a file containing just
+    # the token):
+    # authorization:
+    #   type: Bearer
+    #   credentials_file: /etc/prometheus/pi_metrics_token

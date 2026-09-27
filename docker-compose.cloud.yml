@@ -39,6 +39,8 @@ services:
       PI_EMBEDDING_API_KEY: ${PI_EMBEDDING_API_KEY:-}
       PI_EMBEDDING_MODEL: ${PI_EMBEDDING_MODEL:-}
       PI_MILVUS_URI: ${PI_MILVUS_URI:-}
+      PI_METRICS: ${PI_METRICS:-1}
+      PI_METRICS_TOKEN: ${PI_METRICS_TOKEN:-}
       PI_POLICY: /etc/pi-py/policy.json
       # Caddy is a separate container, so its source IP is on Docker's bridge
       # (172.16/12), not 127.0.0.1. Without this uvicorn drops X-Forwarded-For

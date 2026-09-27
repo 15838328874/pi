@@ -9,8 +9,8 @@ COPY src ./src
 RUN pip install --no-cache-dir --prefix=/install .
 
 FROM python:3.12-slim
-# runtime deps only (db drivers + redis + serving + migrations + milvus/mcp clients)
-RUN pip install --no-cache-dir asyncpg aiomysql redis uvicorn alembic pymilvus mcp
+# runtime deps only (db drivers + redis + serving + migrations + milvus/mcp + metrics)
+RUN pip install --no-cache-dir asyncpg aiomysql redis uvicorn alembic pymilvus mcp prometheus-client
 
 COPY --from=builder /install /usr/local
 # Bake migrations into the image so `pi-py migrate` works without the repo.

@@ -39,20 +39,25 @@ async def setup_user(client: httpx.AsyncClient, url: str, i: int) -> tuple[str, 
     return token, sid
 
 
-async def one_run(client: httpx.AsyncClient, url: str, token: str, sid: str) -> tuple[float, int, bool]:
+async def one_run(client: httpx.AsyncClient, url: str, token: str, sid: str, timeout: float = 120.0) -> tuple[float, int, bool]:
     """Returns (duration, status_code, lock_rejected).
 
     Lock rejection arrives as an SSE `error` event inside a 200 response,
-    so the body must be inspected, not just the status code.
+    so the body must be inspected, not just the status code. status_code 0
+    means a transport error (timeout / dropped stream) - real models need a
+    bigger timeout than the fake-model default.
     """
     start = time.perf_counter()
-    r = await client.post(
-        f"{url}/v1/sessions/{sid}/runs",
-        json={"prompt": "load test round"},
-        headers={"Authorization": f"Bearer {token}"},
-        timeout=120.0,
-    )
-    body = r.text
+    try:
+        r = await client.post(
+            f"{url}/v1/sessions/{sid}/runs",
+            json={"prompt": "load test round"},
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=timeout,
+        )
+        body = r.text
+    except httpx.HTTPError:
+        return time.perf_counter() - start, 0, False
     rejected = "already running" in body
     return time.perf_counter() - start, r.status_code, rejected
 
@@ -65,15 +70,15 @@ def pct(values: list[float], p: float) -> float:
     return ordered[idx]
 
 
-async def scenario_multi_user(url: str, users: int, rounds: int) -> None:
+async def scenario_multi_user(url: str, users: int, rounds: int, timeout: float) -> None:
     latencies: list[float] = []
     status_codes: list[int] = []
 
-    async with httpx.AsyncClient(timeout=180.0, trust_env=False) as client:
+    async with httpx.AsyncClient(timeout=timeout + 60.0, trust_env=False) as client:
         async def worker(i: int):
             token, sid = await setup_user(client, url, i)
             for r in range(rounds):
-                dur, code, _ = await one_run(client, url, token, sid)
+                dur, code, _ = await one_run(client, url, token, sid, timeout=timeout)
                 latencies.append(dur)
                 status_codes.append(code)
 
@@ -125,6 +130,7 @@ async def main() -> None:
     parser.add_argument("--url", default="http://127.0.0.1:8300")
     parser.add_argument("--users", type=int, default=20)
     parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--timeout", type=float, default=120.0, help="per-run request timeout; real models need 300+")
     parser.add_argument("--same-session", type=int, default=0, help="concurrent requests on one session")
     args = parser.parse_args()
 
@@ -132,7 +138,7 @@ async def main() -> None:
     if args.same_session:
         await scenario_same_session(args.url, args.same_session)
     else:
-        await scenario_multi_user(args.url, args.users, args.rounds)
+        await scenario_multi_user(args.url, args.users, args.rounds, args.timeout)
     print(f"\ntotal wall time: {time.perf_counter() - start:.1f}s")
 
 

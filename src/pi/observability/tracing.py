@@ -44,6 +44,13 @@ class JsonlSpan:
 class Tracer:
     """Base tracer; subclasses implement span() and end_span()."""
 
+    # Optional Metrics observer: set by get_tracer(metrics=...). track()
+    # projects closed spans into it from this one choke point, so no span
+    # caller needs to know metrics exist. Class-level default so subclasses
+    # that don't call super().__init__() (JsonlTracer, OtelTracer) still have
+    # the attribute.
+    metrics = None
+
     def span(self, name: str, attributes: dict[str, Any] | None = None) -> Any:
         return NoOpSpan()
 
@@ -57,7 +64,10 @@ class Tracer:
             span.set_status(False, f"{type(exc).__name__}: {exc}")
             raise
         finally:
-            self.end_span(name, span, attributes, time.perf_counter() - start)
+            duration = time.perf_counter() - start
+            self.end_span(name, span, attributes, duration)
+            if self.metrics is not None:
+                self.metrics.observe_span(name, span, duration)
 
     def end_span(self, name: str, span: Any, attributes: dict[str, Any] | None, duration_s: float) -> None:
         pass
@@ -119,12 +129,19 @@ class OtelTracer(Tracer):
 
 
 def get_tracer(backend: str = "noop", **kwargs) -> Tracer:
-    """backend: 'noop' | 'jsonl' | 'otel' (falls back to jsonl if otel missing)."""
+    """backend: 'noop' | 'jsonl' | 'otel' (falls back to jsonl if otel missing).
+
+    kwargs: path (jsonl), service_name (otel), metrics (a Metrics observer
+    attached to every span close)."""
     if backend == "jsonl":
-        return JsonlTracer(kwargs.get("path"))
-    if backend == "otel":
+        tracer = JsonlTracer(kwargs.get("path"))
+    elif backend == "otel":
         try:
-            return OtelTracer(kwargs.get("service_name", "pi-py"))
+            tracer = OtelTracer(kwargs.get("service_name", "pi-py"))
         except ImportError:
-            return JsonlTracer(kwargs.get("path"))
-    return NoOpTracer()
+            tracer = JsonlTracer(kwargs.get("path"))
+    else:
+        tracer = NoOpTracer()
+    if kwargs.get("metrics") is not None:
+        tracer.metrics = kwargs["metrics"]
+    return tracer

@@ -610,6 +610,27 @@ User-Agent，**不记密码**。三点注意：
 内置各模型每百万 token 的输入/输出美元单价表，`estimate_cost()` 估算单次成本；
 支持用 `~/.pi-py/prices.json` 覆盖/补充单价。仅估算（不同供应商计费有差异）。
 
+### 10.4 `metrics.py` — Prometheus 指标（旁观者架构:单一记录点投影)
+
+`prometheus-client`(可选依赖,observability extra),pull 模型暴露于 `GET /metrics`
+(不在 OpenAPI schema 里;`PI_METRICS_TOKEN` 门控,**错 token 回 404 不是 403**——403
+等于告诉扫描器端点存在;`PI_METRICS=0` → 503 带原因)。
+
+**每族指标一个既有 choke point,不新增埋点**:
+
+| 指标族 | 来源 | 为什么 |
+|---|---|---|
+| llm.call(counter/histogram,model/ok) | `Tracer.track()` finally 钩子(tracing.py,基类唯一出口) | 唯一覆盖流中断失败的记录点(LlmCall 轨迹事件只在成功后记录) |
+| tool.call(tool/ok,含 denied/unknown/无效参数) | run 结束时从 trajectory 投影(runner.py) | tool.call span 只包"解析+放行"路径,trajectory 覆盖全部尝试 |
+| run 级(runs/status、duration、turns、tokens、in_flight) | RunManager:in_flight 用 async context manager 包运行段(gauge 异常路径回落);status 判定同时看 ErrorEvent 消息里的 TimeoutError 与 trajectory RunError | TurnEndEvent 自带 usage/turns |
+| memory 检索(outcome/duration/词法回退) | MemoryRepo 的 `on_retrieval` 回调缝(仿 on_embed_usage);outcome:vector_hit/lexical_fallback/no_hits/embed_failed | 调用方拿不到 vector/lexical 出处 |
+| 模型降级 | FallbackProvider 既有 `on_fallback` → `pi_llm_fallbacks_total(from,to)` | "静默降级必须出声" |
+| HTTP(method/route/status/TTFB) | 既有请求中间件;route 用**路由模板**(有界),未匹配统一 "unmatched" | SSE 在响应后流式——HTTP duration 是 TTFB 语义,不是 run 时长 |
+
+**标签纪律**:仅 model/tool/status/outcome/method/route;username/session/prompt 进标签
+= 基数随用户数增长 = 自造事故。降级计数器(词法回退、模型降级)是本设计的核心价值:
+让静默故障在仪表盘上出声。采集:deploy/prometheus.yml(内网直连,多副本=每副本一个 target)。
+
 ---
 
 ## 11. 多用户服务 `src/pi/server/`
@@ -845,6 +866,8 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_MILVUS_URI` | 空 | Milvus 连接串（如 `http://127.0.0.1:19531`）；懒连、挂了 readyz 只记 `degraded` 不翻 503（词法兜底，检索质量降级而非正确性） |
 | `PI_MCP_SERVERS` | 空 | JSON 数组：`[{"name","command":[...]}]`（stdio）或 `[{"name","url"}]`（HTTP）；空=不启用。**管理员级配置**——stdio server 作为应用子进程运行、继承应用环境 |
 | `PI_SKILLS_DIR` | 空 | 技能根目录（`<skill>/SKILL.md` + `scripts/`）；空=不加载技能 |
+| `PI_METRICS` | 1 | Prometheus 指标开关；0=关（`/metrics` 回 503） |
+| `PI_METRICS_TOKEN` | 空 | `/metrics` 门控 token；空=开放（启动打 warning），错 token 回 404 |
 
 ---
 

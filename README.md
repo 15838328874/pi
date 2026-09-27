@@ -183,6 +183,7 @@ API (see `/docs` for OpenAPI): `POST /v1/auth/register|login|logout`, `GET /v1/m
 | Concern | Implementation |
 |---|---|
 | Tracing | `PI_TRACER=jsonl` (default, built-in span file) or `otel` (OpenTelemetry bridge, install `pi-py[observability]`); spans: `agent.run` / `llm.call` / `tool.call` with duration + status |
+| Prometheus metrics | `GET /metrics` (text format 0.0.4, `prometheus-client` via `pi-py[observability]`): runs/llm/tool/memory/HTTP RED counters + histograms + `pi_runs_in_flight` gauge; degradation counters for lexical memory fallback and model-chain fallbacks. Every family projects from one existing recording point (tracer span close / trajectory / RunManager / middleware) - labels stay bounded (model/tool/status/route, never user or session). Gate with `PI_METRICS_TOKEN` (wrong token -> 404); `PI_METRICS=0` disables. Scrape config: `deploy/prometheus.yml` |
 | Cost accounting | every completed run records tokens + est. cost (per-model price table, `PI_PRICES_FILE` override); `GET /v1/usage` returns monthly per-model breakdown |
 | Quotas | per-user monthly token quota (`PI_DEFAULT_QUOTA_TOKENS`, default 1M); exhausted -> HTTP 402 |
 | Model fallback | `PI_FALLBACK_CHAIN="openai/qwen3.8-max,openai/qwen3.8-flash,openai/qwen3.6-flash"`; transient errors (connection/timeout/429/5xx) retry with exponential backoff (2x, 0.5s base), then degrade; mid-stream failures never replay; non-transient errors propagate |

@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import re
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -17,12 +18,13 @@ from pathlib import Path
 
 import jwt as pyjwt
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
 from pi.llm import DEFAULT_MODEL
 from pi.observability.metering import UsageTracker
+from pi.observability.metrics import Metrics
 from pi.observability.tracing import get_tracer
 from pi.server.auth import create_token, decode_token, hash_password, verify_password
 from pi.server.cache import get_backend
@@ -118,8 +120,17 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 turns=0,
             )
 
+        async def report_retrieval(outcome: str, duration: float) -> None:
+            # metrics.retrieval is sync and no-ops when disabled; the async
+            # wrapper matches MemoryRepo's callback seam.
+            metrics.retrieval(outcome=outcome, duration_s=duration)
+
         memories = MemoryRepo(
-            db, vector_store=vector_store, embedder=embedder, on_embed_usage=on_embed_usage
+            db,
+            vector_store=vector_store,
+            embedder=embedder,
+            on_embed_usage=on_embed_usage,
+            on_retrieval=report_retrieval,
         )
         # mask_url: a serverless Milvus URI can embed a token in its hostname
         # section - the startup log lands in journald and must not carry it.
@@ -137,6 +148,14 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     if settings.skills_dir:
         providers.append(SkillToolProvider([Path(settings.skills_dir)]))
     registry = ToolRegistry(providers)
+    metrics = Metrics(enabled=settings.metrics_enabled)
+    if settings.metrics_enabled and not settings.metrics_token:
+        # Said once at boot rather than left to the docs: an open /metrics is
+        # fine behind a private network and a risk on a published port.
+        log.warning(
+            "/metrics is open (no PI_METRICS_TOKEN). Fine behind a private "
+            "network, a leak on a published port."
+        )
     limiter = RateLimiter(settings.rate_limit_runs_per_min, backend=cache)
     usage_tracker = UsageTracker(db.engine, default_quota=settings.default_quota_tokens)
     audit = AuditLogger(settings.audit_path)
@@ -146,11 +165,12 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         max_concurrent=settings.max_concurrent_runs,
         timeout_seconds=settings.run_timeout_seconds,
         usage=usage_tracker,
-        tracer=get_tracer(settings.tracer_backend),
+        tracer=get_tracer(settings.tracer_backend, metrics=metrics),
         cache=cache,
         sandbox=settings.sandbox,
         sandbox_image=settings.sandbox_image,
         registry=registry,
+        metrics=metrics,
     )
     runs.sandbox_network = settings.sandbox_net
 
@@ -173,13 +193,32 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.db = db
     app.state.vector_store = vector_store
+    app.state.metrics = metrics
 
     @app.middleware("http")
     async def _request_context(request: Request, call_next):
         request_id = uuid.uuid4().hex[:12]
         start = time.perf_counter()
         response = await call_next(request)
+        duration = time.perf_counter() - start
         response.headers["X-Request-Id"] = request_id
+        # RED counters on the route PATTERN (bounded label set), not the raw
+        # path - /v1/sessions/{id}/runs would otherwise grow labels unboundedly.
+        # Duration is TTFB semantics: an SSE run streams after this point.
+        route = ""
+        r = request.scope.get("route")
+        if r is not None:
+            route = str(getattr(r, "path", "") or "")
+        try:
+            metrics.http_request(
+                method=request.method,
+                # "unmatched" keeps the label set bounded even under 404 scans
+                route=route or "unmatched",
+                status=response.status_code,
+                duration_s=duration,
+            )
+        except Exception:  # noqa: BLE001 - metrics must never fail a request
+            log.debug("http metrics recording failed", exc_info=True)
         log.info(
             json.dumps(
                 {
@@ -187,7 +226,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                     "method": request.method,
                     "path": request.url.path,
                     "status": response.status_code,
-                    "duration_ms": round((time.perf_counter() - start) * 1000, 1),
+                    "duration_ms": round(duration * 1000, 1),
                 }
             )
         )
@@ -220,6 +259,31 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         if user is None or not user.is_admin:
             raise HTTPException(status_code=403, detail="admin privileges required")
         return username
+
+    @app.get("/metrics", include_in_schema=False)
+    async def prometheus_metrics(request: Request) -> Response:
+        """Prometheus text format 0.0.4 for scraping. Out of the OpenAPI doc on
+        purpose: a scraper reads the exposition format, not a schema.
+
+        Every series is aggregate - no username, session or prompt is a label -
+        but together they do describe traffic volume and model usage, so
+        PI_METRICS_TOKEN exists for a published port. A wrong token answers
+        404, not 403: "forbidden" tells a scanner the endpoint is there.
+        """
+        token = settings.metrics_token
+        if token:
+            presented = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            if not secrets.compare_digest(presented, token):
+                return Response(status_code=404)
+        rendered = metrics.render()
+        if rendered is None:
+            return Response(
+                "metrics are off: set PI_METRICS=1 and install pi-py[observability]\n",
+                status_code=503,
+                media_type="text/plain; charset=utf-8",
+            )
+        payload, content_type = rendered
+        return Response(payload, media_type=content_type)
 
     @app.get("/healthz")
     async def healthz() -> dict:

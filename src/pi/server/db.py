@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -343,6 +344,7 @@ class MemoryRepo:
         vector_store: VectorStore | None = None,
         embedder: EmbeddingClient | None = None,
         on_embed_usage: "Callable[[int, int], Awaitable[None]] | None" = None,
+        on_retrieval: "Callable[[str, float], Awaitable[None]] | None" = None,
     ):
         self.db = db
         self.vector_store = vector_store
@@ -350,6 +352,9 @@ class MemoryRepo:
         # (user_id, tokens) after a successful embed call - the app wires this
         # to the usage tracker so embedding spend is metered like LLM tokens.
         self.on_embed_usage = on_embed_usage
+        # (outcome, duration_s) per search - the app wires this to metrics so
+        # a retrieval served by the lexical fallback (index down) makes noise.
+        self.on_retrieval = on_retrieval
 
     async def add(self, user_id: int, text: str) -> None:
         async with AsyncSession(self.db.engine) as s:
@@ -374,12 +379,24 @@ class MemoryRepo:
     async def search(self, user_id: int, query: str, k: int = 3) -> list[MemoryRow]:
         """Vector search when configured; lexical fallback otherwise and on any
         vector-path failure or empty result."""
-        ids = await self._vector_search(user_id, query, k)
+        if self.embedder is None or self.vector_store is None:
+            return await self._lexical_search(user_id, query, k)  # feature off
+        t0 = time.perf_counter()
+        ids, failure = await self._vector_search(user_id, query, k)
         if ids:
             rows = await self._rows_by_ids(user_id, ids)
             if rows:
+                await self._report_retrieval("vector_hit", time.perf_counter() - t0)
                 return rows
-        return await self._lexical_search(user_id, query, k)
+        rows = await self._lexical_search(user_id, query, k)
+        if failure == "embed_failed":
+            outcome = "embed_failed"
+        elif rows:
+            outcome = "lexical_fallback"
+        else:
+            outcome = "no_hits"
+        await self._report_retrieval(outcome, time.perf_counter() - t0)
+        return rows
 
     async def _vector_add(self, memory_id: int, user_id: int, text: str) -> None:
         """Best-effort vector upsert; failures are logged and swallowed so a
@@ -397,21 +414,38 @@ class MemoryRepo:
                 memory_id,
             )
 
-    async def _vector_search(self, user_id: int, query: str, k: int) -> list[int] | None:
-        """None on any failure or empty result -> caller falls back to lexical."""
+    async def _vector_search(
+        self, user_id: int, query: str, k: int
+    ) -> tuple[list[int] | None, str | None]:
+        """(ids, failure). ids None on failure or empty result -> the caller
+        falls back to lexical. failure distinguishes the two outage kinds:
+        "embed_failed" (nothing was billed) vs "store_failed" (embed succeeded,
+        the index is down - the more alarming one)."""
         if self.embedder is None or self.vector_store is None:
-            return None
+            return None, None
         try:
             result = await self.embedder.embed([query])
             # Metered immediately: an embed call that succeeded was billed even
             # if the index (and its fallback) dies right after.
             await self._meter_embed(user_id, result.usage_tokens)
             (vec,) = result.vectors
-            ids = await self.vector_store.search(user_id, vec, k)
-            return ids or None
         except Exception:  # noqa: BLE001 - memory must never fail a run
-            log.exception("vector memory search failed; falling back to lexical")
-            return None
+            log.exception("vector memory search failed (embed); falling back to lexical")
+            return None, "embed_failed"
+        try:
+            ids = await self.vector_store.search(user_id, vec, k)
+        except Exception:  # noqa: BLE001 - memory must never fail a run
+            log.exception("vector memory search failed (index); falling back to lexical")
+            return None, "store_failed"
+        return ids or None, None
+
+    async def _report_retrieval(self, outcome: str, duration_s: float) -> None:
+        if self.on_retrieval is None:
+            return
+        try:
+            await self.on_retrieval(outcome, duration_s)
+        except Exception:  # noqa: BLE001 - metrics must never fail memory
+            log.exception("retrieval metrics reporting failed")
 
     async def _meter_embed(self, user_id: int, tokens: int) -> None:
         if self.on_embed_usage is None or not tokens:

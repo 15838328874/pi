@@ -30,7 +30,7 @@ redis = ["redis>=5.0"]
 migrations = ["alembic>=1.13"]
 milvus = ["pymilvus>=3.0.2"]
 mcp = ["mcp>=2.0"]
-observability = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
+observability = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "prometheus-client>=0.20"]
 production = ["pi-py[postgres,mysql,redis,migrations,milvus,mcp,observability]"]
 
 [tool.pytest.ini_options]

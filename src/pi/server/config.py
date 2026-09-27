@@ -43,6 +43,10 @@ class ServerSettings:
     # MCP servers (JSON array string) and the skills root dir; empty = feature off.
     mcp_servers: list[dict] = field(default_factory=list)
     skills_dir: str = ""
+    # Prometheus metrics. PI_METRICS_TOKEN gates /metrics (empty = open, with a
+    # boot-time warning); a wrong token answers 404, never 403.
+    metrics_enabled: bool = True
+    metrics_token: str = ""
 
     @property
     def vector_memory_enabled(self) -> bool:
@@ -84,6 +88,8 @@ class ServerSettings:
             milvus_uri=os.environ.get("PI_MILVUS_URI", ""),
             mcp_servers=_parse_mcp_servers(os.environ.get("PI_MCP_SERVERS", "")),
             skills_dir=os.environ.get("PI_SKILLS_DIR", ""),
+            metrics_enabled=os.environ.get("PI_METRICS", "1") == "1",
+            metrics_token=os.environ.get("PI_METRICS_TOKEN", ""),
         )
 
 

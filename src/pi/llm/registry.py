@@ -45,12 +45,16 @@ def resolve(model: str, **kwargs) -> LLMProvider:
     )
 
 
-def resolve_chain(model: str, chain: str | None = None, **kwargs) -> LLMProvider:
+def resolve_chain(
+    model: str, chain: str | None = None, on_fallback=None, **kwargs
+) -> LLMProvider:
     """Resolve a model, optionally wrapped in a FallbackProvider.
 
     chain: comma-separated model list, e.g.
     "openai/qwen3.8-max,openai/qwen3.8-flash,openai/deepseek-v4-flash-0731".
     Falls back to $PI_FALLBACK_CHAIN when chain is None; empty string disables.
+    on_fallback: async (from_model, to_model, reason) callback, exceptions
+    swallowed by FallbackProvider (metrics wiring).
     """
     if chain is None:
         chain = os.environ.get("PI_FALLBACK_CHAIN", "")
@@ -66,4 +70,4 @@ def resolve_chain(model: str, chain: str | None = None, **kwargs) -> LLMProvider
     fallbacks = [resolve(m, **kwargs) for m in models if m != model]
     if not fallbacks:
         return primary
-    return FallbackProvider(primary, fallbacks)
+    return FallbackProvider(primary, fallbacks, on_fallback=on_fallback)

@@ -21,8 +21,9 @@
 
 ## 1. 项目定位
 
-pi-py 是 **earendol-works/pi**（TypeScript 版编码智能体外壳）的 **Python 实现**，
-目标不是做一个聊天机器人，而是一个**可执行工具、可审计、可多租户部署的编码智能体服务**。
+pi-py 是 **earendol-works/pi**（TypeScript 版编码智能体外壳）的 **Python 实现**。
+定位（与 §20 战略定位一致）：**可自托管、可扩展工具、可评估、可沉淀训练数据的 AI 智能体平台**——
+编码智能体是第一个深度打磨的场景，MCP/Skills/ToolProvider 让工具能力不受场景限制。
 
 它只有**一个运行形态**：多用户服务（`pi-py serve` + HTTP/SSE API）。内核
 （`pi.agent` + `pi.llm` + `pi.tools`）与运行形态无关，可以单独 import 使用，

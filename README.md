@@ -1,6 +1,12 @@
 # pi-py
 
-Python implementation of the [pi coding agent](https://github.com/earendil-works/pi) harness, shipped as a **multi-user HTTP service**: streaming LLM layer, asyncio agent loop, coding tools, JWT auth, per-user quotas, rate limiting, full audit trail, and optional Docker sandboxing. Mirrors pi's package layering:
+A **self-hostable, extensible AI agent platform**: sandboxed tool execution, multi-tenant
+governance (JWT/quotas/rate limits/audit), a canonical trajectory log, an eval harness with
+scoring and A/B, an RL data flywheel (rollout→reward→SFT/RLVR JSONL), and protocol-level
+tool extensibility via MCP + Skills. Coding is the first fully-developed scenario, not the
+boundary. Python reimplementation of the [pi coding agent](https://github.com/earendil-works/pi)
+harness, shipped as a multi-user HTTP service: streaming LLM layer, asyncio agent loop, coding
+tools, and optional Docker sandboxing. Mirrors pi's package layering:
 
 | pi (TypeScript)   | pi-py (Python)                                        |
 | ----------------- | ----------------------------------------------------- |

@@ -6,6 +6,7 @@ postgresql+asyncpg://... - the schema and queries are dialect-neutral.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -282,6 +283,121 @@ class SessionRepo:
     async def count(self) -> int:
         async with AsyncSession(self.db.engine) as s:
             return (await s.execute(select(func.count(SessionRow.id)))).scalar_one()
+
+
+class AuditEventRow(Base):
+    """Structured query mirror of the audit jsonl (compliance copy stays file-based).
+
+    Columns cover the admin-console filters (day/user/tool/event); the full
+    record lives in ``data``. Writes are best-effort from AuditLogger's async
+    hook - a DB outage never loses the jsonl copy.
+    """
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    ts: Mapped[str] = mapped_column(String(32), index=True)  # ISO, starts with the day
+    event: Mapped[str] = mapped_column(String(16))  # auth / tool_call / compaction
+    username: Mapped[str] = mapped_column(String(64), index=True)  # user or username
+    tool: Mapped[str] = mapped_column(String(32))  # tool name or auth action
+    allowed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    ok: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    data: Mapped[str] = mapped_column(Text)  # full record JSON
+    created_at: Mapped[str] = mapped_column(String(32), default=_now)
+
+
+class AuditRepo:
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def save(self, record: dict[str, Any]) -> None:
+        row = AuditEventRow(
+            ts=str(record.get("ts") or "")[:32],
+            event=str(record.get("event") or "")[:16],
+            username=str(record.get("user") or record.get("username") or "")[:64],
+            tool=str(record.get("tool") or record.get("action") or "")[:32],
+            allowed=record.get("allowed"),
+            ok=record.get("ok"),
+            data=json.dumps(record, ensure_ascii=False),
+        )
+        async with AsyncSession(self.db.engine) as s:
+            s.add(row)
+            await s.commit()
+
+    async def query(
+        self,
+        *,
+        day: str,
+        user: str | None = None,
+        tool: str | None = None,
+        event: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        stmt = select(AuditEventRow).where(AuditEventRow.ts.like(day + "%"))
+        if user:
+            stmt = stmt.where(AuditEventRow.username == user)
+        if tool:
+            stmt = stmt.where(AuditEventRow.tool == tool)
+        if event:
+            stmt = stmt.where(AuditEventRow.event == event)
+        stmt = stmt.order_by(AuditEventRow.id.desc()).limit(min(limit, 500))
+        async with AsyncSession(self.db.engine) as s:
+            rows = (await s.execute(stmt)).scalars().all()
+        return [json.loads(r.data) for r in rows]
+
+
+class RunRow(Base):
+    """Structured query index for canonical run trajectories.
+
+    The jsonl file stays the append-only audit-grade copy (fail-soft, daily
+    rotation); this table is the queryable mirror (by run_id / session_id /
+    user_id). Both are written per run; a DB write failure must not fail the
+    run (the jsonl copy still exists).
+    """
+
+    __tablename__ = "runs"
+
+    run_id: Mapped[str] = mapped_column(String(12), primary_key=True)
+    # 无 FK：轨迹是追加式历史（同 usage_records），会话删除后 run 记录保留
+    session_id: Mapped[str] = mapped_column(String(16), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    trajectory: Mapped[str] = mapped_column(Text)  # full to_dict() JSON
+    created_at: Mapped[str] = mapped_column(String(32), default=_now)
+
+
+class RunRepo:
+    """Structured access to stored trajectories; jsonl remains the fallback."""
+
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def save(self, record: dict[str, Any]) -> None:
+        row = RunRow(
+            run_id=str(record.get("run_id") or uuid.uuid4().hex[:12]),
+            session_id=str(record.get("session_id") or ""),
+            user_id=int(record.get("user_id") or 0),
+            trajectory=json.dumps(record, ensure_ascii=False),
+        )
+        async with AsyncSession(self.db.engine) as s:
+            s.add(row)
+            await s.commit()
+
+    async def by_id(self, run_id: str) -> RunRow | None:
+        async with AsyncSession(self.db.engine) as s:
+            return (
+                await s.execute(select(RunRow).where(RunRow.run_id == run_id))
+            ).scalar_one_or_none()
+
+    async def latest_for_session(self, session_id: str) -> RunRow | None:
+        async with AsyncSession(self.db.engine) as s:
+            return (
+                await s.execute(
+                    select(RunRow)
+                    .where(RunRow.session_id == session_id)
+                    .order_by(RunRow.created_at.desc())
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
 
 
 class MessageRepo:

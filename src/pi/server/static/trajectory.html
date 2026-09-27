@@ -356,13 +356,18 @@ function select(i) {
 async function load() {
   const token = tokenInput.value.trim();
   const sid = sessionInput.value.trim() || new URLSearchParams(location.search).get("session") || "";
+  const runId = new URLSearchParams(location.search).get("run") || "";
   sessionInput.value = sid;
-  if (!token || !sid) { errorBox.textContent = "需要 token 和 session id。"; return; }
+  if (!token || (!sid && !runId)) { errorBox.textContent = "需要 token 和 session id（或 run id）。"; return; }
   localStorage.setItem("pi_token", token);
   errorBox.textContent = "加载中…";
+  // ?run=<id> 直达某次 run（回放入口）；否则取会话最新一条
+  const url = runId
+    ? `/v1/trajectory/${encodeURIComponent(runId)}`
+    : `/v1/sessions/${encodeURIComponent(sid)}/trajectory`;
   let resp;
   try {
-    resp = await fetch(`/v1/sessions/${encodeURIComponent(sid)}/trajectory`, {
+    resp = await fetch(url, {
       headers: { Authorization: `Bearer ${token}` },
     });
   } catch (e) {

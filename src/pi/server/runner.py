@@ -33,7 +33,7 @@ from pi.prompt import SYSTEM_PROMPT
 from pi.security.audit import AuditLogger
 from pi.security.policy import Policy, load_policy
 from pi.server.cache import CacheBackend, MemoryBackend
-from pi.server.db import MemoryRepo, MessageRepo, SessionRow
+from pi.server.db import MemoryRepo, MessageRepo, RunRepo, SessionRow
 from pi.server.trajectory_store import append_trajectory
 from pi.tools.registry import ToolRegistry
 from pi.tools.sandbox import get_runner
@@ -97,6 +97,7 @@ class RunManager:
         model: str,
         message_repo: MessageRepo,
         memory_repo: MemoryRepo | None = None,
+        run_repo: RunRepo | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Execute one user turn; messages are persisted on completion."""
         # distributed session lock: correct across instances when Redis-backed
@@ -303,19 +304,25 @@ class RunManager:
                     except Exception:  # noqa: BLE001 - metering must never fail a run
                         logging.getLogger("pi.server").exception("usage recording failed")
 
-                # Trajectory persistence (TRAJECTORY_VIEW_DESIGN P0): the run is
-                # already over, so a failed write is logged, never re-raised.
-                # Raw values by design - the viewer endpoint enforces ownership.
-                if self.trajectory_path is not None:
-                    traj = getattr(agent, "trajectory", None)
-                    if traj is not None:
+                # Trajectory persistence: jsonl = append-only audit-grade copy
+                # (daily rotation), runs table = structured query index (by
+                # run_id / session_id / user_id). Both fail-soft and independent.
+                traj = getattr(agent, "trajectory", None)
+                record: dict | None = None
+                if traj is not None:
+                    record = traj.to_dict()
+                    record["session_id"] = session.id
+                    record["user_id"] = user_id
+                    if self.trajectory_path is not None:
                         try:
-                            record = traj.to_dict()
-                            record["session_id"] = session.id
-                            record["user_id"] = user_id
                             append_trajectory(self.trajectory_path, record)
                         except Exception:  # noqa: BLE001 - persistence must never fail a run
                             logging.getLogger("pi.server").exception("trajectory save failed")
+                    if run_repo is not None:
+                        try:
+                            await run_repo.save(record)
+                        except Exception:  # noqa: BLE001 - jsonl copy still exists
+                            logging.getLogger("pi.server").exception("trajectory db save failed")
         finally:
             await self.cache.release_lock(lock_key)
 

@@ -10,11 +10,13 @@ rather than keeping it forever.
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 DEFAULT_AUDIT_PATH = Path.home() / ".pi-py" / "audit.jsonl"
 
@@ -25,11 +27,18 @@ def _daily_path(base: Path, day: str) -> Path:
 
 
 class AuditLogger:
-    def __init__(self, path: Path | None = None):
+    """jsonl = 合规底稿（追加式）；on_record = 结构化查询镜像（DB），双写。
+
+    on_record is an async best-effort hook: the jsonl copy must never depend on
+    the DB being reachable, and a sync caller (no running loop) simply skips it.
+    """
+
+    def __init__(self, path: Path | None = None, on_record: "Callable[[dict[str, Any]], Awaitable[None]] | None" = None):
         self.path = Path(path) if path else DEFAULT_AUDIT_PATH
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._day = ""
+        self.on_record = on_record
 
     def _write(self, record: dict[str, Any]) -> None:
         record = {"ts": datetime.now(timezone.utc).isoformat(timespec="milliseconds"), **record}
@@ -42,6 +51,18 @@ class AuditLogger:
                 target.parent.mkdir(parents=True, exist_ok=True)
             with target.open("a", encoding="utf-8") as f:
                 f.write(line + "\n")
+        if self.on_record is not None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return  # sync caller: jsonl copy already written
+            loop.create_task(self._fire(record))
+
+    async def _fire(self, record: dict[str, Any]) -> None:
+        try:
+            await self.on_record(record)  # type: ignore[misc]
+        except Exception:  # noqa: BLE001 - mirror failure never breaks the jsonl copy
+            logging.getLogger("pi.security.audit").exception("audit db mirror failed")
 
     def tool_call(
         self,

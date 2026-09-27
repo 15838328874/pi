@@ -29,7 +29,7 @@ from pi.observability.tracing import get_tracer
 from pi.server.auth import create_token, decode_token, hash_password, verify_password
 from pi.server.cache import get_backend
 from pi.server.config import ServerSettings
-from pi.server.db import Database, MemoryRepo, MessageRepo, SessionRepo, UserRepo
+from pi.server.db import AuditRepo, Database, MemoryRepo, MessageRepo, RunRepo, SessionRepo, UserRepo
 from pi.server.ratelimit import RateLimiter
 from pi.server.runner import RunManager, event_to_sse, server_policy
 from pi.server.trajectory_store import latest_trajectory
@@ -90,6 +90,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     sessions = SessionRepo(db)
     messages = MessageRepo(db)
     memories = MemoryRepo(db)
+    runs_repo = RunRepo(db)
     # Vector semantic memory: all four PI_EMBEDDING_*/PI_MILVUS_URI vars must be
     # set; otherwise MemoryRepo stays lexical-only. Both clients are lazy (no
     # network I/O here), so create_app stays fast and testable.
@@ -159,7 +160,14 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         )
     limiter = RateLimiter(settings.rate_limit_runs_per_min, backend=cache)
     usage_tracker = UsageTracker(db.engine, default_quota=settings.default_quota_tokens)
-    audit = AuditLogger(settings.audit_path)
+    # Audit dual-write: jsonl stays the compliance copy, audit_events the
+    # structured query mirror (admin console filters). Mirror is best-effort.
+    audit_repo = AuditRepo(db)
+
+    async def _audit_to_db(record: dict) -> None:
+        await audit_repo.save(record)
+
+    audit = AuditLogger(settings.audit_path, on_record=_audit_to_db)
     runs = RunManager(
         policy=server_policy(settings.policy_path),
         audit=audit,
@@ -440,15 +448,36 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
 
     @app.get("/v1/sessions/{session_id}/trajectory")
     async def get_trajectory(session_id: str, username: str = Depends(current_user)) -> dict:
-        """Latest stored run of this session (raw trajectory, see
-        trajectory_store.py). Ownership check first - a 404 leaks nothing."""
+        """Latest stored run of this session. DB (runs table) first, then the
+        jsonl fallback for rows written before the table existed. Ownership
+        check first - a 404 leaks nothing."""
         await _owned_session(session_id, username)
+        row = await runs_repo.latest_for_session(session_id)
+        if row is not None:
+            return json.loads(row.trajectory)
         if settings.trajectory_path is None:  # PI_TRAJECTORY_PATH="" disables storage
             raise HTTPException(status_code=404, detail="no trajectory for this session")
         traj = latest_trajectory(settings.trajectory_path, session_id)
         if traj is None:
             raise HTTPException(status_code=404, detail="no trajectory for this session")
         return traj
+
+    @app.get("/v1/trajectory/{run_id}")
+    async def get_trajectory_by_run(run_id: str, username: str = Depends(current_user)) -> dict:
+        """Replay entry point: fetch one run by id (ownership-checked, 404 cross-user)."""
+        user = await users.by_username(username)
+        row = await runs_repo.by_id(run_id)
+        if row is None or row.user_id != user.id:
+            raise HTTPException(status_code=404, detail="run not found")
+        return json.loads(row.trajectory)
+
+    @app.get("/v1/admin/trajectory/{run_id}")
+    async def admin_trajectory(run_id: str, admin: str = Depends(require_admin)) -> dict:
+        """Admin replay: fetch any user's run by id (console/diagnosis)."""
+        row = await runs_repo.by_id(run_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="run not found")
+        return json.loads(row.trajectory)
 
     @app.post("/v1/sessions/{session_id}/runs")
     async def run(
@@ -484,6 +513,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 model=model,
                 message_repo=messages,
                 memory_repo=memories,
+                run_repo=runs_repo,
             ):
                 yield event_to_sse(ev)
             yield "event: done\ndata: {}\n\n"
@@ -554,37 +584,54 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         admin: str = Depends(require_admin),
         user: str | None = None,
         tool: str | None = None,
-        limit: int = 50,
+        limit: int = 100,
         day: str | None = None,
+        event: str | None = None,
     ) -> dict:
-        """Tail the daily audit JSONL with optional user/tool/day filters."""
-        import json as json_mod
+        """Structured audit query: DB (audit_events) first, jsonl fallback for
+        records written before the table existed."""
+        if day is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise HTTPException(status_code=400, detail="day must look like 2026-09-27")
         from datetime import datetime, timezone as tz
+
+        day = day or datetime.now(tz.utc).strftime("%Y-%m-%d")
+        records = await audit_repo.query(day=day, user=user, tool=tool, event=event, limit=limit)
+        # 合并 jsonl 里"只有文件副本"的记录（0006 之前的旧数据、或非 app 直写
+        # AuditLogger 的记录）；双写产生的重叠按 (ts,event,user,tool) 去重。
+        import json as json_mod
 
         from pi.security.audit import _daily_path
 
-        if day is not None and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
-            raise HTTPException(status_code=400, detail="day must look like 2026-09-27")
-        if day is None:
-            day = datetime.now(tz.utc).strftime("%Y-%m-%d")
         path = _daily_path(settings.audit_path, day)
-        records: list[dict] = []
         if path.is_file():
-            lines = path.read_text(encoding="utf-8").splitlines()
-            for line in reversed(lines):
+
+            def key(rec: dict) -> tuple:
+                return (
+                    rec.get("ts"),
+                    rec.get("event"),
+                    rec.get("user") or rec.get("username"),
+                    rec.get("tool") or rec.get("action"),
+                )
+
+            seen = {key(r) for r in records}
+            for line in reversed(path.read_text(encoding="utf-8").splitlines()):
                 try:
                     rec = json_mod.loads(line)
                 except json_mod.JSONDecodeError:
                     continue
-                # auth records carry "username", tool_call/compaction carry "user"
                 if user and rec.get("user") != user and rec.get("username") != user:
                     continue
                 if tool and rec.get("tool") != tool:
                     continue
-                records.append(rec)
-                if len(records) >= min(limit, 500):
-                    break
-        return {"records": records}
+                if event and rec.get("event") != event:
+                    continue
+                if key(rec) not in seen:
+                    seen.add(key(rec))
+                    records.append(rec)
+                    if len(records) >= min(limit, 500):
+                        break
+            records.sort(key=lambda r: r.get("ts") or "", reverse=True)
+        return {"records": records[: min(limit, 500)]}
 
     @app.get("/v1/admin/stats")
     async def admin_stats(admin: str = Depends(require_admin)) -> dict:

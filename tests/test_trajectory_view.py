@@ -119,12 +119,15 @@ class TestEndpoint:
         h, sid = _register_and_session(server, "alice")
         assert server.get(f"/v1/sessions/{sid}/trajectory", headers=h).status_code == 404
 
-    def test_storage_disabled_404(self, tmp_path, monkeypatch):
-        with _make_app(monkeypatch, tmp_path, "") as client:  # PI_TRAJECTORY_PATH=""
+    def test_storage_disabled_still_serves_from_db(self, tmp_path, monkeypatch):
+        """PI_TRAJECTORY_PATH="" disables the jsonl copy, but the runs table
+        (structured index) still serves the trajectory."""
+        with _make_app(monkeypatch, tmp_path, "") as client:
             h, sid = _register_and_session(client, "alice")
-            _run(client, h, sid)  # run fine, nothing stored
+            _run(client, h, sid)  # run fine, jsonl off
             r = client.get(f"/v1/sessions/{sid}/trajectory", headers=h)
-            assert r.status_code == 404
+            assert r.status_code == 200
+            assert r.json()["session_id"] == sid
 
     def test_ui_page_served(self, server):
         r = server.get("/ui/trajectory.html")
@@ -187,3 +190,61 @@ class TestTsEnhancement:
         # which starts before turn-2
         assert llm1["ts"] <= tool["ts"] <= llm2["ts"]
         assert llm2["ts"] <= time_mod.time() + 5  # sanity: not wildly off wall clock
+
+
+class TestRunIdEndpoints:
+    """Structured replay: fetch one run by id (gap: 按 runId 回放)."""
+
+    def test_owner_gets_run_by_id(self, server):
+        h, sid = _register_and_session(server, "alice")
+        _run(server, h, sid)
+        latest = server.get(f"/v1/sessions/{sid}/trajectory", headers=h).json()
+        run_id = latest["run_id"]
+        r = server.get(f"/v1/trajectory/{run_id}", headers=h)
+        assert r.status_code == 200
+        assert r.json()["run_id"] == run_id
+
+    def test_run_by_id_cross_user_404(self, server):
+        h_alice, sid = _register_and_session(server, "alice")
+        _run(server, h_alice, sid)
+        run_id = server.get(f"/v1/sessions/{sid}/trajectory", headers=h_alice).json()["run_id"]
+        h_bob, _ = _register_and_session(server, "bob")
+        assert server.get(f"/v1/trajectory/{run_id}", headers=h_bob).status_code == 404
+
+    def test_run_by_id_unknown_404(self, server):
+        h, _ = _register_and_session(server, "alice")
+        assert server.get("/v1/trajectory/deadbeef", headers=h).status_code == 404
+
+    def test_admin_can_replay_any_run(self, server):
+        h_alice, sid = _register_and_session(server, "alice")
+        _run(server, h_alice, sid)
+        run_id = server.get(f"/v1/sessions/{sid}/trajectory", headers=h_alice).json()["run_id"]
+
+        from pi.server.db import UserRepo
+
+        _register_and_session(server, "root")
+        client = server  # TestClient
+
+        async def grant():
+            repo = UserRepo(client.app.state.db)
+            user = await repo.by_username("root")
+            await repo.set_admin(user.id, True)
+
+        client.portal.call(grant)
+        h_root = {"Authorization": "Bearer " + server.post(
+            "/v1/auth/login", json={"username": "root", "password": "password123"}
+        ).json()["access_token"]}
+
+        r = server.get(f"/v1/admin/trajectory/{run_id}", headers=h_root)
+        assert r.status_code == 200
+        assert r.json()["run_id"] == run_id
+        # 非管理员 403
+        assert server.get(f"/v1/admin/trajectory/{run_id}", headers=h_alice).status_code == 403
+
+    def test_session_endpoint_prefers_db_over_jsonl(self, server, tmp_path):
+        """DB row wins; jsonl is only the fallback for pre-table rows."""
+        h, sid = _register_and_session(server, "alice")
+        _run(server, h, sid)
+        r = server.get(f"/v1/sessions/{sid}/trajectory", headers=h)
+        assert r.status_code == 200
+        assert r.json()["run_id"]

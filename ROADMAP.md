@@ -34,6 +34,9 @@
 | **轨迹落盘 + 轨迹视图**（jsonl 按天滚动 + 查询端点 + 单文件时序图前端） | `server/trajectory_store.py` `/ui/trajectory.html` | 单测 + 真实浏览器 |
 | **Web 前端**（零构建单文件三件套：用户端 / 轨迹视图 / 管理台） | `server/static/*.html` | Playwright 无头浏览器实测 |
 | **管理 API**（用户管理/配额/禁用/强制下线/审计过滤/stats/usage） | `server/app.py` | 单测 + 冒烟 |
+| **轨迹结构化落库**（runs 表 + `/v1/trajectory/{run_id}` 回放 + `/v1/admin/trajectory/{run_id}` 跨用户） | `server/db.py` `server/app.py` | 单测 + 实测 |
+| **审计结构化查询**（audit_events 表双写，jsonl 仍是合规底稿） | `server/db.py` `security/audit.py` | 单测 + 实测 |
+| **官方 SDK**（异步客户端：SSE 流式解析、PiError 语义、trust_env=False） | `src/pi/client.py` | 单测 + 真实模型实测 |
 
 **环境（2026-09-27 起统一，不再有 demo 环境）**：
 - 基础设施三件套：**MySQL 8 + Redis + Milvus**（本地 Docker/native，生产云端托管），测试与生产同构。
@@ -61,7 +64,6 @@
 |---|---|---|
 | Web 工具 SSRF 修复 | `web_fetch/web_search` 目前在应用进程内跑、无地址校验，policy.json 已 deny。修复方案：URL/DNS 解析后拒绝私网/环回/链路本地/元数据地址 + 每一跳重定向重新校验；理想形态是搬进沙箱（沙箱=网络边界）。修完才能从 deny_tools 放出 | 高 |
 | 管理员会话浏览器 | 管理员查看任意用户会话/轨迹（需一批 admin_* 端点 + 管理台页面） | 中 |
-| 轨迹落库升级 | 现在 jsonl 按天滚动、查询全量扫描；量大后换 Postgres/MySQL JSONB（`trajectory_store.latest_trajectory` 接口不变） | 中 |
 | eval 补全 | flywheel 自动抽取任务、regress、badcase 自动归因 | 中 |
 | checkpoint 接 server | 超时/失败后从 checkpoint 恢复（loop 的 on_checkpoint 已就绪，server 未接线） | 低 |
 

@@ -51,7 +51,14 @@ async def one_run(client: httpx.AsyncClient, url: str, token: str, sid: str, tim
     try:
         r = await client.post(
             f"{url}/v1/sessions/{sid}/runs",
-            json={"prompt": "load test round"},
+            # Deliberately trivial: the harness measures the SERVICE, not the
+            # model. An open-ended prompt like "load test round" makes a real
+            # model treat it as a coding task - it then spins on sandbox-denied
+            # absolute-path writes until the run timeout (observed live: 25
+            # denials, several 600s timeouts). To stress model pathology
+            # instead, run with a real task prompt and expect long tail
+            # latency.
+            json={"prompt": "Reply with exactly: OK"},
             headers={"Authorization": f"Bearer {token}"},
             timeout=timeout,
         )

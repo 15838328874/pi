@@ -108,3 +108,65 @@ def test_trajectory_records_error():
     assert "RuntimeError" in err["message"]
     # even after an error the run is marked finished
     assert types[-1] == "RunFinished"
+
+
+class TestDenialCircuitBreaker:
+    """A model stuck retrying policy-denied calls aborts loudly instead of
+    burning turns into max_turns/the run timeout (load-test observation:
+    25 consecutive sandbox denials -> several 600s timeouts)."""
+
+    def test_five_consecutive_denials_abort_the_run(self, tmp_path):
+        import asyncio
+        import json
+
+        from pi.agent.loop import MAX_CONSECUTIVE_DENIALS, AgentLoop
+        from pi.llm.fake import FakeProvider
+        from pi.models import ToolCallBlock
+        from pi.security.policy import Policy
+        from pi.tools.bash import BashTool
+
+        # script 2x the breaker: the breaker must fire before the script runs out
+        responses = [
+            [ToolCallBlock(id=f"c{i}", name="bash", arguments="{}")]
+            for i in range(MAX_CONSECUTIVE_DENIALS * 2)
+        ]
+        agent = AgentLoop(
+            provider=FakeProvider(responses=responses),
+            # the tool must EXIST for the call to reach the policy gate;
+            # an unknown tool errors before policy and never counts as denied
+            tools=[BashTool()],
+            policy=Policy(deny_tools={"bash"}),
+            max_turns=40,
+        )
+        errors = []
+
+        async def main():
+            async for ev in agent.run("do the thing"):
+                if type(ev).__name__ == "ErrorEvent":
+                    errors.append(ev.message)
+            return agent
+
+        agent = asyncio.run(main())
+        assert any("consecutive tool calls were denied" in e for e in errors), errors
+        tool_calls = [
+            e for e in agent.trajectory.to_dict()["events"] if e["type"] == "ToolCall"
+        ]
+        assert len(tool_calls) == MAX_CONSECUTIVE_DENIALS  # stopped at the threshold
+        assert all(e["denied"] for e in tool_calls)
+
+
+class TestProviderProxyHygiene:
+    """Model traffic must not be hijacked by ambient proxy env vars (observed
+    live: dead SOCKS proxy -> socksio ImportError -> every LLM call failed)."""
+
+    def test_openai_provider_trust_env_false(self):
+        from pi.llm.openai_provider import OpenAIProvider
+
+        p = OpenAIProvider(model="x", api_key="k", base_url="http://127.0.0.1:1/v1")
+        assert p.client._client.trust_env is False
+
+    def test_anthropic_provider_trust_env_false(self):
+        from pi.llm.anthropic_provider import AnthropicProvider
+
+        p = AnthropicProvider(model="x", api_key="k")
+        assert p.client._client.trust_env is False

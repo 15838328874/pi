@@ -6,6 +6,8 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
+
 from pi.llm.base import LLMProvider, StreamEnd, StreamEvent, TextDelta, ToolCallDelta
 from pi.models import Message, Role, TextBlock, ToolCallBlock, ToolResultBlock, ToolSpec, Usage
 
@@ -17,7 +19,17 @@ class AnthropicProvider(LLMProvider):
     def __init__(self, model: str, api_key: str | None = None):
         from anthropic import AsyncAnthropic
 
-        self.client = AsyncAnthropic(api_key=api_key)
+        # trust_env=False: see OpenAIProvider - ambient proxy env vars must not
+        # hijack model traffic. Build the client from whichever httpx the
+        # installed anthropic SDK itself uses (this environment's SDK is
+        # forked onto httpx2; plain-httpx installs pass httpx.AsyncClient).
+        try:
+            import httpx2 as _sdk_httpx
+        except ImportError:  # pragma: no cover - standard anthropic installs
+            _sdk_httpx = httpx
+        self.client = AsyncAnthropic(
+            api_key=api_key, http_client=_sdk_httpx.AsyncClient(trust_env=False)
+        )
         self.model = model
 
     @staticmethod

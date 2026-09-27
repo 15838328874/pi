@@ -6,6 +6,8 @@ import json
 from collections.abc import AsyncIterator
 from typing import Any
 
+import httpx
+
 from pi.llm.base import LLMProvider, StreamEnd, StreamEvent, TextDelta, ToolCallDelta
 from pi.llm.think_filter import ThinkFilter
 from pi.models import Message, Role, TextBlock, ToolCallBlock, ToolResultBlock, ToolSpec, Usage
@@ -17,7 +19,14 @@ class OpenAIProvider(LLMProvider):
     def __init__(self, model: str, api_key: str | None = None, base_url: str | None = None):
         from openai import AsyncOpenAI
 
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        # trust_env=False: ambient proxy env vars (a dead local proxy, a SOCKS
+        # proxy without socksio, ...) must not silently hijack model traffic -
+        # the endpoint in base_url is always an explicit, direct destination.
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            http_client=httpx.AsyncClient(trust_env=False),
+        )
         self.model = model
 
     @staticmethod

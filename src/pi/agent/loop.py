@@ -45,6 +45,9 @@ from pi.tools.base import Tool, ToolContext
 MessageCallback = Callable[[Message], None]
 
 PREVIEW_LEN = 200
+# Consecutive policy denials that abort the run: a stuck model burns turns and
+# money without this (see loop comment at the circuit breaker).
+MAX_CONSECUTIVE_DENIALS = 5
 
 
 @dataclass
@@ -210,6 +213,7 @@ class AgentLoop:
 
         total = self._resume_usage or Usage()
         turns = self._resume_turns
+        consecutive_denials = 0
 
         try:
             while True:
@@ -279,6 +283,7 @@ class AgentLoop:
                     break
 
                 outcomes: list[_ToolOutcome] = []
+                abort_denials = False
                 for call in calls:
                     tool_t0 = time.perf_counter()
                     outcome = await self._run_tool(call)
@@ -303,9 +308,27 @@ class AgentLoop:
                         ok=not outcome.block.is_error,
                         result=preview,
                     )
+                    # Consecutive-denial circuit breaker: a model stuck retrying
+                    # blocked paths (observed live: 25 sandbox denials, /ws/*
+                    # variants, several 600s run timeouts) is not going to
+                    # recover on its own. Stop loudly instead of burning turns.
+                    if outcome.denied:
+                        consecutive_denials += 1
+                    else:
+                        consecutive_denials = 0
+                    if consecutive_denials >= MAX_CONSECUTIVE_DENIALS:
+                        yield ErrorEvent(
+                            f"aborting: {MAX_CONSECUTIVE_DENIALS} consecutive tool "
+                            "calls were denied by the security policy; "
+                            "re-read the denial reasons and change approach"
+                        )
+                        abort_denials = True
+                        break
                 self._append(
                     Message(role=Role.user, blocks=[o.block for o in outcomes])
                 )
+                if abort_denials:
+                    break
                 if self.on_checkpoint is not None:
                     try:
                         self.on_checkpoint(self._make_checkpoint(total, turns))

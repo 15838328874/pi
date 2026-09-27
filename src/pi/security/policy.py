@@ -96,7 +96,16 @@ def check(policy: Policy | None, tool_name: str, args: dict[str, Any], cwd: Path
             except (OSError, ValueError):
                 return PolicyDecision(
                     allowed=False,
-                    reason=f"path {raw_path!r} escapes the workspace sandbox ({cwd})",
+                    # Actionable, not just "denied": a model that only sees
+                    # "escapes the sandbox" retries the same absolute path in
+                    # variants (observed live: 25 denials, /ws/* then /tmp/*
+                    # then /ws/... again) and burns turns into the timeout.
+                    # Telling it the allowed base and the fix lets it recover.
+                    reason=(
+                        f"path {raw_path!r} escapes the workspace sandbox "
+                        f"(workspace root: {cwd}); use a relative path inside "
+                        f"the workspace instead"
+                    ),
                 )
 
     return PolicyDecision(allowed=True)

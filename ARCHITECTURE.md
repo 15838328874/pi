@@ -1209,6 +1209,31 @@ python -m pytest -q     # 131 passed, 1 skipped —— 全本地，不需要网�
 
 ---
 
+## 19. 与 main 分支的差距清单（未完成项，2026-09-27 对比基线 main@6381fd1）
+
+dev 与 origin/main 是两条**无关历史**的并行线（见项目记忆）。本节钉住当前差距，
+防止遗忘；两边都在动，处理前先 `git fetch origin main` 刷新基线。
+
+**已覆盖**（main 有、dev 已补）：Prometheus 指标系统（且超越：llm 实时钩子、降级
+计数器、全路径工具投影）、integration 真实栈测试、L15 日志脱敏（修了，main 只记录）、
+embedding 用量计量、conftest pin 纪律。
+
+**未覆盖**（按建议处理顺序）：
+
+| # | 缺口 | main 的形态 | 说明 / 建议 |
+|---|---|---|---|
+| 1 | run/轨迹落库 | `agent_runs` + `trace_fidelity` 表 | 我们的 trajectory 只活在进程内，run 结束即丢（仅 usage_records 摘要）。纯后端、改法明确，**最该先补** |
+| 2 | DB 结构化审计 | `audit_events` 表 | 我们是 JSONL（够用不可查询）；main 可 SQL 过滤。与 #1 同批做 |
+| 3 | 迁移合流 | 生产库在 `0007_trace_fidelity` | 两边 0003/0004 **同名不同内容**（session_plan/user_memories vs compactions/memories）。合流必须设计整合迁移，**前提是定生产库未来形态** |
+| 4 | 语义检索的兜底档 | MySQL 暴力余弦兜底 | 索引挂了我们只有词法兜底（可用，语义质量降档更狠）。可选增强 |
+| 5 | Vue 前端（~29k 行） | 账号/管理/聊天视图 + vite 工程 | **待决策**：产品要不要 Web UI？一直用 curl/SSE 则此缺口不存在。要的话是独立工程，搬入不冲突 |
+| 6 | 运维资产 | `deploy/pi-py.service`（生产实际走 systemd）+ L1~L15 事故记录 | 搬运即可；dev 文档目前仍以 compose 为主 |
+
+**反向对账**：main 也没有 dev 的一半——MCP/Skills 工具源、RL 数据飞轮、泛化路径
+沙箱、Milvus 向量记忆、连续拒绝熔断、§18 协作纪律。**谁也不是谁的超集**。
+
+---
+
 ## 附录：一次 run 的时序（文字版）
 
 ```

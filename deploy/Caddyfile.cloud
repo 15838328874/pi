@@ -1,0 +1,10 @@
+# Cloud TLS front for pi-py. DOMAIN is injected from the environment
+# (docker-compose.cloud.yml passes it as {$DOMAIN}).
+# SSE-friendly: no buffering, no compression on the streaming path.
+
+{$DOMAIN} {
+	reverse_proxy app:8300
+	flush_interval -1
+	encode off
+	header /healthz Cache-Control "no-store"
+}

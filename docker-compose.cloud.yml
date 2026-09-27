@@ -1,0 +1,113 @@
+# Cloud deployment: pi-py app runs on THIS host (4 vCPU / 16 GiB class ECS),
+# MySQL + Redis are managed Volcano Engine instances reached over the VPC
+# private network. No database containers are started here.
+#
+# Usage (full runbook: deploy/cloud-deploy.md):
+#   cp deploy/env.cloud.example .env   # then fill in secrets
+#   docker compose -f docker-compose.cloud.yml up -d --build
+#
+# TLS front (optional, needs a domain pointed at this host):
+#   docker compose -f docker-compose.cloud.yml --profile tls up -d --build
+
+name: pi-py
+
+services:
+  # One-shot schema migration: applies alembic revisions to the cloud MySQL
+  # before the app starts. Safe to re-run (alembic tracks applied versions).
+  migrate:
+    build: .
+    command: ["pi-py", "migrate"]
+    environment:
+      PI_DATABASE_URL: mysql+aiomysql://pi:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@mysqldbe27c9b686f.rds.ivolces.com:3306/pi_py
+    restart: "no"
+
+  app:
+    build: .
+    ports:
+      - "8300:8300"
+    environment:
+      PI_DATABASE_URL: mysql+aiomysql://pi:${MYSQL_PASSWORD:?set MYSQL_PASSWORD in .env}@mysqldbe27c9b686f.rds.ivolces.com:3306/pi_py
+      PI_REDIS_URL: redis://default:${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}@redis-cngzanmjgl9sd8ai4.redis.ivolces.com:6379/0
+      PI_JWT_SECRET: ${PI_JWT_SECRET:?set PI_JWT_SECRET in .env}
+      PI_REDIS_NS: ${PI_REDIS_NS:-prod}
+      PI_MODEL: ${PI_MODEL:-openai/qwen3.8-max}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      PI_FALLBACK_CHAIN: ${PI_FALLBACK_CHAIN:-}
+      # Vector semantic memory: unset = lexical retrieval only.
+      PI_EMBEDDING_URL: ${PI_EMBEDDING_URL:-}
+      PI_EMBEDDING_API_KEY: ${PI_EMBEDDING_API_KEY:-}
+      PI_EMBEDDING_MODEL: ${PI_EMBEDDING_MODEL:-}
+      PI_MILVUS_URI: ${PI_MILVUS_URI:-}
+      PI_POLICY: /etc/pi-py/policy.json
+      # Caddy is a separate container, so its source IP is on Docker's bridge
+      # (172.16/12), not 127.0.0.1. Without this uvicorn drops X-Forwarded-For
+      # and every client appears to be Caddy, which makes the audit log's ip
+      # field useless. Never set it to "*" - clients could then spoof XFF.
+      PI_FORWARDED_ALLOW_IPS: ${PI_FORWARDED_ALLOW_IPS:-172.16.0.0/12}
+      # Sizing for 4 vCPU / 16 GiB: agent turns are in-process async and
+      # LLM-bound (network I/O), so 16 concurrent runs is comfortable even
+      # with the docker sandbox on (warm pool: one container per active
+      # workspace, exec per call - not one container per call).
+      PI_MAX_CONCURRENT_RUNS: ${PI_MAX_CONCURRENT_RUNS:-16}
+      # Per-user fixed window (req/min). Raise if users hit 429s under normal use.
+      PI_RATE_LIMIT_RUNS_PER_MIN: ${PI_RATE_LIMIT_RUNS_PER_MIN:-30}
+      # Tool-execution isolation: default (unset) runs commands inside the app
+      # container as the unprivileged `pi` user. "docker" isolates each
+      # workspace in its own warm container (exec per call, preheated at turn
+      # start, idle-recycled, LRU-capped) - needs docker access from inside
+      # the app container (see deploy/cloud-deploy.md "Sandbox" before enabling).
+      PI_SANDBOX: ${PI_SANDBOX:-}
+      PI_SANDBOX_IMAGE: ${PI_SANDBOX_IMAGE:-python:3.12-slim}
+      # Warm pool knobs (docker sandbox mode only)
+      PI_SANDBOX_POOL: ${PI_SANDBOX_POOL:-1}            # 0 = legacy container-per-call
+      PI_SANDBOX_POOL_MAX: ${PI_SANDBOX_POOL_MAX:-16}   # max warm containers (soft cap)
+      PI_SANDBOX_IDLE_TTL: ${PI_SANDBOX_IDLE_TTL:-600}  # seconds before an idle container is recycled
+      # Per-container ceilings (docker sandbox mode only). Docker's own defaults are
+      # "no limit" and registration is open, so without these one account can exhaust
+      # the host with a single command. Keep MEMORY * PI_MAX_CONCURRENT_RUNS well under
+      # the VM's RAM, and remember the warm pool holds extra idle containers on top.
+      PI_SANDBOX_MEMORY: ${PI_SANDBOX_MEMORY:-1g}
+      PI_SANDBOX_PIDS: ${PI_SANDBOX_PIDS:-256}
+      PI_SANDBOX_CPUS: ${PI_SANDBOX_CPUS:-1.0}
+      # PI_SANDBOX_USER is deliberately not passed: it defaults to the app's own uid:gid
+      # (10001:10001 in this image), so files written through the bind mount stay
+      # readable and deletable by the app.
+      # WARNING: PI_SANDBOX above interpolates from .env, and the repo .env sets it to
+      # "docker" for the bare-metal deployment. This app container has NO daemon access,
+      # so inheriting that value makes every bash call fail closed - either unset it in
+      # the .env you deploy with, or give the container PI_DOCKER_HOST / a mounted socket.
+    volumes:
+      - workspaces:/home/pi/.pi-py/workspaces
+      - audits:/home/pi/.pi-py
+      - ./policy.json:/etc/pi-py/policy.json:ro
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    deploy:
+      replicas: ${PI_REPLICAS:-1}  # >1 on one host is fine (Redis-backed locks);
+                                   # cross-host needs shared workspace storage
+
+  # Optional TLS reverse proxy (automatic HTTPS via Let's Encrypt).
+  # Set DOMAIN in .env, point its DNS A record at this host, then:
+  #   docker compose -f docker-compose.cloud.yml --profile tls up -d
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["tls"]
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+    volumes:
+      - ./deploy/Caddyfile.cloud:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - app
+    restart: unless-stopped
+
+volumes:
+  workspaces:
+  audits:
+  caddy_data:

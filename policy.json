@@ -1,0 +1,49 @@
+{
+  "_comment": [
+    "pi-py server security policy. Loaded via PI_POLICY; see src/pi/security/policy.py.",
+    "Both compose files bind-mount this file to /etc/pi-py/policy.json; the bare-metal",
+    "deployment points PI_POLICY at it directly. Keep ONE copy - drift between the two",
+    "would mean compose and bare-metal enforce different rules.",
+    "path_sandbox and redact are forced on by server_policy() even if omitted here.",
+    "deny_command_patterns are case-insensitive regexes matched with re.search (anywhere in the command).",
+    "The flag groups (-{1,2}[a-z-]+ )* accept long options too, so 'rm -rf --no-preserve-root /' is caught.",
+    "",
+    "web_fetch/web_search are denied because they run INSIDE THE APP PROCESS, not in the",
+    "sandbox, so PI_SANDBOX=docker and --network none do not restrict them at all. web.py",
+    "does no URL validation and follows redirects, which makes them an open SSRF path to",
+    "the Volcano Engine metadata service (100.96.0.96 was confirmed reachable). Re-enable",
+    "only after web.py rejects private/link-local/metadata addresses AND re-validates every",
+    "redirect hop.",
+    "",
+    "The command patterns are the safety net for when bash is NOT sandboxed (PI_SANDBOX empty",
+    "runs it in the app process as whatever user the app is). They cannot stop secret theft:",
+    "env, printenv, set, /proc/self/environ and any interpreter one-liner all read the same",
+    "environment. Only running bash in a container closes that."
+  ],
+
+  "deny_tools": [
+    "web_fetch",
+    "web_search"
+  ],
+
+  "deny_command_patterns": [
+    ":\\(\\)\\s*\\{",
+    "\\bdd\\b[^|;&]*\\bof=/dev/",
+    "\\b(mkfs|fdisk|parted|wipefs|sgdisk)\\b",
+    ">\\s*/dev/(sd[a-z]|vd[a-z]|xvd[a-z]|nvme|hd[a-z]|dasd)",
+    "(?:^|[;&|(]\\s*)(shutdown|reboot|poweroff|halt)\\b",
+    "(?:^|[;&|(]\\s*)init\\s+[06]\\b",
+    "(?:^|[;&|(]\\s*)sudo\\b",
+    "\\brm\\s+(-{1,2}[a-z-]+\\s+)*/(\\s|$|\\*)",
+    "\\bchmod\\s+(-{1,2}[a-z-]+\\s+)*0?777\\s+/(\\s|$)",
+    "\\bchown\\s+(-{1,2}[a-z-]+\\s+)*\\S+\\s+/(\\s|$)",
+    "\\bkill(all)?\\s+(-[A-Z0-9]+\\s+)?1\\s*$",
+    "/var/run/docker\\.sock",
+    "/etc/shadow",
+    "/root/\\.ssh",
+    "(?:^|[;&|(]\\s*)mount\\s+-o\\b"
+  ],
+
+  "path_sandbox": true,
+  "redact": true
+}

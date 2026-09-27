@@ -1,0 +1,11 @@
+# Caddy reverse proxy for pi-py with automatic HTTPS.
+# Put your domain in place of pi.example.com and run:
+#   docker compose --profile tls up -d
+
+pi.example.com {
+    reverse_proxy app:8300
+    # SSE friendly defaults
+    flush_interval -1
+    encode off
+    header /healthz Cache-Control "no-store"
+}

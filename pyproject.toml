@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pi-py"
+version = "0.1.0"
+description = "Python implementation of the pi coding agent: unified LLM streaming, agent loop, tools, and a multi-user HTTP service"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+    "pydantic>=2.7",
+    "openai>=1.40",
+    "anthropic>=0.40",
+    "httpx>=0.27",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "sqlalchemy>=2.0",
+    "pyjwt>=2.9",
+]
+
+[project.optional-dependencies]
+# aiosqlite is test-only: the suite runs against throwaway SQLite files so it
+# needs no live database. Production requires MySQL/Postgres via PI_DATABASE_URL.
+dev = ["pytest>=8.0", "aiosqlite>=0.20"]
+postgres = ["asyncpg>=0.29"]
+mysql = ["aiomysql>=0.2"]
+redis = ["redis>=5.0"]
+migrations = ["alembic>=1.13"]
+milvus = ["pymilvus>=3.0.2"]
+mcp = ["mcp>=2.0"]
+observability = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
+production = ["pi-py[postgres,mysql,redis,migrations,milvus,mcp,observability]"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[project.scripts]
+pi-py = "pi.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pi"]

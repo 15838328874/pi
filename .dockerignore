@@ -1,0 +1,25 @@
+# NOTE: do NOT exclude migrations/ - Dockerfile bakes alembic.ini + migrations/
+# into the image so `pi-py migrate` works without a repo checkout.
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.env
+.git/
+.idea/
+.pytest_cache/
+.workbuddy/
+tests/
+tools/
+scripts/
+deploy/
+docker-compose*.yml
+policy.json
+audit*.jsonl
+traces*.jsonl
+*.db
+*.tar.gz
+.login.json
+.msgs.json
+.sess.json
+.sse.txt

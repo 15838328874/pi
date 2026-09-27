@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+.env
+.env.test
+dist/
+build/
+.pytest_cache/
+.idea/
+.workbuddy/
+*.db
+*.tar.gz
+# e2e/debug scratch output
+.login.json
+.msgs.json
+.sess.json
+.sse.txt
+audit*.jsonl
+traces*.jsonl

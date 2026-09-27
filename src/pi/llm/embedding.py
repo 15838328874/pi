@@ -3,13 +3,18 @@
 Config: PI_EMBEDDING_URL / PI_EMBEDDING_API_KEY / PI_EMBEDDING_MODEL.
 Request:  POST {url}  Authorization: Bearer {key}
           {"model": ..., "input": {"texts": ["...", ...]}}
-Response: {"output": {"embeddings": [{"text_index": i, "embedding": [floats]}]}}
+Response: {"output": {"embeddings": [{"text_index": i, "embedding": [floats]}]},
+           "usage": {"total_tokens": N}}
 
 Callers (MemoryRepo) treat any EmbeddingError as "log and degrade": text rows
-remain lexically searchable, so embedding failures must never fail a run.
+remain lexically searchable, so embedding failures must never fail a run. The
+token usage is returned so the caller can meter the spend (embedding tokens
+are billed like LLM tokens).
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
 
 import httpx
 
@@ -20,6 +25,12 @@ class EmbeddingError(Exception):
     """Raised on any embedding failure; callers log-and-degrade."""
 
 
+@dataclass
+class EmbeddingResult:
+    vectors: list[list[float]]
+    usage_tokens: int = 0
+
+
 class EmbeddingClient:
     def __init__(self, url: str, api_key: str, model: str, timeout: float = TIMEOUT) -> None:
         self.url = url.rstrip("/")
@@ -27,8 +38,8 @@ class EmbeddingClient:
         self.model = model
         self.timeout = timeout
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
-        """Embed a batch of texts; returns vectors in input order.
+    async def embed(self, texts: list[str]) -> EmbeddingResult:
+        """Embed a batch of texts; vectors are in input order.
 
         Raises EmbeddingError on transport errors, non-2xx, or malformed
         responses (count mismatch, non-float vectors, missing text_index).
@@ -74,4 +85,8 @@ class EmbeddingClient:
             if not vec:
                 raise EmbeddingError("embedding entry is empty")
             by_index[idx] = vec
-        return [by_index[i] for i in range(len(texts))]
+        usage = resp.json().get("usage", {}).get("total_tokens", 0)
+        return EmbeddingResult(
+            vectors=[by_index[i] for i in range(len(texts))],
+            usage_tokens=int(usage or 0),
+        )

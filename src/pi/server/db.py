@@ -11,7 +11,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Awaitable, Callable, Sequence
 
 from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
@@ -207,6 +207,12 @@ class UserRepo:
                 await s.execute(select(User).where(User.username == username))
             ).scalar_one_or_none()
 
+    async def by_id(self, user_id: int) -> User | None:
+        async with AsyncSession(self.db.engine) as s:
+            return (
+                await s.execute(select(User).where(User.id == user_id))
+            ).scalar_one_or_none()
+
 
 class SessionRepo:
     def __init__(self, db: Database):
@@ -336,10 +342,14 @@ class MemoryRepo:
         db: Database,
         vector_store: VectorStore | None = None,
         embedder: EmbeddingClient | None = None,
+        on_embed_usage: "Callable[[int, int], Awaitable[None]] | None" = None,
     ):
         self.db = db
         self.vector_store = vector_store
         self.embedder = embedder
+        # (user_id, tokens) after a successful embed call - the app wires this
+        # to the usage tracker so embedding spend is metered like LLM tokens.
+        self.on_embed_usage = on_embed_usage
 
     async def add(self, user_id: int, text: str) -> None:
         async with AsyncSession(self.db.engine) as s:
@@ -377,7 +387,9 @@ class MemoryRepo:
         if self.embedder is None or self.vector_store is None:
             return
         try:
-            (vec,) = await self.embedder.embed([text])
+            result = await self.embedder.embed([text])
+            await self._meter_embed(user_id, result.usage_tokens)
+            (vec,) = result.vectors
             await self.vector_store.add(memory_id, user_id, text, vec)
         except Exception:  # noqa: BLE001 - memory must never fail a run
             log.exception(
@@ -390,12 +402,24 @@ class MemoryRepo:
         if self.embedder is None or self.vector_store is None:
             return None
         try:
-            (vec,) = await self.embedder.embed([query])
+            result = await self.embedder.embed([query])
+            # Metered immediately: an embed call that succeeded was billed even
+            # if the index (and its fallback) dies right after.
+            await self._meter_embed(user_id, result.usage_tokens)
+            (vec,) = result.vectors
             ids = await self.vector_store.search(user_id, vec, k)
             return ids or None
         except Exception:  # noqa: BLE001 - memory must never fail a run
             log.exception("vector memory search failed; falling back to lexical")
             return None
+
+    async def _meter_embed(self, user_id: int, tokens: int) -> None:
+        if self.on_embed_usage is None or not tokens:
+            return
+        try:
+            await self.on_embed_usage(user_id, tokens)
+        except Exception:  # noqa: BLE001 - accounting must never fail memory
+            log.exception("embedding usage recording failed")
 
     async def _rows_by_ids(self, user_id: int, ids: list[int]) -> list[MemoryRow]:
         """Re-fetch rows in vector-hit order, skipping ids missing from the DB

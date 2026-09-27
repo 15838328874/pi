@@ -9,18 +9,19 @@ from __future__ import annotations
 
 import asyncio
 
-from pi.llm.embedding import EmbeddingError
+from pi.llm.embedding import EmbeddingError, EmbeddingResult
 from pi.server.db import Database, MemoryRepo
 
 
 class FakeEmbedder:
     """Deterministic pseudo-vectors from a hash of the text; can be set to fail."""
 
-    def __init__(self, fail: bool = False) -> None:
+    def __init__(self, fail: bool = False, usage_tokens: int = 7) -> None:
         self.fail = fail
+        self.usage_tokens = usage_tokens
         self.calls: list[list[str]] = []
 
-    async def embed(self, texts: list[str]) -> list[list[float]]:
+    async def embed(self, texts: list[str]) -> EmbeddingResult:
         self.calls.append(texts)
         if self.fail:
             raise EmbeddingError("fake embedder failure")
@@ -28,7 +29,7 @@ class FakeEmbedder:
         for t in texts:
             h = hash(t)
             vecs.append([float(((h >> (8 * i)) & 0xFF) % 16) for i in range(16)])
-        return vecs
+        return EmbeddingResult(vectors=vecs, usage_tokens=self.usage_tokens)
 
 
 class FakeVectorStore:
@@ -254,3 +255,64 @@ def test_create_app_wires_vector_memory(tmp_path, monkeypatch):
         r = client.get("/readyz")
         assert r.status_code == 200
         assert "milvus" in r.json()["checks"]  # value is "degraded" without a live Milvus
+
+
+class TestEmbedUsageMetering:
+    """Embedding spend is metered like LLM tokens (L-fix parity with main)."""
+
+    def _repo(self, db_path, embedder, usage_list):
+        db = Database(f"sqlite+aiosqlite:///{db_path}")
+
+        async def on_usage(user_id: int, tokens: int) -> None:
+            usage_list.append((user_id, tokens))
+
+        return db, MemoryRepo(db, vector_store=FakeVectorStore(), embedder=embedder, on_embed_usage=on_usage)
+
+    def test_usage_recorded_after_successful_embed(self, tmp_path):
+        usage: list[tuple[int, int]] = []
+        db, repo = self._repo(str(tmp_path / "m.db"), FakeEmbedder(usage_tokens=11), usage)
+
+        async def main():
+            await db.init()
+            await repo.add(3, "note")
+            assert usage == [(3, 11)]  # add path meters the embed spend
+            await repo.search(3, "note", k=2)
+            assert usage == [(3, 11), (3, 11)]  # search path too
+            await db.dispose()
+
+        asyncio.run(main())
+
+    def test_embed_failure_records_nothing(self, tmp_path):
+        usage: list[tuple[int, int]] = []
+        db, repo = self._repo(str(tmp_path / "m.db"), FakeEmbedder(fail=True), usage)
+
+        async def main():
+            await db.init()
+            await repo.add(3, "note")  # embed raises -> nothing spent -> nothing metered
+            assert usage == []
+            await db.dispose()
+
+        asyncio.run(main())
+
+    def test_store_failure_still_meters_the_embed(self, tmp_path):
+        usage: list[tuple[int, int]] = []
+        store = FakeVectorStore()
+
+        async def fail_add(*args, **kwargs):
+            raise RuntimeError("milvus down")
+
+        store.add = fail_add
+        db = Database(f"sqlite+aiosqlite:///{(tmp_path / 'm.db').as_posix()}")
+
+        async def on_usage(user_id: int, tokens: int) -> None:
+            usage.append((user_id, tokens))
+
+        repo = MemoryRepo(db, vector_store=store, embedder=FakeEmbedder(usage_tokens=5), on_embed_usage=on_usage)
+
+        async def main():
+            await db.init()
+            await repo.add(3, "note")  # embed succeeded and was billed; index died after
+            assert usage == [(3, 5)]
+            await db.dispose()
+
+        asyncio.run(main())

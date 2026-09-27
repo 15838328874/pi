@@ -144,5 +144,9 @@ def get_backend(redis_url: str | None, namespace: str = "pi") -> CacheBackend:
     if not redis_url:
         return MemoryBackend()
     backend = RedisBackend(redis_url, namespace=namespace)
-    log.info("redis backend configured: %s (ns=%s)", redis_url, namespace)
+    # mask_url: the Redis URL's userinfo is the plaintext password - the
+    # startup log lands in journald and must not carry it (L15).
+    from pi.security.redact import mask_url
+
+    log.info("redis backend configured: %s (ns=%s)", mask_url(redis_url), namespace)
     return backend

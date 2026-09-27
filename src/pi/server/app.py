@@ -31,6 +31,7 @@ from pi.server.db import Database, MemoryRepo, MessageRepo, SessionRepo, UserRep
 from pi.server.ratelimit import RateLimiter
 from pi.server.runner import RunManager, event_to_sse, server_policy
 from pi.security.audit import AuditLogger
+from pi.security.redact import mask_url
 from pi.tools.mcp import McpToolProvider
 from pi.tools.registry import BuiltinToolProvider, ToolProvider, ToolRegistry
 from pi.tools.sandbox import shutdown_docker_pool, validate_sandbox_mode
@@ -98,10 +99,33 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             settings.embedding_url, settings.embedding_api_key, settings.embedding_model
         )
         vector_store = MilvusStore(settings.milvus_uri)
-        memories = MemoryRepo(db, vector_store=vector_store, embedder=embedder)
+
+        # Meter embedding tokens like LLM tokens: recorded under
+        # model "embedding/<model>" so the monthly per-model breakdown (and the
+        # token quota) reflects the real spend. Accounting failures are logged
+        # and swallowed by MemoryRepo - never a run failure.
+        async def on_embed_usage(user_id: int, tokens: int) -> None:
+            row = await users.by_id(user_id)
+            if row is None:
+                return
+            await usage_tracker.record(
+                user_id=user_id,
+                username=row.username,
+                session_id="",
+                model=f"embedding/{settings.embedding_model}",
+                input_tokens=tokens,
+                output_tokens=0,
+                turns=0,
+            )
+
+        memories = MemoryRepo(
+            db, vector_store=vector_store, embedder=embedder, on_embed_usage=on_embed_usage
+        )
+        # mask_url: a serverless Milvus URI can embed a token in its hostname
+        # section - the startup log lands in journald and must not carry it.
         log.info(
             "vector memory enabled: milvus=%s model=%s",
-            settings.milvus_uri,
+            mask_url(settings.milvus_uri),
             settings.embedding_model,
         )
     cache = get_backend(settings.redis_url, namespace=settings.redis_ns)

@@ -352,3 +352,29 @@ class TestGenericPathSandbox:
     def test_builtin_file_tools_unchanged(self, tmp_path: Path):
         assert not check(_policy(), "read", {"path": "../../x"}, tmp_path).allowed
         assert check(_policy(), "read", {"path": "x.txt"}, tmp_path).allowed
+
+
+class TestMaskUrl:
+    """L15: connection strings must never reach the logs with secrets intact."""
+
+    def test_redis_password_masked(self):
+        from pi.security.redact import mask_url
+
+        assert mask_url("redis://zhu:secret123@host:6379/0") == "redis://zhu:***@host:6379/0"
+
+    def test_database_url_password_masked(self):
+        from pi.security.redact import mask_url
+
+        masked = mask_url("postgresql+asyncpg://pi:pass@127.0.0.1:5432/pi")
+        assert "pass" not in masked
+        assert "pi:***@127.0.0.1:5432/pi" in masked
+
+    def test_plain_url_untouched(self):
+        from pi.security.redact import mask_url
+
+        assert mask_url("http://127.0.0.1:19531") == "http://127.0.0.1:19531"
+
+    def test_unparseable_falls_back_to_redact(self):
+        from pi.security.redact import mask_url
+
+        assert mask_url("not a url sk-abcdef0123456789abcdef") == "not a url [REDACTED:api_key]"

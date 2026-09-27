@@ -1280,6 +1280,41 @@ embedding 用量计量、conftest pin 纪律。
 
 ---
 
+### 20.5 前端落地思路（仅思路，未实现）
+
+能力再全，没有可视入口对外等于"不存在"——main 的 `web/`（Vue，29k 行，含聊天/
+账号/管理/轨迹查看器）就是为此建的。但**前端是后端缺口的验收标准**：直接移植
+会暴露 dev 的 API 面比 main 的前端预期窄一截：
+
+| main 前端依赖的端点 | dev 现状 |
+|---|---|
+| 注册/登录/会话/run(SSE)/消息/usage | 有 |
+| `DELETE /v1/me`（注销账号） | 无 |
+| `GET/POST /v1/sessions/{id}/files`（工作区文件列表/上传） | 无 |
+| `GET/DELETE /v1/memories(/{id})`（记忆 CRUD） | 无（只有 remember/recall 工具，无 HTTP 面） |
+| `GET /v1/admin/audit?event=` | 有但过滤参数不同（user/tool vs user/event） |
+| `GET /v1/admin/traces(/{runId})`（轨迹回放查看器） | **硬缺**——轨迹不落库（§19 ①） |
+| run 请求体 `enable_search`/`builtin_tools`/`files` | 无（RunIn 只有 prompt/model） |
+| SSE 事件 `plan` | 不发射 |
+
+所以"做前端"实际上把 §20.4 的"持久化闭环 → 契约 → 控制台"打包提前——这是好事，
+前端逼着后端补齐，而不是反过来。
+
+三条路线：
+
+- **A. 完整移植 main 的 web/**：先补后端（轨迹落库 + traces 端点、memories CRUD、
+  files 端点、deregister、run 扩展参数、audit 过滤对齐），再把 web/ 搬进 dev 并
+  **静态托管进 pi-py**（一个服务同时出 API + UI，自托管产品的标准形态）。代价
+  最大，得到完整产品面。**推荐**。
+- **B. 为 dev 现有 API 建轻量控制台**（聊天 + 用户/配额/审计/metrics）：不做轨迹
+  落库也能上，但和 main 的 29k 行不兼容，等于另起炉灶。
+- **C. 先搬基础面板**（聊天/账号/admin），轨迹/文件/记忆页后续接上：折中。
+
+落地顺序（若选 A）：后端补齐 → 前端移植 → 静态托管（FastAPI StaticFiles 挂构建
+产物）→ 真实验证（浏览器走通聊天 SSE + admin 面板）。
+
+---
+
 ## 附录：一次 run 的时序（文字版）
 
 ```

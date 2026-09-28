@@ -131,6 +131,16 @@ class ToolContext:
     max_output: int = 30_000
     runner: Any = None  # CommandRunner (pi.tools.sandbox); None -> local shell
     fs: WorkspaceFS | None = None  # file tools' filesystem; None -> LocalFS
+    # Sub-agent spawning deps, populated by AgentLoop so a tool can delegate to a
+    # child loop with the same model / policy / audit / tracer context.
+    provider: Any = None
+    policy: Any = None
+    audit: Any = None
+    tracer: Any = None
+    session_id: str = ""
+    user_id: str = ""
+    user_db_id: int | None = None  # integer user id (for DB-scoped stores like memory)
+    memory: Any = None  # MemoryRepo, injected by the server runner
 
 
 class Tool(ABC):

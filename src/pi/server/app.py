@@ -358,12 +358,20 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         status = 200 if healthy else 503
         return JSONResponse({"status": "ready" if healthy else "not-ready", "checks": checks}, status_code=status)
 
+    @app.get("/v1/auth/register_policy")
+    async def register_policy() -> dict:
+        """Public: tells the frontend whether to show the register tab."""
+        return {"allowed": settings.allow_register}
+
     @app.post("/v1/auth/register")
     async def register(body: RegisterIn, request: Request) -> dict:
         """Open signup, always a normal user; admin is granted by editing the DB.
 
         Unauthenticated by design, so 8300 must not be reachable from the internet.
+        Gateable via PI_ALLOW_REGISTER=0 (403) when a demo must face the internet.
         """
+        if not settings.allow_register:
+            raise HTTPException(status_code=403, detail="registration disabled")
         ip = _client_ip(request)
         ua = request.headers.get("user-agent", "")
 

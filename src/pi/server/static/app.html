@@ -334,6 +334,18 @@ function setAuthMode(m) {
 $("tabLogin").onclick = () => setAuthMode("login");
 $("tabRegister").onclick = () => setAuthMode("register");
 
+// 开放注册开关：后端 PI_ALLOW_REGISTER=0 时 register_policy 返回 allowed=false，
+// 前端据此藏掉「注册」tab（后端同样会 403，双保险）。
+(async () => {
+  try {
+    const r = await fetch("/v1/auth/register_policy");
+    if (r.ok && !(await r.json()).allowed) {
+      $("tabRegister").style.display = "none";
+      setAuthMode("login");
+    }
+  } catch (_) { /* 接口不可用时保留默认行为 */ }
+})();
+
 async function doAuth() {
   const u = $("fUser").value.trim(), p = $("fPass").value;
   $("fMsg").textContent = "";

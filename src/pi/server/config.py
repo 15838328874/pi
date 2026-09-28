@@ -21,6 +21,8 @@ class ServerSettings:
     run_timeout_seconds: int = 600
     rate_limit_runs_per_min: int = 20
     default_quota_tokens: int = 1_000_000
+    # PI_ALLOW_REGISTER=0 关闭开放注册（公网演示时用），注册接口返回 403。
+    allow_register: bool = True
     tracer_backend: str = "jsonl"
     redis_url: str = ""
     redis_ns: str = "pi"
@@ -104,6 +106,7 @@ class ServerSettings:
             run_timeout_seconds=int(os.environ.get("PI_RUN_TIMEOUT_SECONDS", 600)),
             rate_limit_runs_per_min=int(os.environ.get("PI_RATE_LIMIT_RUNS_PER_MIN", 20)),
             default_quota_tokens=int(os.environ.get("PI_DEFAULT_QUOTA_TOKENS", 1_000_000)),
+            allow_register=os.environ.get("PI_ALLOW_REGISTER", "1") == "1",
             tracer_backend=os.environ.get("PI_TRACER", "jsonl"),
             redis_url=os.environ.get("PI_REDIS_URL", ""),
             redis_ns=os.environ.get("PI_REDIS_NS", "pi"),

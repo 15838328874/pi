@@ -116,7 +116,7 @@ Twelve built-ins, registered in `tools/__init__.py::all_tools()`:
 
 `bash` (timeout + exit code), `read` (line numbers, paging), `write`, `edit` (exact unique
 match, replace_all, unified diff), `grep` (regex, skips VCS/build dirs), `find` (glob), `ls`,
-`web_fetch`, `web_search`, `remember`, `recall`, `spawn_subagents`.
+`remember`, `recall`, `spawn_subagents` (10 tools total; in-process `web_fetch`/`web_search` were removed over SSRF risk — sandboxed bash is the fetch path).
 
 Two extra tool sources, merged by `ToolRegistry` (builtin first; name collisions keep the
 builtin; one broken source never takes the others down):
@@ -145,7 +145,6 @@ it; both compose files bind-mount the same file to `/etc/pi-py/policy.json`). Sh
 
 ```json
 {
-  "deny_tools": ["web_fetch", "web_search"],
   "deny_command_patterns": [
     "(?:^|[;&|(]\\s*)sudo\\b",
     "\\brm\\s+(-{1,2}[a-z-]+\\s+)*/(\\s|$|\\*)"
@@ -334,9 +333,7 @@ from reading the environment (`env`, `printenv`, `/proc/self/environ`, any inter
 Approval gates address mistakes; only a system boundary addresses malice.
 
 The shipped `.env` therefore sets `PI_SANDBOX=docker` (network disabled, per-container memory /
-pids / cpu ceilings, running as the app's own uid). The two known gaps that remain: `web_fetch` /
-`web_search` run **inside the app process**, not in the sandbox, and do no URL validation — they are
-disabled by `deny_tools` in `policy.json` until that is fixed; and on the **cold CLI** path
+pids / cpu ceilings, running as the app's own uid). The one known gap that remains: on the **cold CLI** path
 (`PI_SANDBOX_POOL=0`) a timeout kills only the local `docker run` client — a SIGKILL cannot be
 forwarded to the container and `--rm` fires on container *exit*, so the container keeps running
 until its own command finishes. (Established by reading the code, not reproduced live; the default

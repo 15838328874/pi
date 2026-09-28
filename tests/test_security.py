@@ -310,11 +310,15 @@ class TestShippedPolicy:
         ]
         assert not blocked, f"policy.json false-positives on: {blocked}"
 
-    def test_web_tools_are_denied_because_they_run_in_the_app_process(self):
-        # the sandbox's --network none does not constrain them at all
-        policy = server_policy(str(SHIPPED_POLICY))
-        for tool in ("web_fetch", "web_search"):
-            assert not check(policy, tool, {"url": "http://100.96.0.96/"}, REPO_ROOT).allowed
+    def test_web_tools_are_removed_entirely(self):
+        """SSRF 关闭方案（2026-09）：进程内抓取工具整体移除，不是 deny——
+        deny 只是策略层，移除连"被模型调用"的可能都没有；沙箱内 bash 抓取替代。
+        回归断言：工具集里不允许再出现进程内抓取工具。"""
+        from pi.tools import all_tools
+
+        names = {t.name for t in all_tools()}
+        assert "web_fetch" not in names
+        assert "web_search" not in names
 
     def test_bash_itself_is_not_denied(self):
         policy = server_policy(str(SHIPPED_POLICY))

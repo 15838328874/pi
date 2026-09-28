@@ -420,10 +420,9 @@ class Tool(ABC):
 | `grep` | pattern, path, include | Python `re` 正则全树搜索，返回 `path:line: text`；≤200 条、单文件 ≤1MB；跳 SKIP_DIRS 和二进制 |
 | `find` | pattern, path | fnmatch 相对路径 glob，≤500 条 |
 | `ls` | path | 目录在前（带 `/`）、文件带大小，≤500 项 |
-| `web_fetch` | url | GET + 标准库 HTMLParser 转纯文本（不引 BeautifulSoup），30s 超时，≤20,000 字符 |
-| `web_search` | query | DuckDuckGo HTML 端点，免 API key |
 
-`all_tools()`（`__init__.py`）返回全部九个的实例列表，是唯一的工具注册点。
+`all_tools()`（`__init__.py`）返回全部 10 个工具的实例列表，是唯一的工具注册点。
+（`web_fetch`/`web_search` 2026-09 已整体移除：进程内抓取有 SSRF 风险，沙箱内 bash 抓取替代。）
 **加工具就在这里注册**（扩展指南见 §16）。
 
 ### 7.3 `sandbox.py` — 命令执行隔离（本层最复杂的文件，~800 行）
@@ -1124,14 +1123,12 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
     调容量时算的是乘法：`PI_SANDBOX_MEMORY × PI_MAX_CONCURRENT_RUNS` 必须远小于物理内存
     （当前 1g × 8 = 8 GiB / 16 GiB 机器）。温池还有 `PI_SANDBOX_POOL_MAX` 个常驻容器
     在额外占位。
-20. **`web_fetch` / `web_search` 是 SSRF，而且和沙箱一点关系都没有**：它们用 `httpx`
-    跑在**应用进程内**，不进容器，所以 `--network none` 对它们毫无约束。`web.py`
-    目前只做了 `^https?://` 前缀检查（还会自动补前缀），没有任何地址校验，
-    并且 `follow_redirects=True`。火山引擎元数据服务 `100.96.0.96` 实测可达。
+20. **进程内抓取工具已整体移除（2026-09，SSRF 关闭方案）**：`web_fetch`/`web_search`
+    曾在应用进程内用 `httpx` 直连、无地址校验、`follow_redirects=True`（火山引擎元数据
+    服务 `100.96.0.96` 实测可达）——沙箱断网对它们毫无约束。修复决策是**移除而非修补**：
+    进程内抓取连"被模型调用"的可能都没有；沙箱内 bash 抓取完全替代。回归测试断言
+    工具集里不再存在这两个工具。
 
-    现在靠仓库根 `policy.json` 的 `deny_tools` 把这两个工具整个禁掉。
-    **这是缓解不是修复**：重新启用之前必须先做两件事——解析后拒绝私网/环回/链路本地/
-    元数据地址，以及**对每一跳重定向重新校验**（只校验第一跳等于没校验）。
 21. **冷路径超时会漏一个容器（已知未修）**：`DockerRunner._run_via_cli` 是前台
     `docker run --rm`，超时后只做 `proc.kill()`——那杀的是**本地的 docker CLI 客户端**。
     SIGKILL 无法转发给容器，而 `--rm` 只在容器**自己退出**时生效，所以容器会继续跑到

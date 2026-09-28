@@ -17,7 +17,7 @@
 
 | 能力 | 位置 | 验证 |
 |---|---|---|
-| Agent loop + 9 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 254 单测 |
+| Agent loop + 10 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 254 单测 |
 | LLM 接入层（openai/anthropic/fake）+ 降级链 + 退避重试 | `src/pi/llm/` | 单测 + 真实模型（qwen3.8-flash/max） |
 | 上下文压缩（摘要 + 保留尾部，非破坏落库） | `agent/compaction.py` | 单测 |
 | Docker 沙箱 + cgroup 限额 + 预热池 + 断网 | `tools/sandbox.py` | 压测 ~52 exec/s |
@@ -68,7 +68,6 @@
 
 | 项 | 说明 | 优先级 |
 |---|---|---|
-| Web 工具 SSRF 修复 | `web_fetch/web_search` 目前在应用进程内跑、无地址校验，policy.json 已 deny。修复方案：URL/DNS 解析后拒绝私网/环回/链路本地/元数据地址 + 每一跳重定向重新校验；理想形态是搬进沙箱（沙箱=网络边界）。修完才能从 deny_tools 放出 | 高 |
 | 管理员会话浏览器 | 管理员查看任意用户会话/轨迹（需一批 admin_* 端点 + 管理台页面） | 中 |
 | eval 补全 | flywheel 自动抽取任务、regress、badcase 自动归因 | 中 |
 | checkpoint 接 server | 超时/失败后从 checkpoint 恢复（loop 的 on_checkpoint 已就绪，server 未接线） | 低 |

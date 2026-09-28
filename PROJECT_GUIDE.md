@@ -335,7 +335,7 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | Agent | 连续拒绝熔断 | `agent/loop.py` | 防死磕 |
 | 轨迹 | canonical 事件日志（6 类事件 + ts 墙钟） | `agent/trajectory.py` | P1，评估/回放唯一事实源 |
 | 轨迹 | **双写**：runs 表（结构化）+ jsonl 按天（合规底稿） | `server/db.py` `server/trajectory_store.py` | 落盘失败不影响 run |
-| 工具 | 9 内置（bash/read/write/edit/grep/find/ls/web/subagent） | `src/pi/tools/` | 全走 policy 路径沙箱 |
+| 工具 | 10 内置（bash/read/write/edit/grep/find/ls/remember/recall/subagent） | `src/pi/tools/` | 全走 policy 路径沙箱 |
 | 工具 | 子代理（递归委派 + max_depth） | `tools/subagent.py` | Multi-Agent |
 | 工具 | MCP 工具源（stdio + fail-soft + 生命周期） | `tools/mcp.py` | 标准协议 |
 | 工具 | Skills 技能包（SKILL.md + 索引注入 + 脚本走沙箱） | `tools/skill.py` | 渐进披露 |
@@ -411,7 +411,7 @@ for call in calls:
   `PI_SANDBOX_MEMORY/PIDS/CPUS` 在**全部四条建容器路径**（冷 CLI / 冷 API / 热 CLI / 热 API）
   都强制带上，且 `--memory-swap = --memory`（否则 Docker 默认允许 2 倍交换）。
 - **断网是默认**：`--network none`。联网是显式开关（`PI_SANDBOX_NET=host`），
-  且当前 web_fetch/web_search 因 SSRF 风险被 policy deny（见 4.12/7）。
+  且进程内抓取工具（web_fetch/web_search）已因 SSRF 风险整体移除（见 4.12）——沙箱内 bash 抓取替代。
 - **预热池**：每工作区一个 `sleep infinity` 常驻容器，调用 = `docker exec`
   （比 `docker run` 少一次容器创建）；空闲自动回收；预热是后台任务，
   与模型思考并行（见巧思 3）。实测每预热容器仅 ~26 MiB。
@@ -628,10 +628,10 @@ stdio 子进程只 spawn 一次，shutdown 时统一回收）。
 - **现象/风险**：`web_fetch`/`web_search` 在**应用进程内**用 httpx 直连目标 URL、
   不做任何地址校验、自动跟随重定向——等于给模型一个内网探测口子（云元数据服务
   169.254.169.254/100.96.0.96、内网服务都能被扫）。
-- **现状**：`policy.json` 里 `deny_tools: ["web_fetch", "web_search"]` 已经把它们关了——
-  开沙箱断网也管不住，因为请求根本不走沙箱。
-- **修法（已定，待做）**：URL/DNS 解析后**拒绝私网/环回/链路本地/元数据地址** +
-  **每一跳重定向重新校验**；理想形态是搬进沙箱（沙箱=网络边界，应用进程永远不直接碰网络）。
+- **解法（2026-09 已落地）**：**移除而非修补**——`web.py` 整体删除，工具集里不再存在
+  进程内抓取工具（回归测试断言 `web_fetch/web_search not in all_tools()`）；沙箱内 bash
+  抓取完全替代（Docker 断网时抓取走 `PI_SANDBOX_NET=host` 显式放行）。这是"漏洞关闭"的
+  一种合法形态：修不好就删掉，而不是留着缓解措施自我安慰。
 - **预防**：凡"应用进程对外发起请求"的代码，默认按"有 SSRF"审查。
 
 ### 4.13 指标标签爆炸
@@ -831,7 +831,6 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 
 | 优先级 | 事项 | 一句话 |
 |---|---|---|
-| 高 | **Web 工具 SSRF 修复** | web_fetch/web_search 现在进程内直连且无地址校验（已被 deny）；修法=私网/元数据地址拒绝 + 每跳重定向重校验，理想形态搬进沙箱 |
 | 中 | 管理员会话浏览器 | 管理员查看任意用户会话/轨迹（需 admin_* 端点） |
 | 中 | eval 补全 | 自动抽任务、regress、badcase 归因 |
 | 低 | checkpoint 接 server | 超时后从断点恢复（loop 钩子已就绪） |
@@ -848,7 +847,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 src/pi/
 ├── llm/           模型接入层：openai/anthropic 提供商、统一流事件、降级链、think_filter、embedding
 ├── agent/         智能体核心：loop（循环/压缩/断点）、trajectory（P1 事件日志）、compaction
-├── tools/         工具层：9 内置 + subagent + memory + mcp + skill + registry + sandbox
+├── tools/         工具层：10 内置 + subagent + memory + mcp + skill + registry + sandbox
 ├── server/        FastAPI 服务：app（路由）、runner（RunManager）、db（ORM+repo）、
 │                  cache（Redis/内存）、auth、config、ratelimit、trajectory_store、
 │                  vectorstore（Milvus）、static（三个前端页面）、archive.py（会话归档）
@@ -898,7 +897,7 @@ migrations/        Alembic 迁移（0001~0006）
    {"type": "RunStarted", "run_id": "0d260d973ba1", "session_id": "e3d4046d61a4",
     "user_id": "zhu", "model": "openai/qwen3.8-max", "cwd": ".../workspaces/zhu",
     "tools": ["bash","edit","find","grep","ls","read","recall","remember",
-              "spawn_subagents","web_fetch","web_search","write"],
+              "spawn_subagents","write"],
     "prompt": "只回复：布局测试完成", "ts": 1790517200.8},
    {"type": "LlmCall", "turn": 1, "model": "openai/qwen3.8-max",
     "input_tokens": 2103, "output_tokens": 147, "stop_reason": "end_turn",

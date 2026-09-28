@@ -10,7 +10,7 @@
 | 数据库 | 云端托管 **MySQL**（`.env` 里 `mysql+aiomysql://...@mysql...ivolces.com`） | Docker `mysql:8`，`127.0.0.1:3306`，库 `pi_py`，用户 `pi/pi_py_local` |
 | 缓存/锁 | 云端托管 Redis（`.env` 里 `redis-cngz...ivolces.com`） | 本机 Redis（apt 的 `redis-server` 或 compose），`127.0.0.1:6379` |
 | 向量库 | 云端 Milvus | Docker `milvusdb/milvus:v2.5.4` standalone（embedded 模式），`127.0.0.1:19531` |
-| 模型 | `openai/qwen3.8-max`（阿里云 MaaS） | **同一云模型**（本地无 GPU，只把 endpoint/key 指过去） |
+| 模型 | `openai/qwen3.8-flash`（阿里云 MaaS，本地默认；生产可在 .env 里另配） | **同一云模型**（本地无 GPU，只把 endpoint/key 指过去） |
 | embedding | 云 embedding（qwen3.7-text-embedding） | **同一云 embedding**（向量写入本地 Milvus，不进生产） |
 | 沙箱 | Docker（`PI_SANDBOX=docker`） | 同左，本机 Docker |
 | 配置文件 | `.env`（生产，gitignored） | `deploy/env.local.example` → 复制为 `.env.local` |

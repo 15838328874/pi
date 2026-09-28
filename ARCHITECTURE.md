@@ -356,6 +356,27 @@ LLMProvider.stream(system, messages, tools) -> AsyncIterator[StreamEvent]
 因为消费端（HTTP SSE 客户端）需要在过程中实时渲染——模型每吐一个字、每调一个工具
 都要即时可见。事件流是唯一不需要缓冲整轮的方案。
 
+**多工具调用的并行 / 串行（当前实现）**
+
+模型在一次回复里**可以**同时吐多个 tool call（`calls` 列表，一个 assistant 消息带多个
+工具块）；但 `_run_inner` 的执行是**严格串行**的：
+
+```python
+for call in calls:                        # 模型发多少个，都排队
+    outcome = await self._run_tool(call)  # 逐个 await，无 asyncio.gather
+```
+
+要点：
+
+- **谁决定并行/串行？模型自己**，通过"批量粒度"表达——一次发多个 = 它认为这些调用
+  相互独立（可并行）；一次只发一个、等结果再发下一个 = 有依赖、必须串行。
+- **当前代码没有兑现"并行"**：批量也被降级为串行执行（结果按 `calls` 原序回填，
+  打包成一条 user 消息一起回喂）。所以独立子任务不会真的并发提速；有依赖的调用
+  必须在**跨回合**完成——同一批里 A 的结果对 B 不可见。
+- **串行是当前的合理默认**：工具大多共享同一 workspace（文件系统有状态），并发写
+  同一路径会竞争；串行顺序确定、无竞态。若要真并行，只适合对**只读、无副作用**的
+  工具（read/grep/find/ls）开 `gather`，写类工具保持串行——这是待办优化项。
+
 ### 6.2 `events.py` — 事件词汇表
 
 `TextDeltaEvent / ToolCallStartEvent / ToolCallEndEvent(ok, result 预览) /

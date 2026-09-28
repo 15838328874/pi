@@ -716,7 +716,7 @@ User-Agent，**不记密码**。三点注意：
 |---|---|---|
 | `GET /healthz` | 无 | 存活探针（Docker HEALTHCHECK 用） |
 | `GET /readyz` | 无 | 就绪探针：检查 DB 和缓存，任一异常 503 |
-| `POST /v1/auth/register` | 无（刻意免鉴权） | 开放注册，一律普通用户；重名 409 |
+| `POST /v1/auth/register` | 无（刻意免鉴权） | 注册（`PI_ALLOW_REGISTER=0` 时 403），一律普通用户；重名 409 |
 | `POST /v1/auth/login` | 无 | 验密 → 发 JWT |
 | `POST /v1/auth/logout` | 用户 | 把当前 token 的 jti 拉黑至过期 |
 | `GET /v1/me` | 用户 | 当前用户名 |
@@ -1028,10 +1028,10 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 
 1. **`PI_JWT_SECRET` 是多实例的命根**：不设的话每个实例各自生成，跨实例登录互认不了；
    重启后换了=全员登出。生产一定显式注入且不要轮换（除非有意踢人）。
-2. **注册永远开放，管理员只能改库授予**：`UPDATE users SET is_admin=1 WHERE username='...'`。
-   这意味着 8300 一旦暴露到公网，任何人都能开号（代价见 §11.3）。
-   想清库重来：按外键顺序清 `usage_records → messages → sessions → users`
-   （TRUNCATE 会因外键失败）。
+2. **注册默认开放，可一键关闭（`PI_ALLOW_REGISTER=0`）**：注册接口 403、前端藏注册 tab；
+   管理员仍然只能改库授予（`UPDATE users SET is_admin=1 WHERE username='...'`），
+   没有自助提权口子。公网演示先关注册（代价见 §11.3）。想清库重来：按外键顺序清
+   `usage_records → messages → sessions → users`（TRUNCATE 会因外键失败）。
 3. **公网部署延迟大头是网络往返不是代码**：一次 run 约 40 次串行往返
    （SQL+pre-ping+隐式事务+Redis）。同 VPC 部署即根治；不要为此去关
    `pool_pre_ping`——它防 RDS HA 切换后的死连接，韧性价值 > 开销。

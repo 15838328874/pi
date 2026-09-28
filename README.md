@@ -109,7 +109,7 @@ pi-py serve --host 0.0.0.0 --port 8300
 见 [`deploy/local-dev.md`](deploy/local-dev.md)，基础设施编排在 `deploy/docker-compose.local.yml`，
 环境变量模板在 `deploy/env.local.example`（生产是云端托管 MySQL/Redis/Milvus + `docker-compose.cloud.yml`）。
 
-Registration is open: every signup is a normal user. Admin is granted only by writing the
+Registration is open by default (turn it off with `PI_ALLOW_REGISTER=0` for public demos): every signup is a normal user. Admin is granted only by writing the
 database directly — there is no route for it:
 
 ```sql

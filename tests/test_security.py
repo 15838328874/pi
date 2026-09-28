@@ -80,6 +80,62 @@ class TestPolicy:
             pass
 
 
+class TestCapabilities:
+    """Capability-based authorization: Tool.capabilities vs allow/deny sets."""
+
+    READ = frozenset({"filesystem.read"})
+    WRITE = frozenset({"filesystem.write"})
+    BASH = frozenset({"process.execute", "filesystem.read", "filesystem.write"})
+
+    def test_deny_capability(self, tmp_path: Path):
+        policy = Policy(deny_capabilities={"process.execute"})
+        d = check(policy, "bash", {"command": "ls"}, tmp_path, capabilities=self.BASH)
+        assert not d.allowed
+        assert "process.execute" in d.reason
+
+    def test_allow_list_read_passes_write_denied(self, tmp_path: Path):
+        policy = Policy(allow_capabilities={"filesystem.read"})
+        assert check(policy, "read", {"path": "a"}, tmp_path, capabilities=self.READ).allowed
+        d = check(policy, "write", {"path": "a", "content": "x"}, tmp_path, capabilities=self.WRITE)
+        assert not d.allowed
+
+    def test_allow_list_denies_undeclared_tool_fail_closed(self, tmp_path: Path):
+        policy = Policy(allow_capabilities={"filesystem.read"})
+        d = check(policy, "mcp_send_email", {}, tmp_path, capabilities=frozenset())
+        assert not d.allowed
+        assert "no capabilities" in d.reason
+
+    def test_allow_list_uses_subset_not_overlap(self, tmp_path: Path):
+        # bash declares read+write+execute; allow-list of read alone must NOT
+        # admit it through the overlapping "filesystem.read" capability.
+        policy = Policy(allow_capabilities={"filesystem.read"})
+        d = check(policy, "bash", {"command": "ls"}, tmp_path, capabilities=self.BASH)
+        assert not d.allowed
+
+    def test_from_dict_parses_capabilities(self):
+        policy = Policy.from_dict(
+            {"allow_capabilities": ["filesystem.read"], "deny_capabilities": ["network.outbound"]}
+        )
+        assert policy.allow_capabilities == {"filesystem.read"}
+        assert policy.deny_capabilities == {"network.outbound"}
+
+    def test_empty_policy_unchanged(self, tmp_path: Path):
+        policy = Policy()
+        assert check(policy, "bash", {"command": "ls"}, tmp_path, capabilities=self.BASH).allowed
+
+    def test_builtin_tools_declare_capabilities(self):
+        from pi.tools import all_tools
+
+        caps = {t.name: set(t.capabilities) for t in all_tools()}
+        assert caps["read"] == {"filesystem.read"}
+        assert caps["write"] == {"filesystem.write"}
+        assert caps["edit"] == {"filesystem.write"}
+        assert caps["bash"] == {"process.execute", "filesystem.read", "filesystem.write"}
+        assert caps["remember"] == {"memory.write"}
+        assert caps["recall"] == {"memory.read"}
+        assert caps["spawn_subagents"] == {"agent.delegate"}
+
+
 class TestRedact:
     def test_api_keys(self):
         out = redact_text("key: sk-abcdefghijklmnopqrst1234 and AKIAIOSFODNN7EXAMPLE")

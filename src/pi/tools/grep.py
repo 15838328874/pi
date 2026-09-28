@@ -14,6 +14,7 @@ MAX_FILE_BYTES = 1_000_000
 
 class GrepTool(Tool):
     name = "grep"
+    capabilities = frozenset({"filesystem.read"})
     description = (
         "Search file contents with a regular expression (Python re syntax), "
         "returning matches as 'path:line: text'. Searches recursively from cwd "

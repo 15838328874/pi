@@ -13,7 +13,7 @@ import json
 import logging
 import time
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pi.agent.compaction import compact, estimate_size
@@ -51,6 +51,16 @@ PREVIEW_LEN = 200
 MAX_CONSECUTIVE_DENIALS = 5
 
 
+def _idempotency_key(name: str, args: dict) -> str:
+    """Deterministic key for a tool call: name + canonical (sorted) JSON args.
+
+    Used by the completed-tool ledger so a resume can replay an already-completed
+    tool's result instead of re-executing its side effect. Same tool + same args
+    => same key; args that differ only in key order or whitespace still collide.
+    """
+    return name + "|" + json.dumps(args, sort_keys=True)
+
+
 @dataclass
 class _ToolOutcome:
     block: ToolResultBlock
@@ -69,6 +79,10 @@ class Checkpoint:
     input_tokens: int
     output_tokens: int
     turns: int
+    # Completed-tool ledger: idempotency key -> {"content": str, "is_error": bool}.
+    # On resume a tool whose key is here has already executed its side effect, so
+    # the loop replays the recorded result instead of re-executing it.
+    completed_tools: dict[str, dict] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -77,6 +91,7 @@ class Checkpoint:
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
             "turns": self.turns,
+            "completed_tools": self.completed_tools,
         }
 
     @classmethod
@@ -87,6 +102,7 @@ class Checkpoint:
             input_tokens=d["input_tokens"],
             output_tokens=d["output_tokens"],
             turns=d["turns"],
+            completed_tools=d.get("completed_tools", {}),
         )
 
 
@@ -146,6 +162,11 @@ class AgentLoop:
         self._resume_turns: int = 0
         self.trajectory: Trajectory | None = None
         self._run_started_at = 0.0
+        # Idempotent tool replay: completed-tool ledger + whether this loop is
+        # continuing from a checkpoint (dedup is gated on resume so a legitimate
+        # same-args repeat within a normal run is never mistaken for a replay).
+        self._completed: dict[str, dict] = {}
+        self._resumed: bool = False
 
         # Expose runtime deps to tools so a tool (spawn_subagents) can delegate to
         # a child AgentLoop with the same model / policy / audit / tracer context.
@@ -176,6 +197,7 @@ class AgentLoop:
             input_tokens=total.input_tokens,
             output_tokens=total.output_tokens,
             turns=turns,
+            completed_tools=dict(self._completed),
         )
 
     async def run(
@@ -196,10 +218,14 @@ class AgentLoop:
                 output_tokens=resume_from.output_tokens,
             )
             self._resume_turns = resume_from.turns
+            self._completed = dict(resume_from.completed_tools)
+            self._resumed = True
         else:
             self._append(Message(role=Role.user, blocks=[TextBlock(text=user_text)]))
             self._resume_usage = None
             self._resume_turns = 0
+            self._completed = {}
+            self._resumed = False
 
         self.trajectory = Trajectory(
             session_id=self.session_id,
@@ -429,7 +455,9 @@ class AgentLoop:
             )
             return _ToolOutcome(block=block, name=call.name)
 
-        decision = policy_check(self.policy, call.name, args, self.ctx.cwd)
+        decision = policy_check(
+            self.policy, call.name, args, self.ctx.cwd, capabilities=tool.capabilities
+        )
         if not decision.allowed:
             content = f"Error: denied by security policy: {decision.reason}"
             if self.audit is not None:
@@ -448,6 +476,20 @@ class AgentLoop:
                 is_error=True,
             )
             return _ToolOutcome(block=block, name=call.name, arguments=args, denied=True)
+
+        # Idempotent replay: on resume, a tool whose (name, args) already
+        # completed in the checkpointed run has already produced its side
+        # effect, so return the recorded result instead of executing again.
+        # Denied/unknown/crashed calls never reach the ledger, so they re-run.
+        key = _idempotency_key(call.name, args)
+        if self._resumed and key in self._completed:
+            recorded = self._completed[key]
+            block = ToolResultBlock(
+                tool_use_id=call.id,
+                content=recorded.get("content", ""),
+                is_error=bool(recorded.get("is_error", False)),
+            )
+            return _ToolOutcome(block=block, name=call.name, arguments=args)
 
         with self.tracer.track("tool.call", {"tool": call.name, "session": self.session_id}) as span:
             try:
@@ -468,6 +510,11 @@ class AgentLoop:
                 content=result.content,
                 is_error=result.is_error,
             )
+            # Record the completed result so a later resume can replay it. Only
+            # returned results are recorded; a tool that raised (crash path) is
+            # NOT recorded, so resume re-executes it rather than risking a lost
+            # or half-done side effect.
+            self._completed[key] = {"content": result.content, "is_error": result.is_error}
             self._audit(call.name, args, ok=not result.is_error, preview=result.content)
             return _ToolOutcome(block=block, name=call.name, usage=result.usage, arguments=args)
 

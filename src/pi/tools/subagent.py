@@ -60,6 +60,7 @@ class SpawnSubagentsTool(Tool):
     """
 
     name = "spawn_subagents"
+    capabilities = frozenset({"agent.delegate"})
     description = (
         "Delegate one or more INDEPENDENT subtasks to sub-agents and collect "
         "their results. Use this to parallelize work; give each subtask a clear, "

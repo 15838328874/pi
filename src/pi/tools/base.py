@@ -160,6 +160,13 @@ class Tool(ABC):
     # deliberately generic - it hardcodes no tool names today, and a second
     # terminal tool should not require editing its heart.
     terminal: bool = False
+    # Capabilities this tool requires, for capability-based authorization (see
+    # security.policy). Vocabulary: filesystem.read / filesystem.write /
+    # process.execute / memory.read / memory.write / agent.delegate.
+    # Empty = undeclared (MCP / skill tools): under an allow-list policy an
+    # undeclared tool is denied (fail-closed), so it is only usable when no
+    # allow-list is configured.
+    capabilities: frozenset[str] = frozenset()
 
     @abstractmethod
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:

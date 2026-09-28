@@ -29,6 +29,7 @@ _MAX_FETCH_BYTES = 256 * 1024 * 1024  # 256 MiB
 
 class ListFilesTool(Tool):
     name = "list_files"
+    capabilities = frozenset({"filesystem.read"})
     description = (
         "List files the current user has uploaded to object storage (id, name, "
         "size, upload time). Use fetch_file to pull one into the sandbox workspace."
@@ -48,6 +49,7 @@ class ListFilesTool(Tool):
 
 class FetchFileTool(Tool):
     name = "fetch_file"
+    capabilities = frozenset({"filesystem.read", "filesystem.write"})
     description = (
         "Pull an uploaded file into the sandbox workspace by its original filename "
         "(see list_files for its id). Returns the workspace path to process it. "

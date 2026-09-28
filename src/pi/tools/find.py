@@ -13,6 +13,7 @@ MAX_RESULTS = 500
 
 class FindTool(Tool):
     name = "find"
+    capabilities = frozenset({"filesystem.read"})
     description = (
         "Find files whose relative path matches a glob pattern (e.g. '*.py', "
         "'src/**/test_*'). Searches recursively from cwd or the given path. "

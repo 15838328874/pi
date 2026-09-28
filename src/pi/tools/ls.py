@@ -11,6 +11,7 @@ MAX_ENTRIES = 500
 
 class LsTool(Tool):
     name = "ls"
+    capabilities = frozenset({"filesystem.read"})
     description = "List a directory: directories first (trailing '/'), then files with sizes."
     input_schema = {
         "type": "object",

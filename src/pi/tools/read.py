@@ -16,6 +16,7 @@ def _looks_binary(data: bytes) -> bool:
 
 class ReadTool(Tool):
     name = "read"
+    capabilities = frozenset({"filesystem.read"})
     description = (
         "Read a text file from the workspace, returned with 6-width line numbers (1-based). "
         "Use a RELATIVE path (e.g. 'out.txt'). The sandbox's /workspace is this same "

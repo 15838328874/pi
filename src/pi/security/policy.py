@@ -31,6 +31,14 @@ class Policy:
     deny_command_patterns: list[re.Pattern[str]] = field(default_factory=list)
     path_sandbox: bool = False
     redact: bool = False
+    # Capability-based authorization (see tools.base.Tool.capabilities).
+    # - deny_capabilities: any tool whose capabilities intersect this set is denied.
+    # - allow_capabilities: when non-empty, a tool is allowed only if it declares
+    #   capabilities AND all of them are within this set (subset, not intersection,
+    #   so a powerful tool like bash is not admitted through one overlapping cap).
+    #   A tool with no declared capabilities (MCP/skill) is denied: fail-closed.
+    allow_capabilities: set[str] = field(default_factory=set)
+    deny_capabilities: set[str] = field(default_factory=set)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "Policy":
@@ -45,6 +53,8 @@ class Policy:
             deny_command_patterns=patterns,
             path_sandbox=bool(data.get("path_sandbox", False)),
             redact=bool(data.get("redact", False)),
+            allow_capabilities={str(c) for c in data.get("allow_capabilities", [])},
+            deny_capabilities={str(c) for c in data.get("deny_capabilities", [])},
         )
 
 
@@ -67,13 +77,41 @@ def load_policy(path: str | Path | None) -> Policy | None:
     return Policy.from_dict(data)
 
 
-def check(policy: Policy | None, tool_name: str, args: dict[str, Any], cwd: Path) -> PolicyDecision:
+def check(
+    policy: Policy | None,
+    tool_name: str,
+    args: dict[str, Any],
+    cwd: Path,
+    capabilities: frozenset[str] = frozenset(),
+) -> PolicyDecision:
     """Evaluate one tool call against the policy. Returns the decision."""
     if policy is None:
         return PolicyDecision(allowed=True)
 
     if tool_name in policy.deny_tools:
         return PolicyDecision(allowed=False, reason=f"tool {tool_name!r} is denied by policy")
+
+    if capabilities & policy.deny_capabilities:
+        denied = sorted(capabilities & policy.deny_capabilities)
+        return PolicyDecision(
+            allowed=False,
+            reason=f"tool {tool_name!r} requires denied capability: {', '.join(denied)}",
+        )
+
+    if policy.allow_capabilities and not (
+        capabilities and capabilities <= policy.allow_capabilities
+    ):
+        if not capabilities:
+            reason = (
+                f"tool {tool_name!r} declares no capabilities; denied by "
+                f"allow-list policy"
+            )
+        else:
+            reason = (
+                f"tool {tool_name!r} capabilities {sorted(capabilities)} exceed "
+                f"the allowed set {sorted(policy.allow_capabilities)}"
+            )
+        return PolicyDecision(allowed=False, reason=reason)
 
     if tool_name == "bash":
         command = str(args.get("command", ""))

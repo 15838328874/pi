@@ -12,6 +12,7 @@ MAX_DIFF_LINES = 60
 
 class EditTool(Tool):
     name = "edit"
+    capabilities = frozenset({"filesystem.write"})
     description = (
         "Replace an exact string in a workspace file (RELATIVE path; the sandbox's /workspace "
         "is this same directory bind-mounted). old_string must match exactly (including "

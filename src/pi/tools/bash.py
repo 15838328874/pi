@@ -10,6 +10,7 @@ from pi.tools.sandbox import LocalRunner
 
 class BashTool(Tool):
     name = "bash"
+    capabilities = frozenset({"process.execute", "filesystem.read", "filesystem.write"})
     description = (
         "Run a shell command inside the sandbox and return stdout/stderr plus the exit code. "
         "The workspace is mounted at /workspace here — the SAME directory the file tools see, "

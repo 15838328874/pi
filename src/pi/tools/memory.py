@@ -14,6 +14,7 @@ from pi.tools.base import Tool, ToolContext, ToolResult
 
 class RememberTool(Tool):
     name = "remember"
+    capabilities = frozenset({"memory.write"})
     description = (
         "Save a fact, preference, or decision to long-term memory. It persists "
         "across sessions, so use it for things you (or the user) will need later."
@@ -36,6 +37,7 @@ class RememberTool(Tool):
 
 class RecallTool(Tool):
     name = "recall"
+    capabilities = frozenset({"memory.read"})
     description = (
         "Search long-term memory for notes relevant to a query. Returns the most "
         "relevant saved facts (already injected automatically at turn start, so "

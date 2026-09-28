@@ -9,6 +9,7 @@ from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
 
 class WriteTool(Tool):
     name = "write"
+    capabilities = frozenset({"filesystem.write"})
     description = (
         "Write content to a file in the workspace, creating parent directories as needed. "
         "Use a RELATIVE path (e.g. 'out.txt'); the sandbox's /workspace is this same directory "

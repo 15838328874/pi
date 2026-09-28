@@ -29,7 +29,8 @@ from pi.observability.tracing import get_tracer
 from pi.server.auth import create_token, decode_token, hash_password, verify_password
 from pi.server.cache import get_backend
 from pi.server.config import ServerSettings
-from pi.server.db import AuditRepo, Database, MemoryRepo, MessageRepo, RunRepo, SessionRepo, UserRepo
+from pi.server.db import AuditRepo, Database, FileRepo, MemoryRepo, MessageRepo, RunRepo, SessionRepo, UserRepo
+from pi.server.storage import ObjectStore
 from pi.server.ratelimit import RateLimiter
 from pi.server.runner import RunManager, event_to_sse, server_policy
 from pi.server.trajectory_store import latest_trajectory
@@ -79,6 +80,25 @@ class RunIn(BaseModel):
     model: str | None = None
 
 
+class FileUploadIn(BaseModel):
+    """Initiate an upload: server signs a presigned PUT URL (direct handshake),
+    after de-duplicating on (user_id, sha256). No bytes pass through the app."""
+
+    filename: str = Field(min_length=1, max_length=255)
+    size: int = Field(gt=0)
+    content_type: str = ""
+    sha256: str = Field(min_length=64, max_length=64)
+
+
+class FileCommitIn(BaseModel):
+    """Confirm the direct PUT completed; server HEADs the object and records it."""
+
+    object_key: str = Field(min_length=1, max_length=512)
+    filename: str = Field(min_length=1, max_length=255)
+    sha256: str = Field(min_length=64, max_length=64)
+    content_type: str = ""
+
+
 def create_app(settings: ServerSettings | None = None) -> FastAPI:
     settings = settings or ServerSettings.from_env()
     # A typo here used to silently mean "no sandbox": bash would run inside the
@@ -91,6 +111,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     messages = MessageRepo(db)
     memories = MemoryRepo(db)
     runs_repo = RunRepo(db)
+    files_repo = FileRepo(db)
+    store = ObjectStore(settings)
     # Vector semantic memory: all four PI_EMBEDDING_*/PI_MILVUS_URI vars must be
     # set; otherwise MemoryRepo stays lexical-only. Both clients are lazy (no
     # network I/O here), so create_app stays fast and testable.
@@ -193,6 +215,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI):
         await db.init()
         settings.workspace_root.mkdir(parents=True, exist_ok=True)
+        await store.ensure_buckets()  # object storage buckets（未配置/不可达→best-effort 跳过）
         await registry.warmup()  # preconnect MCP servers / load skill tools
         yield
         await registry.close()  # terminate MCP child processes
@@ -414,6 +437,100 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         cwd.mkdir(parents=True, exist_ok=True)
         row = await sessions.create(user.id, body.title, model, cwd)
         return {"id": row.id, "title": row.title, "model": row.model, "cwd": row.cwd}
+
+    # ---- 文件管线：MinIO 预签名直连（服务器只签发+记账，不搬字节）---------
+
+    @app.post("/v1/files")
+    async def start_upload(body: FileUploadIn, username: str = Depends(current_user)) -> dict:
+        """Initiate a direct upload: dedup on (user_id, sha256), then sign a
+        presigned PUT URL. The client PUTs bytes straight to MinIO."""
+        if not store.enabled:
+            raise HTTPException(status_code=503, detail="object storage not configured")
+        if body.size > settings.max_upload_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"file size {body.size} exceeds limit {settings.max_upload_bytes}",
+            )
+        user = await users.by_username(username)
+        # 去重快速路径：同用户同内容已存在 → 复用，连上传都省了
+        existing = await files_repo.by_sha(user.id, body.sha256)
+        if existing is not None:
+            url = await store.presign_get(existing.object_key, existing.bucket)
+            return {"id": existing.id, "deduplicated": True, "url": url, "filename": existing.filename}
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", body.filename)[:200]
+        object_key = f"{user.id}/{time.strftime('%Y-%m')}/{uuid.uuid4().hex[:12]}-{safe_name}"
+        upload_url = await store.presign_put(object_key, settings.s3_bucket_files)
+        return {"object_key": object_key, "upload_url": upload_url, "deduplicated": False}
+
+    @app.post("/v1/files/commit")
+    async def commit_upload(body: FileCommitIn, username: str = Depends(current_user)) -> dict:
+        """Confirm the direct PUT landed: HEAD the object, dedup (final), record."""
+        if not store.enabled:
+            raise HTTPException(status_code=503, detail="object storage not configured")
+        user = await users.by_username(username)
+        if not body.object_key.startswith(f"{user.id}/"):
+            raise HTTPException(status_code=404, detail="object not found")
+        # 最终去重防线（并发或客户端跳过 presign 去重时兜底）
+        existing = await files_repo.by_sha(user.id, body.sha256)
+        if existing is not None:
+            await store.delete(body.object_key, settings.s3_bucket_files)  # 丢弃冗余对象
+            url = await store.presign_get(existing.object_key, existing.bucket)
+            return {"id": existing.id, "deduplicated": True, "url": url, "filename": existing.filename}
+        head = await store.head(body.object_key, settings.s3_bucket_files)
+        if head is None:
+            raise HTTPException(status_code=404, detail="object not uploaded (PUT the upload_url first)")
+        size, ctype = head
+        row = await files_repo.create(
+            user_id=user.id,
+            object_key=body.object_key,
+            bucket=settings.s3_bucket_files,
+            filename=body.filename,
+            size=size,
+            content_type=body.content_type or ctype,
+            sha256=body.sha256,
+        )
+        url = await store.presign_get(row.object_key, row.bucket)
+        return {"id": row.id, "filename": row.filename, "size": row.size, "url": url}
+
+    @app.get("/v1/files")
+    async def list_files(username: str = Depends(current_user)) -> dict:
+        user = await users.by_username(username)
+        rows = await files_repo.list_for_user(user.id)
+        return {
+            "files": [
+                {
+                    "id": r.id,
+                    "filename": r.filename,
+                    "size": r.size,
+                    "content_type": r.content_type,
+                    "sha256": r.sha256,
+                    "created_at": r.created_at,
+                }
+                for r in rows
+            ]
+        }
+
+    @app.get("/v1/files/{file_id}/url")
+    async def file_url(file_id: int, username: str = Depends(current_user)) -> dict:
+        if not store.enabled:
+            raise HTTPException(status_code=503, detail="object storage not configured")
+        user = await users.by_username(username)
+        row = await files_repo.by_id(file_id)
+        if row is None or row.user_id != user.id:
+            raise HTTPException(status_code=404, detail="file not found")
+        url = await store.presign_get(row.object_key, row.bucket)
+        return {"id": row.id, "filename": row.filename, "url": url}
+
+    @app.delete("/v1/files/{file_id}")
+    async def delete_file(file_id: int, username: str = Depends(current_user)) -> dict:
+        user = await users.by_username(username)
+        row = await files_repo.by_id(file_id)
+        if row is None or row.user_id != user.id:
+            raise HTTPException(status_code=404, detail="file not found")
+        if store.enabled:
+            await store.delete(row.object_key, row.bucket)
+        await files_repo.remove(file_id)
+        return {"deleted": file_id}
 
     async def _owned_session(session_id: str, username: str):
         user = await users.by_username(username)

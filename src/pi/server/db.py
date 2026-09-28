@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
-from sqlalchemy import Boolean, ForeignKey, Integer, String, Text, delete as sa_delete, func, select, update as sa_update
+from sqlalchemy import BigInteger, Boolean, ForeignKey, Integer, String, Text, UniqueConstraint, delete as sa_delete, func, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -635,3 +635,95 @@ _TERM_RE = re.compile(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]")
 
 def _terms(s: str) -> set[str]:
     return set(_TERM_RE.findall(s.lower()))
+
+
+class FileRow(Base):
+    """Object-storage file metadata: the source of truth lives in MinIO/S3,
+    this table is the queryable index (who owns it, what it is, sha for dedup).
+
+    sha256 dedup is user-scoped: same user uploading byte-identical content
+    (incl. re-uploads) reuses the existing object+row instead of writing again.
+    """
+
+    __tablename__ = "files"
+    __table_args__ = (UniqueConstraint("user_id", "sha256", name="uk_user_sha"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    object_key: Mapped[str] = mapped_column(String(512), unique=True)
+    bucket: Mapped[str] = mapped_column(String(64), default="pi-files")
+    filename: Mapped[str] = mapped_column(String(255))
+    size: Mapped[int] = mapped_column(BigInteger, default=0)
+    content_type: Mapped[str] = mapped_column(String(128), default="")
+    sha256: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[str] = mapped_column(String(32), default=_now)
+
+
+class FileRepo:
+    def __init__(self, db: Database):
+        self.db = db
+
+    async def by_sha(self, user_id: int, sha256: str) -> FileRow | None:
+        async with AsyncSession(self.db.engine) as s:
+            return (
+                await s.execute(
+                    select(FileRow).where(FileRow.user_id == user_id, FileRow.sha256 == sha256)
+                )
+            ).scalar_one_or_none()
+
+    async def by_id(self, file_id: int) -> FileRow | None:
+        async with AsyncSession(self.db.engine) as s:
+            return (
+                await s.execute(select(FileRow).where(FileRow.id == file_id))
+            ).scalar_one_or_none()
+
+    async def by_key(self, object_key: str) -> FileRow | None:
+        async with AsyncSession(self.db.engine) as s:
+            return (
+                await s.execute(select(FileRow).where(FileRow.object_key == object_key))
+            ).scalar_one_or_none()
+
+    async def create(
+        self,
+        *,
+        user_id: int,
+        object_key: str,
+        bucket: str,
+        filename: str,
+        size: int,
+        content_type: str,
+        sha256: str,
+    ) -> FileRow:
+        row = FileRow(
+            user_id=user_id,
+            object_key=object_key,
+            bucket=bucket,
+            filename=filename,
+            size=size,
+            content_type=content_type,
+            sha256=sha256,
+        )
+        async with AsyncSession(self.db.engine) as s:
+            s.add(row)
+            await s.commit()
+            await s.refresh(row)
+            return row
+
+    async def list_for_user(self, user_id: int) -> list[FileRow]:
+        async with AsyncSession(self.db.engine) as s:
+            rows = await s.execute(
+                select(FileRow).where(FileRow.user_id == user_id).order_by(FileRow.created_at.desc())
+            )
+            return list(rows.scalars().all())
+
+    async def remove(self, file_id: int) -> FileRow | None:
+        """Delete the row and return it (so the caller can drop the object)."""
+        async with AsyncSession(self.db.engine) as s:
+            row = (
+                await s.execute(select(FileRow).where(FileRow.id == file_id))
+            ).scalar_one_or_none()
+            if row is None:
+                return None
+            await s.delete(row)
+            await s.commit()
+            return row

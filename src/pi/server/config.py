@@ -64,6 +64,20 @@ class ServerSettings:
     # boot-time warning); a wrong token answers 404, never 403.
     metrics_enabled: bool = True
     metrics_token: str = ""
+    # Object storage (S3-compatible, e.g. MinIO) for the user file pipeline.
+    # Files live here as the source of truth; the server only signs presigned
+    # URLs (never moves bytes). Empty endpoint/keys = feature off.
+    s3_endpoint: str = ""
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    s3_bucket_files: str = "pi-files"
+    s3_bucket_artifacts: str = "pi-artifacts"
+    s3_region: str = "us-east-1"
+    max_upload_bytes: int = 900 * 1024 * 1024  # 900 MiB；>上限由流式/大文件后续做
+
+    @property
+    def s3_enabled(self) -> bool:
+        return bool(self.s3_endpoint and self.s3_access_key and self.s3_secret_key)
 
     @property
     def vector_memory_enabled(self) -> bool:
@@ -121,6 +135,15 @@ class ServerSettings:
             skills_dir=os.environ.get("PI_SKILLS_DIR", ""),
             metrics_enabled=os.environ.get("PI_METRICS", "1") == "1",
             metrics_token=os.environ.get("PI_METRICS_TOKEN", ""),
+            s3_endpoint=os.environ.get("PI_S3_ENDPOINT", ""),
+            s3_access_key=os.environ.get("PI_S3_ACCESS_KEY", ""),
+            s3_secret_key=os.environ.get("PI_S3_SECRET_KEY", ""),
+            s3_bucket_files=os.environ.get("PI_S3_BUCKET_FILES", "pi-files"),
+            s3_bucket_artifacts=os.environ.get("PI_S3_BUCKET_ARTIFACTS", "pi-artifacts"),
+            s3_region=os.environ.get("PI_S3_REGION", "us-east-1"),
+            max_upload_bytes=int(
+                os.environ.get("PI_MAX_UPLOAD_BYTES", 900 * 1024 * 1024)
+            ),
         )
 
 

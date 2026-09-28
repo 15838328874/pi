@@ -1017,18 +1017,16 @@ class CubeSandboxRunner:
         self._ws_loaded = True
 
     def _save_workspace(self) -> None:
-        """One-time sync back at session close (best-effort)."""
+        """One-time sync back at session close. Raises on failure so that
+        save_workspace() can retry transient data-plane drops."""
         if not (self._ws_loaded and self._workspace_host is not None and self._sbx is not None):
             return
-        try:
-            sbx = self._sbx
-            sbx.commands.run(
-                f"tar -czf /tmp/ws-out.tar.gz -C {self.WORKSPACE} . && echo OK", timeout=180
-            )
-            data = sbx.files.read("/tmp/ws-out.tar.gz", format="bytes")
-            self._restore_bytes(self._workspace_host, data)
-        except Exception:  # noqa: BLE001 - save is best-effort, sandbox still dies
-            log.warning("cube sandbox workspace save failed", exc_info=True)
+        sbx = self._sbx
+        sbx.commands.run(
+            f"tar -czf /tmp/ws-out.tar.gz -C {self.WORKSPACE} . && echo OK", timeout=180
+        )
+        data = sbx.files.read("/tmp/ws-out.tar.gz", format="bytes")
+        self._restore_bytes(self._workspace_host, data)
 
     # -- CommandRunner protocol --------------------------------------------
 
@@ -1132,12 +1130,25 @@ class CubeSandboxRunner:
 
         Pool-returned sandboxes live on after a turn (reused by the next
         turn of the same session); call this before archiving so the host
-        copy reflects the VM's current files. close() = save_workspace() + kill."""
-        if self._sbx is not None and not self._closed:
+        copy reflects the VM's current files. close() = save_workspace() + kill.
+
+        Retries because the sandbox data plane occasionally drops the SDK's
+        HTTP connection mid-transfer (RemoteProtocolError: incomplete chunked
+        read) — observed on ~1 in 3 saves under load; a fresh connection on
+        retry almost always succeeds."""
+        if self._sbx is None or self._closed:
+            return
+        for attempt in range(3):
             try:
                 self._save_workspace()
+                return
             except Exception:  # noqa: BLE001 - archiving must never fail a turn
-                log.warning("sandbox workspace save failed", exc_info=True)
+                log.warning(
+                    "sandbox workspace save failed (attempt %d/3)",
+                    attempt + 1, exc_info=True,
+                )
+                if attempt < 2:
+                    time.sleep(0.5 * (attempt + 1))  # 0.5s, 1.0s backoff
 
     async def is_alive(self) -> bool:
         """Cheap liveness probe for pooled sandboxes.

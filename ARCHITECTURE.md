@@ -3,7 +3,7 @@
 > 面向后来人的完整说明：项目是什么、怎么设计的、每个模块每个函数干什么、
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
-> 最后更新：2026-09-28 · 代码规模约 10,000 行源码 + 254 个测试
+> 最后更新：2026-09-29 · 代码规模约 10,000 行源码 + 263 个测试
 >
 > **文档地图**（四个文档各管一段，知识点不重复）：
 >
@@ -224,7 +224,7 @@ pi-python/
 │       ├── archive.py        会话工作区归档（tar.gz + 差异元数据 + MinIO 惰性上传）
 │       ├── storage.py         MinIO/S3 文件管线（预签名直连 + sha256 去重）
 │       └── client.py         SDK（异步 HTTP 客户端，SSE 流式解析）
-├── tests/                   254 个测试（连本地 MySQL/Redis，服务替身分层）
+├── tests/                   263 个测试（连本地 MySQL/Redis，服务替身分层）
 ├── migrations/              Alembic 迁移（0001 建表 ~ 0007 files）
 ├── docs/                    CubeSandbox 设计笔记 / 生产部署手册 / 生产就绪审计（专项文档）
 ├── tools/loadtest.py        SSE 压测工具
@@ -346,11 +346,22 @@ LLMProvider.stream(system, messages, tools) -> AsyncIterator[StreamEvent]
 
 | 方法 | 作用 |
 |---|---|
-| `run(user_text)` | 公开入口：追加用户消息 → 包一层 `agent.run` trace span → 委托 `_run_inner` |
+| `run(user_text, resume_from=None)` | 公开入口：追加用户消息 → 包一层 `agent.run` trace span → 委托 `_run_inner`。传 `resume_from`（Checkpoint）时改为续跑：恢复历史/用量/轮数，不追加新用户消息，并进入**重放模式**（completed_tools 账本生效，见下） |
 | `_run_inner` | 主循环：① 超阈值先压缩；② while 循环：调 `provider.stream`（出站消息先过 `redact_messages` 脱敏）、收 TextDelta 边收边 yield、收 ToolCallDelta 按 id 攒参数；③ 有工具调用且 `stop_reason=="tool_use"` 就逐个 `_run_tool` 执行、结果作为一条 user 消息回喂、继续循环；否则跳出；④ 任何异常转成 `ErrorEvent`（UI 永远能收到结构化结果）；⑤ 最后必发 `TurnEndEvent(usage, turns)` |
-| `_run_tool(call)` | 单工具执行的完整管线：未知工具→错误块；解析 arguments（必须为 JSON 对象）→失败→错误块；`policy.check()` 拒绝→错误块+审计拒绝记录；执行崩溃→错误块+审计；成功→结果块+审计。错误块（`is_error=True`）会回喂给模型，让它知道失败并可自我纠正 |
+| `_run_tool(call)` | 单工具执行的完整管线：未知工具→错误块；解析 arguments（必须为 JSON 对象）→失败→错误块；`policy.check()`（含能力授权）拒绝→错误块+审计拒绝记录；**重放模式命中 completed_tools 账本→直接回填记录的结果，不重执行**；执行崩溃→错误块+审计；成功→结果块+审计+写入账本。错误块（`is_error=True`）会回喂给模型，让它知道失败并可自我纠正。账本只记成功返回的结果——被拒/未知/崩溃的调用 resume 时重新执行 |
 | `_maybe_compact` | 估算大小超阈值则调 `compact()`，替换 `self.messages`，发 `CompactionEvent` |
 | `_audit` | 审计写入封装：出站参数也先脱敏再记 |
+
+**Checkpoint 与断点重放**（P2 durable execution）
+
+`Checkpoint` 字段：`messages`（完整历史）、`input_tokens` / `output_tokens`（续计）、`turns`、
+`completed_tools`（幂等账本：key → `{"content", "is_error"}`）。loop 在每轮结束经
+`on_checkpoint` 钩子把它吐给调用方落库；`run(resume_from=...)` 时整体恢复。
+
+`completed_tools` 是 **P0-2 幂等重放**的载体：key = 工具名 + `sort_keys` 规范化 JSON 参数。
+resume 时命中的工具**重放记录的结果**，不再执行副作用——只有正常返回的结果才记账，
+被拒/未知/崩溃的调用 resume 时重新执行；重放只在 resume 模式生效，正常 run 里同参数
+重复调用不会被误判（`tests/test_durable.py` 钉住两条边界）。
 
 **为什么 `run` 是异步生成器（yield 事件）而不是返回最终结果？**
 因为消费端（HTTP SSE 客户端）需要在过程中实时渲染——模型每吐一个字、每调一个工具
@@ -418,6 +429,7 @@ class Tool(ABC):
     name: str            # 模型看到的工具名
     description: str     # 给模型读的使用说明（写得越准，模型用得越对）
     input_schema: dict   # JSON Schema，模型按它生成参数
+    capabilities: frozenset[str] = frozenset()   # 能力声明（§9.1 能力授权用；空 = 未声明）
     async def execute(self, args: dict, ctx: ToolContext) -> ToolResult
 ```
 
@@ -426,12 +438,15 @@ class Tool(ABC):
 - `resolve_path(ctx, raw)`：相对路径按 `ctx.cwd` 解析——**所有文件工具的寻址基准**。
 - `SKIP_DIRS`：grep/find 自动跳过的目录（.git、node_modules、venv…）。
 - `truncate()`：统一截断并附 `[truncated, N more chars]` 提示。
+- `capabilities`：能力词汇表 `filesystem.read` / `filesystem.write` / `process.execute` /
+  `memory.read` / `memory.write` / `agent.delegate`（§7.2 有各工具声明表）。12 个内置工具
+  全部声明；MCP/skill 工具不声明（空集）——allow-list 策略下因此被 fail-closed 拒绝。
 
 **为什么工具结果有 `is_error`？** 失败不是异常——把错误作为正常结果回喂给模型，
 让它读到报错并自我纠正（改参数重试），这是编码智能体可用性的关键。真正的异常
 （工具崩溃）由 `AgentLoop._run_tool` 兜住转成错误块。
 
-### 7.2 九个内置工具一览
+### 7.2 内置工具一览
 
 | 工具 | 参数 | 行为与关键限制 |
 |---|---|---|
@@ -446,6 +461,20 @@ class Tool(ABC):
 `all_tools()`（`__init__.py`）返回全部 12 个工具的实例列表（含 `list_files`/`fetch_file`），是唯一的工具注册点。
 （`web_fetch`/`web_search` 2026-09 已整体移除：进程内抓取有 SSRF 风险，沙箱内 bash 抓取替代。）
 **加工具就在这里注册**（扩展指南见 §16）。
+
+**能力声明（capability-based 授权用，见 §9.1）**：
+
+| 能力 | 声明它的工具 |
+|---|---|
+| `filesystem.read` | read、ls、grep、find、list_files、fetch_file、bash |
+| `filesystem.write` | write、edit、fetch_file、bash |
+| `process.execute` | bash |
+| `memory.read` | recall |
+| `memory.write` | remember |
+| `agent.delegate` | spawn_subagents |
+
+MCP/skill 工具不声明任何能力（空集）——allow-list 策略下 fail-closed 拒绝，所以配置了
+能力白名单后外部工具默认不可用，需要明确放行。
 
 ### 7.3 `sandbox.py` — 命令执行隔离（本层最复杂的文件，~1300 行）
 
@@ -592,9 +621,20 @@ pymilvus、懒建集合 `pi_memories`，主键=Postgres 主键，upsert 幂等�
 
 | 组件 | 作用 |
 |---|---|
-| `Policy` | 四个开关：`deny_tools`（工具黑名单）、`deny_command_patterns`（bash 命令正则黑名单，大小写不敏感）、`path_sandbox`（路径沙箱）、`redact`（出站脱敏） |
+| `Policy` | 六个开关：`deny_tools`（工具黑名单）、`deny_command_patterns`（bash 命令正则黑名单，大小写不敏感）、`path_sandbox`（路径沙箱）、`redact`（出站脱敏）、`allow_capabilities`（能力白名单，子集语义）、`deny_capabilities`（能力黑名单，交集语义） |
 | `load_policy(path)` | 从 JSON 文件加载；路径为空 → 返回 None（没有策略对象 = 全放行） |
-| `check(policy, tool, args, cwd)` | 返回 `PolicyDecision(allowed, reason)`。顺序：工具黑名单 → bash 命令模式 → 路径沙箱（把 `read/write/edit/ls/grep/find` 的路径参数解析为绝对路径，必须落在 `cwd` 之内，防 `../../` 逃逸） |
+| `check(policy, tool_name, args, cwd, capabilities=frozenset())` | 返回 `PolicyDecision(allowed, reason)`。顺序：工具黑名单 → 能力黑名单 → 能力白名单 → bash 命令模式 → 路径沙箱（把 `read/write/edit/ls/grep/find` 的路径参数解析为绝对路径，必须落在 `cwd` 之内，防 `../../` 逃逸）。`capabilities` 由 `AgentLoop` 从 `Tool.capabilities` 传入 |
+
+**能力授权语义（P0-1，2026-09-29）**：
+
+- `deny_capabilities`：工具声明的能力与黑名单**有交集**即拒绝（在一切检查前，白名单之前）。
+- `allow_capabilities`：非空时，工具必须**声明了能力**且声明的集合**全部落在**白名单内
+  才放行——是子集而非交集，所以 bash（`process.execute` + 两个 filesystem 能力）不会因为
+  `filesystem.read` 在白名单里就被放进一个纯读环境。
+- **未声明能力 = fail-closed**：MCP/skill 工具的空能力集在 allow-list 策略下被拒绝
+  （reason 里写明 "declares no capabilities"）。没有配置白名单时它们照常放行。
+- 能力词汇表与各工具声明见 §7.2；`tests/test_security.py::TestCapabilities` 7 例钉住
+  黑/白名单、子集语义、fail-closed 与 from_dict 解析。
 
 服务端策略（`runner.server_policy`）：没给 `PI_POLICY` 文件时 = `path_sandbox + redact`；
 **给了文件也一样强制这两位**——`Policy.from_dict` 把它们默认成 `False`，否则一份只列
@@ -983,25 +1023,40 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
   配置变量 `PI_ITEST_*`，见 `integration/conftest.py`）。
 - 基础设施没起时单测会失败，先 `docker compose -f deploy/docker-compose.local.yml up -d`。
 
-测试组织（都在 `tests/`，共 132 例）：
+测试组织（都在 `tests/`，共 263 例，2026-09-29 按 `--collect-only` 实测）：
 
 | 文件 | 例数 | 覆盖 |
 |---|---|---|
+| `test_security.py` | 47 | 策略拒绝、路径逃逸、脱敏、审计（含认证记录的截断与防伪造行）、JWT；`server_policy` 只加不减（策略文件无法关掉 `path_sandbox`/`redact`）；能力授权 7 例（deny 交集、allow 子集语义、未声明能力 fail-closed、`from_dict` 解析、12 内置工具全声明能力）；对**仓库根那份生效的** `policy.json` 做回归：22 条危险命令必须拦、15 条日常命令必须放行（见 §17.18） |
 | `test_sandbox_pool.py` | 41 | 预热池（假传输，无需真 docker）：复用/预热/并发去重/回收/重建/驱逐/关闭；容器资源限额（`_parse_size`、`SandboxLimits` 校验与两种渲染、CLI/Engine API 两条建容器路径都真的带上了限额）；`PI_SANDBOX` 非法值必须报错而不是静默降级 |
-| `test_security.py` | 30 | 策略拒绝、路径逃逸、脱敏、审计（含认证记录的截断与防伪造行）、JWT；`server_policy` 只加不减（策略文件无法关掉 `path_sandbox`/`redact`）；对**仓库根那份生效的** `policy.json` 做回归：22 条危险命令必须拦、15 条日常命令必须放行（见 §17.18） |
-| `test_server.py` | 22 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；另有认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16） |
+| `test_server.py` | 26 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；另有认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16） |
+| `test_trajectory_view.py` | 16 | 轨迹持久化 + 查看端点：会话级/run 级查询、DB 优先 jsonl 兜底、属主校验（跨用户 404 不泄漏存在性） |
+| `test_rollout.py` | 15 | RL 数据飞轮：rollout、reward 抽取、过滤、导出 JSONL |
+| `test_memory_vector.py` | 15 | 向量语义记忆：Milvus/embedding 路径 + 失败/未配置时优雅词法兜底 |
 | `test_observability.py` | 14 | 计量、配额、价格、tracer、降级链 |
+| `test_metrics.py` | 14 | 指标：span 钩子、run/工具事件投影、gauge、gate、标签纪律（缺 metrics 类时 skip） |
 | `test_deployment.py` | 12 | 缓存后端、本地沙箱执行器、迁移可达性；其中 1 例（真 Redis 限流）在 localhost:6379 无服务时 **skip** |
+| `test_registry.py` | 8 | ToolRegistry：聚合、去重、fail-soft、缓存、技能索引 |
 | `test_launch.py` | 7 | 注销/撤销、管理员端点、审计按天滚动 |
+| `test_admin_console.py` | 7 | 管理台端点：/v1/admin/stats、usage、审计日期参数 |
+| `test_trajectory.py` | 6 | canonical 轨迹（P1）：6 类事件、ts 墙钟语义 |
+| `test_mcp.py` | 5 | MCP 工具源：对假 stdio server（tests/fake_mcp_server.py） |
+| `test_evals.py` | 5 | eval harness（P4）：runner、判分器、报告、加载器 |
+| `test_durable.py` | 4 | durable execution（P2）：checkpoint 往返 + resume 幂等重放 + 正常 run 同参数重复不误去重 |
+| `test_skill.py` | 4 | Skills：加载、索引、use_skill、脚本工具、提示注入 |
+| `test_subagent.py` | 4 | 递归子代理委派（spawn_subagents） |
+| `test_client.py` | 3 | SDK：pi.client 用 ASGITransport 打真实 app（不开 socket） |
 | `test_mysql_compat.py` | 3 | `engine_kwargs` 的方言分支 + 布尔默认值在 MySQL/PG/SQLite 三方言下的 DDL 兼容 |
 | `test_smoke.py` | 2 | 端到端：fake 模型驱动完整 agent 循环（write→read→edit→grep 四次工具调用）+ `on_message` 回调 |
+| `test_memory.py` | 2 | 语义记忆（P3）：跨会话长期记忆 |
+| `test_episodic.py` | 2 | episodic 记忆（P3）：压缩摘要落库复用 |
 | `test_compaction.py` | 1 | 压缩：摘要替换旧历史、保留尾部 |
 
 > 原有 `test_cli_polish.py`（7 例，覆盖 chat REPL 的斜杠命令、自动标题、`--json`
 > 事件流）随本地 CLI 一起删除；`test_deployment.py` 里的 GBK 解码例随 Windows 支持删除。
 > 101 → 93 的差额（8 例）全部来自这两处，没有覆盖率损失。（93 是**那次删除之后**的
 > 数量，不是当前总数；之后陆续补了认证审计、`X-Forwarded-For`、沙箱资源限额与
-> 策略回归，现在见上表 132 例。）
+> 策略回归，现在见上表 263 例。）
 
 **测试约定**：
 

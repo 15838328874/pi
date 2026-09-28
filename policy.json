@@ -18,7 +18,14 @@
     "The command patterns are the safety net for when bash is NOT sandboxed (PI_SANDBOX empty",
     "runs it in the app process as whatever user the app is). They cannot stop secret theft:",
     "env, printenv, set, /proc/self/environ and any interpreter one-liner all read the same",
-    "environment. Only running bash in a container closes that."
+    "environment. Only running bash in a container closes that.",
+    "",
+    "allow_capabilities / deny_capabilities (optional, both absent here = empty = no gating):",
+    "capability-based authorization. When allow_capabilities is non-empty, a tool runs only if",
+    "its declared capabilities are ALL inside the list (subset semantics, not intersection);",
+    "MCP/skill tools declare no capabilities and are denied fail-closed. deny_capabilities",
+    "denies any tool whose capabilities intersect the list. Vocabulary and per-tool",
+    "declarations: see ARCHITECTURE.md §7.2 / §9.1."
   ],
   "deny_tools": [],
   "deny_command_patterns": [

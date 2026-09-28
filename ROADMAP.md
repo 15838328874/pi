@@ -1,6 +1,6 @@
 # pi-py 状态与路线图（ROADMAP）
 
-> 项目现状、未完成事项、后续阶段开发计划的唯一入口。更新日期：2026-09-27。
+> 项目现状、未完成事项、后续阶段开发计划的唯一入口。更新日期：2026-09-29。
 >
 > **文档地图**（四个文档各管一段，知识点不重复）：
 >
@@ -17,7 +17,9 @@
 
 | 能力 | 位置 | 验证 |
 |---|---|---|
-| Agent loop + 12 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 254 单测 |
+| Agent loop + 12 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 263 单测 |
+| **能力授权（P0-1）**：allow/deny_capabilities 策略键（allow 子集语义、未声明能力的 MCP/skill 工具 fail-closed） | `security/policy.py` `tools/base.py` | 7 单测（TestCapabilities） |
+| **幂等重放（P0-2）**：checkpoint 带 completed_tools 账本，resume 重放已完成工具而非重执行副作用 | `agent/loop.py` | 2 单测（test_durable） |
 | LLM 接入层（openai/anthropic/fake）+ 降级链 + 退避重试 | `src/pi/llm/` | 单测 + 真实模型（qwen3.8-flash/max） |
 | 上下文压缩（摘要 + 保留尾部，非破坏落库） | `agent/compaction.py` | 单测 |
 | Docker 沙箱（本地形态）+ cgroup 限额 + 预热池 + 断网 | `tools/sandbox.py` | 压测 ~52 exec/s |
@@ -39,7 +41,7 @@
 | **沙箱生产化**（CubeSandbox microVM + GNU timeout + 退出码透传 + 10MB 装载上限 + 三层 VM 泄漏防线 + **懒加载/复用池/内存自适应回收生命周期**） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 |
 | **会话闭环归档**（turn 基线快照 + 结束 tar.gz + 差异元数据 + MinIO 惰性接口） | `server/archive.py` | 9 turns 实测 diff 精确 |
 | **沙箱健康指标**（创建失败/命令超时/close 失败/创建耗时 4 系列） | `observability/metrics.py` | 真实任务实测 |
-| **文件管线 P0/P1/P2**（MinIO 预签名直连 + sha256 用户级去重 + files 表 + list_files/fetch_file 工具 + 沙箱能力镜像） | `server/storage.py` `server/db.py` `tools/files.py` | 254 单测 |
+| **文件管线 P0/P1/P2**（MinIO 预签名直连 + sha256 用户级去重 + files 表 + list_files/fetch_file 工具 + 沙箱能力镜像） | `server/storage.py` `server/db.py` `tools/files.py` | 263 单测 |
 | **轨迹结构化落库**（runs 表 + `/v1/trajectory/{run_id}` 回放 + `/v1/admin/trajectory/{run_id}` 跨用户） | `server/db.py` `server/app.py` | 单测 + 实测 |
 | **审计结构化查询**（audit_events 表双写，jsonl 仍是合规底稿） | `server/db.py` `security/audit.py` | 单测 + 实测 |
 | **官方 SDK**（异步客户端：SSE 流式解析、PiError 语义、trust_env=False） | `src/pi/client.py` | 单测 + 真实模型实测 |
@@ -71,7 +73,7 @@
 |---|---|---|
 | 管理员会话浏览器 | 管理员查看任意用户会话/轨迹（需一批 admin_* 端点 + 管理台页面） | 中 |
 | eval 补全 | flywheel 自动抽取任务、regress、badcase 自动归因 | 中 |
-| checkpoint 接 server | 超时/失败后从 checkpoint 恢复（loop 的 on_checkpoint 已就绪，server 未接线） | 低 |
+| checkpoint 接 server | 超时/失败后从 checkpoint 恢复（loop 侧已就绪：checkpoint + completed_tools 幂等重放账本，`run(resume_from=...)` 可直接续跑；server 未接线） | 低 |
 
 ## 4. 后续阶段开发
 

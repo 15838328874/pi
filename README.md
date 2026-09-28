@@ -93,6 +93,8 @@ Notes:
 - MCP stdio servers are spawned as child processes of the app and inherit its environment:
   treat `PI_MCP_SERVERS` as admin-level config. MCP/skill tools pass the same policy gate,
   and path-like args on unknown tools are workspace-confined by the generic path sandbox.
+  They declare no capabilities, so under an allow-list policy they are denied fail-closed
+  (see Enterprise security).
 - No API key? Set `PI_MODEL=fake/demo` — the scripted provider keeps every HTTP path
   exercisable end to end with canned replies.
 - Never commit `.env` (git-ignored). Rotate `PI_JWT_SECRET` deliberately: changing it
@@ -176,6 +178,19 @@ it; both compose files bind-mount the same file to `/etc/pi-py/policy.json`). Sh
 - **path_sandbox** — file tools confined to the session's workspace subtree (`../../` cannot escape)
 - **redact** — outbound masking (API keys, Aliyun/AWS/GitHub/Slack tokens, CN mobile numbers,
   ID numbers, private IPs); only the copy sent to the LLM is redacted, stored history stays intact
+- **allow_capabilities** — capability allow-list (JSON array). When non-empty, a tool runs only
+  if it declares capabilities and **all** of them sit in this list — subset, not intersection,
+  so bash's `filesystem.read`/`filesystem.write` won't admit it without `process.execute`.
+  Tools with no declared capabilities (every MCP/skill tool) are denied: **fail-closed**.
+  Empty (default) = allow-list off.
+- **deny_capabilities** — any tool whose declared capabilities intersect this list is denied
+  (checked before the allow-list)
+
+Capability vocabulary (declared in `tools/*.py`): `filesystem.read` (read/ls/grep/find,
+list_files), `filesystem.write` (write/edit, fetch_file), `process.execute` + both
+filesystem caps (bash), `memory.read` (recall), `memory.write` (remember),
+`agent.delegate` (spawn_subagents). Check order: deny_tools → deny_capabilities →
+allow_capabilities → bash patterns → path sandbox.
 
 Patterns are anchored to command position (`(?:^|[;&|(]\s*)`) on purpose: a bare `"sudo"`
 also blocks `grep -rn 'sudo' src/`, and **a false positive is harder to diagnose than a miss**
@@ -312,7 +327,7 @@ deploy/                     Caddyfiles, cloud runbook, .env template
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 254 passed
+python -m pytest -q          # 263 passed
 ```
 
 The suite needs no database, Redis, Docker, or API key: `tests/conftest.py` pins

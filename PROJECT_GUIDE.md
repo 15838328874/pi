@@ -128,7 +128,7 @@
 
 **第四阶段：四轮能力爬坡（P1→P4）**
 - **P1 统一轨迹**：把散在三条平行流（SSE/审计/tracing）的执行记录统一成一份 canonical 事件日志——评估、回放、调试从此只有一个事实源。
-- **P2 durable execution**：断点续传，长任务不怕中断。
+- **P2 durable execution**：断点续传，长任务不怕中断（已完成工具幂等重放，见巧思 13）。
 - **P3 分层记忆**：episodic（会话内压缩摘要，落库复用）+ semantic（跨会话向量记忆，自动召回）。
 - **P4 eval harness**：任务集、判分器、报告、A/B——"好不好"从此可以量化。
 
@@ -321,6 +321,16 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 管理员踢人用**用户 epoch**——比"该用户所有 token 的签发时间戳"新的 token 全部失效，
 一次写入全部踢掉。禁用账号则每次请求查库（`is_active`），立即生效。
 
+**13. 断点重放的幂等账本**（`agent/loop.py`，P0-2）：checkpoint 里带 `completed_tools` 账本
+（幂等键 = 工具名 + `sort_keys` 规范化的 JSON 参数），resume 时命中的工具**重放已记录的
+结果**，而不是再执行一遍副作用。三个关键细节：
+
+- 只有**正常返回**的结果才记账——被拒/未知/崩溃的调用不进账本，resume 时重新执行
+  （宁可重跑一次，也不能假装一个没完成的副作用已经做了）；
+- 重放只在 **resume 模式**生效：正常 run 里模型故意用相同参数重复调一个工具，不会被
+  误判为重放（有测试钉住这一点）；
+- 键是参数规范化过的：键序、空白不同仍视为同一调用，不会漏重放。
+
 ---
 
 ## 第三部分 功能全景
@@ -334,7 +344,7 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | LLM 层 | think_filter（过滤思考 token） | `llm/think_filter.py` | 长思考模型友好 |
 | Agent | 工具调用循环 + 错误回喂自纠正 | `agent/loop.py` | 工具报错自动进上下文让模型改 |
 | Agent | 上下文压缩（摘要+保留尾部） | `agent/compaction.py` | 非破坏，落库复用 |
-| Agent | 断点续传（checkpoint/resume） | `agent/loop.py` | P2 |
+| Agent | 断点续传（checkpoint/resume + completed_tools 幂等重放） | `agent/loop.py` | P2 |
 | Agent | 连续拒绝熔断 | `agent/loop.py` | 防死磕 |
 | 轨迹 | canonical 事件日志（6 类事件 + ts 墙钟） | `agent/trajectory.py` | P1，评估/回放唯一事实源 |
 | 轨迹 | **双写**：runs 表（结构化）+ jsonl 按天（合规底稿） | `server/db.py` `server/trajectory_store.py` | 落盘失败不影响 run |
@@ -343,9 +353,10 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | 工具 | MCP 工具源（stdio + fail-soft + 生命周期） | `tools/mcp.py` | 标准协议 |
 | 工具 | Skills 技能包（SKILL.md + 索引注入 + 脚本走沙箱） | `tools/skill.py` | 渐进披露 |
 | 工具 | ToolRegistry（聚合/去重/预热缓存） | `tools/registry.py` | 一个抽象管所有来源 |
+| 安全 | 能力授权（allow/deny_capabilities：allow 为子集语义、未声明能力的 MCP/skill 工具 fail-closed 拒绝） | `security/policy.py` `tools/base.py` | 12 内置工具全声明能力 |
 | 沙箱 | **CubeSandbox microVM（生产）**：每回合独立 VM/GNU timeout/退出码透传/10MB 上限/生命周期管理 + Docker 预热池（本地） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 + 52 exec/s（Docker 形态） |
 | 归档 | 会话工作区 tar.gz + 差异元数据 + MinIO 惰性上传 | `server/archive.py` | 9 turns 实测 |
-| 文件管线 | MinIO 预签名直连 + sha256 用户级去重 + files 表索引 | `server/storage.py` `server/db.py` | 254 单测 |
+| 文件管线 | MinIO 预签名直连 + sha256 用户级去重 + files 表索引 | `server/storage.py` `server/db.py` | 263 单测 |
 | 记忆 | episodic（compactions 表复用摘要） | `server/db.py` | 不重复花钱总结 |
 | 记忆 | semantic（remember/recall 工具 + 自动召回注入） | `tools/memory.py` | 跨会话 |
 | 记忆 | 向量检索（Milvus + 云 embedding，词法兜底） | `server/vectorstore.py` `llm/embedding.py` | 换后端只改一处 |
@@ -665,7 +676,7 @@ stdio 子进程只 spawn 一次，shutdown 时统一回收）。
 
 | 层 | 内容 | 规模 | 依赖 | 命令 |
 |---|---|---|---|---|
-| **单测** | 逻辑/协议/安全/降级/契约，共 254 例 | 20 秒 | 本地 MySQL（pi_py_test）+ Redis；LLM/embedding/Milvus 用替身 | `.venv/bin/python -m pytest -q` |
+| **单测** | 逻辑/协议/安全/降级/契约，共 263 例 | 20 秒 | 本地 MySQL（pi_py_test）+ Redis；LLM/embedding/Milvus 用替身 | `.venv/bin/python -m pytest -q` |
 | **真实栈集成** | 真 MySQL+Redis+Milvus+云 embedding | 2 例 | 完整本地栈 + 云 API | `PI_INTEGRATION=1 pytest integration/ -q` |
 | **浏览器** | Playwright 无头 Chromium：登录/流式/布局/联动/缓存头 | 脚本 | 运行中的服务 | `/tmp/*.py` 脚本或未来 `tests/browser/` |
 | **压测** | 沙箱容量、并发锁 | 2 工具 | Docker 沙箱 | `tools/sandbox_bench.py` `tools/loadtest.py` |
@@ -816,7 +827,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 3. 涉及 app 的测试用 `TestClient(create_app(...))` fixture 模式，参考 `tests/test_server.py`；
 4. 涉及 MySQL 数据断言：每个测试开始前库是干净的（conftest 自动清表 + 播种 u1..u20/s1..s9）；
 5. 前端改动：跑 node 语法检查 + Playwright 脚本（布局断言）；
-6. 全套 `.venv/bin/python -m pytest -q` 必须全绿——254 例是底线不是上限。
+6. 全套 `.venv/bin/python -m pytest -q` 必须全绿——263 例是底线不是上限。
 
 ---
 
@@ -824,7 +835,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 
 | 指标 | 数值 | 来源/条件 |
 |---|---|---|
-| 测试规模 | **254 单测 + 2 真实栈集成**，20 秒跑完 | 本地 MySQL+Redis 统一栈 |
+| 测试规模 | **263 单测 + 2 真实栈集成**，20 秒跑完 | 本地 MySQL+Redis 统一栈 |
 | 沙箱吞吐（Docker 形态基准） | **~52 exec/s 饱和、零失败**（p50 44ms@N=1 → 1162ms@N=64） | `tools/sandbox_bench.py`，4 vCPU/16GiB，Docker 预热池 |
 | 沙箱内存（Docker 形态） | 每预热容器 ~26 MiB；64 容器冷启动 3.0s | 同上 |
 | 登录哈希 | **PBKDF2 453ms → 40ms**（CPU 52.7% → 99.7%） | `asyncio.to_thread` 优化 |
@@ -872,7 +883,7 @@ src/pi/
 │                  + rollout/reward/filter/export（RL 数据飞轮）
 ├── cli.py         入口：serve / migrate / eval run|diff|rollout
 └── prompt.py      系统提示词
-tests/             254 个单测（连本地 MySQL/Redis）
+tests/             263 个单测（连本地 MySQL/Redis）
 integration/       真实栈集成测试（PI_INTEGRATION=1）
 tools/             压测/播种脚本（sandbox_bench、loadtest、seed_testdb）
 deploy/            本地/生产 compose、环境模板、部署文档
@@ -972,7 +983,7 @@ pi-py serve                        # http://localhost:8300
 #    （admin 写库授予：UPDATE users SET is_admin=1 WHERE username='...'）
 
 # 5) 测试（本地 MySQL/Redis 必须在跑）
-.venv/bin/python -m pytest -q              # 254 例
+.venv/bin/python -m pytest -q              # 263 例
 PI_INTEGRATION=1 pytest integration/ -q    # 真实栈 2 例
 ```
 

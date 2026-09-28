@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pi.tools.base import Tool, ToolContext, ToolResult, resolve_path
+from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
 
 MAX_ENTRIES = 500
 
@@ -24,26 +24,23 @@ class LsTool(Tool):
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         root = resolve_path(ctx, str(args.get("path", ".")))
-        if not root.exists():
+        fs = get_fs(ctx)
+        if not await fs.exists(root):
             return ToolResult(content=f"Error: path not found: {args.get('path')}", is_error=True)
-        if not root.is_dir():
+        if not await fs.is_dir(root):
             return ToolResult(content=f"Error: {args.get('path')} is a file (use read)", is_error=True)
 
         try:
-            entries = sorted(root.iterdir(), key=lambda e: (e.is_file(), e.name.lower()))
-        except OSError as exc:
+            entries = await fs.list_dir(root)  # [(name, is_dir, size)]
+        except Exception as exc:  # noqa: BLE001
             return ToolResult(content=f"Error: cannot list directory: {exc}", is_error=True)
 
         lines = []
-        for entry in entries[:MAX_ENTRIES]:
-            try:
-                if entry.is_dir():
-                    lines.append(f"{entry.name}/")
-                else:
-                    size = entry.stat().st_size
-                    lines.append(f"{entry.name}  ({_human(size)})")
-            except OSError:
-                lines.append(f"{entry.name}  (unavailable)")
+        for name, is_dir, size in entries[:MAX_ENTRIES]:
+            if is_dir:
+                lines.append(f"{name}/")
+            else:
+                lines.append(f"{name}  ({_human(size)})")
 
         if not lines:
             return ToolResult(content="(empty directory)")

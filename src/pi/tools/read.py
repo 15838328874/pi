@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pi.tools.base import Tool, ToolContext, ToolResult, resolve_path, truncate
+from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path, truncate
 
 MAX_LINES = 2000
 MAX_LINE_LEN = 2000
@@ -43,13 +43,16 @@ class ReadTool(Tool):
         if not raw:
             return ToolResult(content="Error: path is required", is_error=True)
         path = resolve_path(ctx, raw)
+        fs = get_fs(ctx)
 
-        if not path.exists():
+        if not await fs.exists(path):
             return ToolResult(content=f"Error: file not found: {raw}", is_error=True)
-        if path.is_dir():
+        if await fs.is_dir(path):
             return ToolResult(content=f"Error: {raw} is a directory (use ls)", is_error=True)
 
-        data = path.read_bytes()
+        data = await fs.read_bytes(path)
+        if data is None:
+            return ToolResult(content=f"Error: file not found: {raw}", is_error=True)
         if _looks_binary(data):
             return ToolResult(content=f"Error: {raw} looks like a binary file", is_error=True)
 

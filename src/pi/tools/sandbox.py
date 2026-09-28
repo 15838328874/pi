@@ -30,12 +30,15 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shlex
 import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+
+from pi.tools.base import SKIP_DIRS as _SKIP_DIRS  # noqa: PLC0415 - avoid import cycle
 
 log = logging.getLogger("pi.sandbox")
 
@@ -875,7 +878,452 @@ async def shutdown_docker_pool() -> None:
         _pool = None
 
 
-SANDBOX_MODES = frozenset({"", "local", "docker"})
+SANDBOX_MODES = frozenset({"", "local", "docker", "cubesandbox"})
+
+
+#: workspace tarball size cap for the sandbox load (envd files API rejects
+#: oversized uploads with HTTP 413; we fail earlier with an actionable error)
+_MAX_WS_SYNC_BYTES = 10 * 1024 * 1024
+
+
+class CubeSandboxRunner:
+    """CubeSandbox microVM runner: one lightweight VM per session.
+
+    Session-scoped, no warm pool: a fresh VM is created in ~0.1s and destroyed
+    at session end. The session workspace lives IN the VM at /workspace:
+
+    - creation: host workspace is tarred up once and restored inside the VM;
+    - during the session: bash runs against /workspace, read/write/edit act on
+      the same filesystem through the files API (``fs``) - no per-call sync;
+    - at close(): the workspace is tarred back to the host, then the VM dies.
+
+    Sandbox-level snapshots provide task rollback points: ``snapshot()`` marks
+    a baseline, ``rollback(snapshot_id)`` restores the VM's filesystem to it
+    (platform SNAPSHOT_ROLLBACK, verified to restore file state).
+
+    Transport: E2B-compatible SDK against the local CubeAPI
+    (http://127.0.0.1:3000) and the envd data plane via {port}-{id}.cube.app.
+    """
+
+    WORKSPACE = "/workspace"
+
+    def __init__(self, template: str | None = None, allow_network: bool = False):
+        self.allow_network = allow_network
+        self.template = template or os.environ.get("PI_SANDBOX_TEMPLATE", "").strip()
+        if not self.template:
+            raise RuntimeError(
+                "PI_SANDBOX=cubesandbox requires PI_SANDBOX_TEMPLATE "
+                "(a built cube template id, e.g. a 'cube-lite-py' 256M/1vcpu template)"
+            )
+        ca = os.environ.get("PI_SANDBOX_CA_FILE", "/root/.local/share/mkcert/rootCA.pem")
+        os.environ.setdefault("SSL_CERT_FILE", ca)
+        self._sbx = None
+        self._closed = False
+        self._workspace_host: Path | None = None
+        self._ws_loaded = False
+        # Optional health-recording hook (duck-typed, see Metrics.sandbox_*):
+        # the server injects its Metrics here; standalone scripts leave it None.
+        self.metrics = None
+        self.fs = SandboxFS(self)  # WorkspaceFS for the file tools
+
+    # -- SDK plumbing ------------------------------------------------------
+
+    @staticmethod
+    def _sdk():
+        from e2b_code_interpreter import Sandbox  # eager, high-level entry
+
+        return Sandbox
+
+    def _new_sandbox(self):
+        Sandbox = self._sdk()
+        t0 = time.monotonic()
+        try:
+            sbx = Sandbox.create(
+                template=self.template,
+                timeout=600,
+                allow_internet_access=self.allow_network,
+                api_url=os.environ.get("PI_CUBE_API_URL", "http://127.0.0.1:3000"),
+                api_key=os.environ.get("PI_CUBE_API_KEY", "e2b_000000"),
+                domain=os.environ.get("PI_CUBE_DOMAIN", "cube.app"),
+            )
+        except Exception:
+            if self.metrics is not None:
+                self.metrics.sandbox_create_failed()
+            raise
+        if self.metrics is not None:
+            self.metrics.sandbox_created(time.monotonic() - t0)
+        return sbx
+
+    def _ensure_sandbox(self) -> object:
+        if self._sbx is None and not self._closed:
+            self._sbx = self._new_sandbox()
+        return self._sbx
+
+    # -- workspace lifecycle ----------------------------------------------
+
+    @staticmethod
+    def _tar_gz_bytes(cwd: Path) -> bytes:
+        import io
+        import tarfile
+
+        buf = io.BytesIO()
+
+        def _exclude(info):
+            base = info.name.split("/")[-1]
+            if base in {".git", ".venv", "node_modules", "__pycache__", ".env"}:
+                return None
+            if "/.git/" in f"/{info.name}/":
+                return None
+            return info
+
+        with tarfile.open(fileobj=buf, mode="w:gz", compresslevel=1) as tf:
+            tf.add(cwd, arcname=".", recursive=True, filter=_exclude)
+        return buf.getvalue()
+
+    @staticmethod
+    def _restore_bytes(cwd: Path, data: bytes) -> None:
+        import io
+        import tarfile
+
+        cwd.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as tf:
+            tf.extractall(cwd, filter="data")
+
+    def _load_workspace(self, host_cwd: Path) -> None:
+        """One-time sync: tar the host workspace into the VM at /workspace."""
+        if self._ws_loaded and self._workspace_host == host_cwd.resolve():
+            return
+        sbx = self._ensure_sandbox()
+        payload = self._tar_gz_bytes(host_cwd)
+        if len(payload) > _MAX_WS_SYNC_BYTES:
+            # The envd files API rejects oversized uploads (HTTP 413) with an
+            # HTML body that surfaces as a raw SandboxException - fail loudly
+            # with an actionable message instead of a 413 wall of text.
+            raise RuntimeError(
+                f"workspace too large to load into the sandbox: "
+                f"{len(payload) / 1e6:.1f}MB compressed (limit "
+                f"{_MAX_WS_SYNC_BYTES / 1e6:.0f}MB). Clean large artifacts "
+                f"(venv/build/cache/git) from the workspace."
+            )
+        sbx.files.write("/tmp/ws-init.tar.gz", payload)
+        r = sbx.commands.run(
+            f"rm -rf {self.WORKSPACE} && mkdir -p {self.WORKSPACE} && "
+            f"tar -xzf /tmp/ws-init.tar.gz -C {self.WORKSPACE} && rm /tmp/ws-init.tar.gz",
+            timeout=180,
+        )
+        if r.exit_code != 0:
+            raise RuntimeError(f"workspace load failed: {r.stderr or r.stdout}")
+        self._workspace_host = host_cwd.resolve()
+        self._ws_loaded = True
+
+    def _save_workspace(self) -> None:
+        """One-time sync back at session close (best-effort)."""
+        if not (self._ws_loaded and self._workspace_host is not None and self._sbx is not None):
+            return
+        try:
+            sbx = self._sbx
+            sbx.commands.run(
+                f"tar -czf /tmp/ws-out.tar.gz -C {self.WORKSPACE} . && echo OK", timeout=180
+            )
+            data = sbx.files.read("/tmp/ws-out.tar.gz", format="bytes")
+            self._restore_bytes(self._workspace_host, data)
+        except Exception:  # noqa: BLE001 - save is best-effort, sandbox still dies
+            log.warning("cube sandbox workspace save failed", exc_info=True)
+
+    # -- CommandRunner protocol --------------------------------------------
+
+    async def run(self, command: str, cwd: Path, timeout: int) -> CommandResult:
+        try:
+            sbx = await asyncio.to_thread(self._ensure_sandbox)
+            await asyncio.to_thread(self._load_workspace, Path(cwd))
+            # Command timeout is enforced INSIDE the VM with GNU timeout: the
+            # process is SIGTERMed by timeout(1) itself, no orphan survives,
+            # and the SDK call returns normally (no connection-timeout catch
+            # whose handle we could not reach to kill). Exit code 124 is GNU
+            # timeout's convention - the only realistic way a sandboxed
+            # command returns 124 is via this wrapper.
+            wrapped = command
+            if timeout and timeout > 0:
+                wrapped = f"timeout {int(timeout)}s bash -lc {shlex.quote(command)}"
+            handle = await asyncio.to_thread(
+                lambda: sbx.commands.run(wrapped, cwd=self.WORKSPACE)
+            )
+            code = int(handle.exit_code or 0)
+            timed_out = code == 124
+            if timed_out:
+                if self.metrics is not None:
+                    self.metrics.sandbox_command_timed_out()
+                text = f"Error: command timed out after {timeout}s"
+            else:
+                text = str(handle.stdout or "").strip() or "(no output)"
+            return CommandResult(
+                output=text,
+                exit_code=code if not timed_out else -1,
+                timed_out=timed_out,
+            )
+        except Exception as exc:  # noqa: BLE001 - one result either way
+            # e2b raises CommandExitException for non-zero exits - it carries
+            # the REAL exit code (1/2/124/...). Surfacing it keeps the tool's
+            # failure semantics intact: bash sees exit 1 as exit 1, and the
+            # timeout wrapper's 124 becomes a proper timed_out=True.
+            code = getattr(exc, "exit_code", None)
+            if code is not None:
+                code = int(code)
+                if code == 124:
+                    return CommandResult(
+                        output=f"Error: command timed out after {timeout}s",
+                        exit_code=-1,
+                        timed_out=True,
+                    )
+                stderr = str(getattr(exc, "stderr", "") or "")
+                detail = (stderr or str(exc))[:3800]
+                return CommandResult(
+                    output=f"Error: command exited with {code}: {detail}",
+                    exit_code=code,
+                    timed_out=False,
+                )
+            name = type(exc).__name__
+            return CommandResult(
+                output=f"Error: cube sandbox failed ({name}): {exc}"[:4000],
+                exit_code=-1,
+                timed_out=name in ("TimeoutException", "ExceptionTimeout"),
+            )
+
+    def prewarm(self, cwd: Path) -> None:
+        """Best-effort: create the VM and load the workspace ahead of the first call."""
+        import threading
+
+        def _warm():
+            try:
+                self._ensure_sandbox()
+                self._load_workspace(cwd)
+            except Exception:  # noqa: BLE001 - prewarm must never break the turn
+                pass
+
+        threading.Thread(target=_warm, daemon=True).start()
+
+    # -- task rollback points ----------------------------------------------
+
+    def snapshot(self) -> str:
+        """Mark a task baseline. Returns the snapshot id for later rollback()."""
+        return str(self._ensure_sandbox().create_snapshot().snapshot_id)
+
+    async def rollback(self, snapshot_id: str) -> None:
+        """Restore the VM filesystem to a snapshot (platform rollback, async)."""
+        sbx = await asyncio.to_thread(self._ensure_sandbox)
+        sandbox_id = str(sbx.sandbox_id)
+        import subprocess
+
+        cli = os.environ.get(
+            "PI_CUBE_CLI", "/usr/local/services/cubetoolbox/CubeMaster/bin/cubemastercli"
+        )
+        log.info("cube sandbox rollback sandbox=%s snapshot=%s", sandbox_id, snapshot_id)
+        proc = await asyncio.to_thread(
+            subprocess.run,
+            [cli, "sandbox", "rollback", "--sandbox-id", sandbox_id,
+             "--snapshot-id", snapshot_id],
+            capture_output=True, text=True, timeout=120,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"rollback failed: {(proc.stderr or proc.stdout)[-200:]}")
+
+    def close(self) -> None:
+        """Save the workspace back, then destroy the VM (both best-effort)."""
+        if self._sbx is not None and not self._closed:
+            self._save_workspace()
+            try:
+                self._sbx.kill()
+            except Exception:  # noqa: BLE001 - cleanup must never raise,
+                # but a failed kill MUST be visible: an un-killed VM piles up
+                # and eats the platform quota (real incident: 7 running VMs
+                # after one eval run).
+                log.warning("cube sandbox kill failed", exc_info=True)
+                if self.metrics is not None:
+                    self.metrics.sandbox_close_failed()
+            self._sbx = None
+        self._closed = True
+
+
+class SandboxFS:
+    """WorkspaceFS backed by the CubeSandbox VM's own filesystem.
+
+    Paths arrive as host workspace paths (the policy layer's view); they are
+    mapped onto /workspace inside the VM. Byte reads/writes use the files API;
+    directory/size probes use one-shot shell calls.
+    """
+
+    MAX_WALK = 20_000
+
+    def __init__(self, runner: CubeSandboxRunner):
+        self.runner = runner
+        self._host_root_override: Path | None = None
+
+    def set_host_root(self, host_root: Path) -> None:
+        """Bind the host workspace root that paths are mapped from (normally
+        the session cwd). Must be set before file tools act on the sandbox."""
+        self._host_root_override = host_root.resolve()
+
+    # -- mapping -----------------------------------------------------------
+
+    def _host_root(self) -> Path:
+        if self._host_root_override is not None:
+            return self._host_root_override
+        if self.runner._workspace_host is not None:
+            return self.runner._workspace_host
+        return Path.cwd()
+
+    def _rel(self, path: Path) -> str:
+        rel = os.path.relpath(str(path.resolve()), str(self._host_root()))
+        if rel == ".." or rel.startswith("../"):
+            raise ValueError(f"path escapes workspace: {path}")
+        return "." if rel == "." else rel
+
+    def _ws(self, rel: str) -> str:
+        root = self.runner.WORKSPACE
+        return root if rel == "." else f"{root}/{rel}"
+
+    def _ws_for(self, path: Path) -> str | None:
+        """Map a host path to the sandbox path, or None when it escapes the
+        workspace (probes degrade safely; write_bytes still raises so the
+        tool can surface a clear error)."""
+        try:
+            return self._ws(self._rel(path))
+        except ValueError:
+            return None
+
+    def _sbx(self):
+        # Any filesystem operation implies the workspace must exist in the VM:
+        # a fresh VM is created and the host workspace is tarred in once, so a
+        # later files.write cannot be wiped by the first workspace load.
+        runner = self.runner
+        sbx = runner._ensure_sandbox()
+        runner._load_workspace(self._host_root())
+        return sbx
+
+    # -- probes ------------------------------------------------------------
+
+    async def read_bytes(self, path: Path) -> bytes | None:
+        def _read() -> bytes | None:
+            try:
+                return self._sbx().files.read(self._ws(self._rel(path)), format="bytes")
+            except Exception:  # noqa: BLE001 - missing/unreadable -> None
+                return None
+
+        return await asyncio.to_thread(_read)
+
+    async def write_bytes(self, path: Path, data: bytes) -> None:
+        def _write() -> None:
+            sbx = self._sbx()
+            rel = self._rel(path)
+            parent = "/".join(rel.split("/")[:-1]) if "/" in rel else ""
+            if not rel.startswith("/") and parent:
+                sbx.commands.run(f"mkdir -p {self._ws(parent)}", timeout=30)
+            elif parent:
+                sbx.commands.run(f"mkdir -p {self._ws(parent)}", timeout=30)
+            sbx.files.write(self._ws(rel), data)
+
+        await asyncio.to_thread(_write)
+
+    async def exists(self, path: Path) -> bool:
+        def _exists() -> bool:
+            p = self._ws_for(path)
+            if p is None:
+                return False
+            r = self._sbx().commands.run(
+                f"test -e {p} && echo yes || echo no", timeout=30
+            )
+            return "yes" in str(r.stdout or "")
+
+        return await asyncio.to_thread(_exists)
+
+    async def is_dir(self, path: Path) -> bool:
+        def _is_dir() -> bool:
+            p = self._ws_for(path)
+            if p is None:
+                return False
+            r = self._sbx().commands.run(
+                f"test -d {p} && echo yes || echo no", timeout=30
+            )
+            return "yes" in str(r.stdout or "")
+
+        return await asyncio.to_thread(_is_dir)
+
+    async def list_dir(self, path: Path) -> list[tuple[str, bool, int]]:
+        def _list() -> list[tuple[str, bool, int]]:
+            rel = self._rel(path)
+            import json as _json
+
+            script = (
+                "import os, json\n"
+                "p = os.environ['P']\n"
+                "out = []\n"
+                "for e in sorted(os.scandir(p), key=lambda e: e.name.lower()):\n"
+                "    out.append([e.name, e.is_dir(), e.stat().st_size if e.is_file() else 0])\n"
+                "print(json.dumps(out))\n"
+            )
+            r = self._sbx().commands.run(
+                f"P={self._ws(rel)!r} python3 - <<'PY'\n{script}PY", timeout=60
+            )
+            if r.exit_code != 0:
+                return []
+            try:
+                return [tuple(x) for x in _json.loads(str(r.stdout).strip())]
+            except Exception:  # noqa: BLE001
+                return []
+
+        return await asyncio.to_thread(_list)
+
+    async def walk(self, path: Path) -> list[Path]:
+        def _walk() -> list[Path]:
+            import json as _json
+
+            root = self._ws_for(path)
+            if root is None:
+                return []
+            script = (
+                "import os, json\n"
+                "skip = {'.git','.venv','node_modules','__pycache__','.env','dist','build'}\n"
+                "out = []\n"
+                "for dp, dns, fns in os.walk(os.environ['P']):\n"
+                "    dns[:] = [d for d in dns if d not in skip]\n"
+                "    out.extend(os.path.join(dp, n) for n in dns)\n"
+                "    out.extend(os.path.join(dp, n) for n in fns)\n"
+                "print(json.dumps(out[:20000]))\n"
+            )
+            r = self._sbx().commands.run(
+                f"P={root!r} python3 - <<'PY'\n{script}PY", timeout=120
+            )
+            if r.exit_code != 0:
+                return []
+            try:
+                items = _json.loads(str(r.stdout).strip())
+            except Exception:  # noqa: BLE001
+                return []
+            prefix = str(self._host_root())
+            out: list[Path] = []
+            for it in items:
+                relp = os.path.relpath(it, root)
+                if relp == ".." or relp.startswith("../"):
+                    continue
+                out.append(Path(prefix) / relp)
+            return out
+
+        return await asyncio.to_thread(_walk)
+
+    async def file_size(self, path: Path) -> int | None:
+        def _size() -> int | None:
+            p = self._ws_for(path)
+            if p is None:
+                return None
+            r = self._sbx().commands.run(
+                f"stat -c %s {p} 2>/dev/null || echo -1", timeout=30
+            )
+            try:
+                return int(str(r.stdout or "").strip())
+            except ValueError:
+                return None
+
+        return await asyncio.to_thread(_size)
 
 
 def validate_sandbox_mode(mode: str) -> None:
@@ -903,18 +1351,25 @@ def _describe_limits(limits: SandboxLimits) -> str:
 
 
 def get_runner(mode: str, image: str = "python:3.12-slim", allow_network: bool = False) -> CommandRunner:
-    """mode: '' | 'local' | 'docker'. Docker mode fails closed if unavailable.
+    """mode: '' | 'local' | 'docker' | 'cubesandbox'. Fail-closed on unknown.
 
-    Docker transport: CLI by default; PI_DOCKER_HOST=tcp://host:2375 switches to
-    the Engine REST API (no CLI needed, works against a remote daemon).
-
-    PI_SANDBOX_POOL=0 selects the legacy cold path (fresh container per call);
-    the warm pool is the default.
-
-    Containers are capped by PI_SANDBOX_MEMORY / _PIDS / _CPUS and run as
-    PI_SANDBOX_USER (default: the app's own uid:gid).
+    - docker: CLI by default; PI_DOCKER_HOST=tcp://host:2375 switches to the
+      Engine REST API; PI_SANDBOX_POOL=0 selects the cold path. Containers are
+      capped by PI_SANDBOX_MEMORY / _PIDS / _CPUS.
+    - cubesandbox: one CubeSandbox microVM per session; PI_SANDBOX_TEMPLATE
+      selects the built template (e.g. a 256M/1vcpu cube-lite-py).
     """
     validate_sandbox_mode(mode)
+    if mode == "cubesandbox":
+        runner = CubeSandboxRunner(
+            template=os.environ.get("PI_SANDBOX_TEMPLATE", ""),
+            allow_network=allow_network,
+        )
+        log.info(
+            "bash sandbox: cubesandbox (template=%s, network=%s)",
+            runner.template, "on" if allow_network else "off",
+        )
+        return runner
     if mode == "docker":
         if os.environ.get("PI_SANDBOX_POOL", "1") != "0":
             runner = _get_pool(image, allow_network)

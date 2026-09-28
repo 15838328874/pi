@@ -18,3 +18,4 @@ build/
 .sse.txt
 audit*.jsonl
 traces*.jsonl
+pi-real.env

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pi.tools.base import Tool, ToolContext, ToolResult, resolve_path
+from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
 
 
 class WriteTool(Tool):
@@ -33,13 +33,13 @@ class WriteTool(Tool):
             return ToolResult(content="Error: content must be a string", is_error=True)
 
         path = resolve_path(ctx, raw)
-        if path.is_dir():
+        fs = get_fs(ctx)
+        if await fs.is_dir(path):
             return ToolResult(content=f"Error: {raw} is a directory", is_error=True)
 
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-        except OSError as exc:
+            await fs.write_bytes(path, content.encode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - surface any fs error uniformly
             return ToolResult(content=f"Error: cannot write {raw}: {exc}", is_error=True)
 
         return ToolResult(content=f"Wrote {len(content)} chars to {path}")

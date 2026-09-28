@@ -6,7 +6,7 @@ import os
 import re
 from typing import Any
 
-from pi.tools.base import SKIP_DIRS, Tool, ToolContext, ToolResult, resolve_path
+from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
 
 MAX_MATCHES = 200
 MAX_FILE_BYTES = 1_000_000
@@ -46,42 +46,41 @@ class GrepTool(Tool):
 
         include = args.get("include") or None
         root = resolve_path(ctx, str(args.get("path", ".")))
-        if not root.exists():
+        fs = get_fs(ctx)
+        if not await fs.exists(root):
             return ToolResult(content=f"Error: path not found: {args.get('path')}", is_error=True)
 
         matches: list[str] = []
         files_scanned = 0
         truncated = False
 
-        if root.is_file():
+        if not await fs.is_dir(root):
             candidates = [root]
             base_dir = root.parent
         else:
-            candidates = []
-            for dirpath, dirnames, filenames in os.walk(root):
-                dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-                for fn in filenames:
-                    candidates.append(os.path.join(dirpath, fn))
+            candidates = [p for p in await fs.walk(root) if not await fs.is_dir(p)]
             base_dir = root
 
         for filepath in candidates:
             if len(matches) >= MAX_MATCHES:
                 truncated = True
                 break
-            fname = os.path.basename(filepath)
+            fname = filepath.name
             if include and not _glob_match(include, fname):
                 continue
             try:
-                if os.path.getsize(filepath) > MAX_FILE_BYTES:
+                size = await fs.file_size(filepath)
+                if size is None or size > MAX_FILE_BYTES:
                     continue
-                with open(filepath, "rb") as f:
-                    data = f.read()
-            except OSError:
+                data = await fs.read_bytes(filepath)
+                if data is None:
+                    continue
+            except Exception:  # noqa: BLE001 - keep scanning past bad files
                 continue
             if b"\x00" in data[:4096]:
                 continue
             files_scanned += 1
-            rel = os.path.relpath(filepath, base_dir).replace("\\", "/")
+            rel = str(filepath.relative_to(base_dir)).replace("\\", "/")
             for lineno, line in enumerate(data.decode("utf-8", errors="ignore").splitlines(), 1):
                 if regex.search(line):
                     matches.append(f"{rel}:{lineno}: {line.strip()[:400]}")

@@ -166,6 +166,35 @@ class Metrics:
             buckets=_CALL_BUCKETS,
             registry=registry,
         )
+        # Sandbox health: the three ways a cube-VM run silently degrades.
+        # create_failures: platform quota / 5xx / timeout on create - when this
+        # climbs while runs hold steady, sandboxes are dying before work starts.
+        # command_timeouts: GNU-timeout wrapper firings (timed_out=True) - a
+        # climbing rate means the model keeps handing the VM work that never
+        # finishes. close_failures: teardown could not kill the VM - un-killed
+        # VMs pile up and eat the platform quota (the no-more-resource
+        # incident), so this label is what a quota alert should watch.
+        self.sandbox_create_failures = Counter(
+            "pi_sandbox_create_failures_total",
+            "Sandbox VM creations that failed (quota, 5xx, create timeout).",
+            registry=registry,
+        )
+        self.sandbox_command_timeouts = Counter(
+            "pi_sandbox_command_timeouts_total",
+            "Sandboxed commands that hit the timeout wrapper (timed_out).",
+            registry=registry,
+        )
+        self.sandbox_close_failures = Counter(
+            "pi_sandbox_close_failures_total",
+            "Sandbox teardowns that could not kill the VM (quota leak risk).",
+            registry=registry,
+        )
+        self.sandbox_create_duration = Histogram(
+            "pi_sandbox_create_duration_seconds",
+            "Wall time to create a sandbox VM; cold start is eval latency.",
+            buckets=_CALL_BUCKETS,
+            registry=registry,
+        )
 
     # ------------------------------------------------------------------ recording
 
@@ -217,6 +246,26 @@ class Metrics:
             return
         self.tool_calls.labels(tool=tool, ok=str(ok)).inc()
         self.tool_duration.labels(tool=tool).observe(duration_s)
+
+    def sandbox_created(self, seconds: float) -> None:
+        if self.registry is None:
+            return
+        self.sandbox_create_duration.observe(seconds)
+
+    def sandbox_create_failed(self) -> None:
+        if self.registry is None:
+            return
+        self.sandbox_create_failures.inc()
+
+    def sandbox_command_timed_out(self) -> None:
+        if self.registry is None:
+            return
+        self.sandbox_command_timeouts.inc()
+
+    def sandbox_close_failed(self) -> None:
+        if self.registry is None:
+            return
+        self.sandbox_close_failures.inc()
 
     def retrieval(self, *, outcome: str, duration_s: float) -> None:
         if self.registry is None:

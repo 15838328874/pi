@@ -109,6 +109,7 @@ class AgentLoop:
         on_compact: "Callable[[list[Message], int | None], None] | None" = None,
         on_checkpoint: "Callable[[Checkpoint], None] | None" = None,
         message_idx: list[int | None] | None = None,
+        runner: Any | None = None,
     ):
         self.provider = provider
         self.tools: dict[str, Tool] = {t.name: t for t in tools}
@@ -118,6 +119,17 @@ class AgentLoop:
             list(message_idx) if message_idx is not None else [None] * len(self.messages)
         )
         self.ctx = ToolContext(cwd=cwd or Path.cwd())
+        # The sandboxed runner drives bash (ctx.runner); a runner that provides
+        # its own workspace filesystem (e.g. CubeSandbox files API) also hosts
+        # the file tools (ctx.fs), so the model's path view matches execution.
+        self.runner = runner
+        if runner is not None:
+            self.ctx.runner = runner
+            self.ctx.fs = getattr(runner, "fs", None)
+            # bind the sandbox workspace root to this session's cwd so the
+            # file tools can map host paths onto the sandbox filesystem
+            if self.ctx.fs is not None and hasattr(self.ctx.fs, "set_host_root"):
+                self.ctx.fs.set_host_root(self.ctx.cwd)
         self.on_message = on_message
         self.max_turns = max_turns
         self.compact_threshold = compact_threshold

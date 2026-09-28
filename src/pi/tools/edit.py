@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 from typing import Any
 
-from pi.tools.base import Tool, ToolContext, ToolResult, resolve_path
+from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
 
 MAX_DIFF_LINES = 60
 
@@ -50,11 +50,15 @@ class EditTool(Tool):
             )
 
         path = resolve_path(ctx, raw)
-        if not path.is_file():
+        fs = get_fs(ctx)
+        if not await fs.exists(path) or await fs.is_dir(path):
             return ToolResult(content=f"Error: file not found: {raw}", is_error=True)
 
+        data = await fs.read_bytes(path)
+        if data is None:
+            return ToolResult(content=f"Error: file not found: {raw}", is_error=True)
         try:
-            text = path.read_text(encoding="utf-8")
+            text = data.decode("utf-8")
         except UnicodeDecodeError:
             return ToolResult(content=f"Error: {raw} is not valid UTF-8 text", is_error=True)
 
@@ -76,8 +80,8 @@ class EditTool(Tool):
         new_text = text.replace(old, new) if replace_all else text.replace(old, new, 1)
 
         try:
-            path.write_text(new_text, encoding="utf-8")
-        except OSError as exc:
+            await fs.write_bytes(path, new_text.encode("utf-8"))
+        except Exception as exc:  # noqa: BLE001 - uniform error surface
             return ToolResult(content=f"Error: cannot write {raw}: {exc}", is_error=True)
 
         diff = difflib.unified_diff(

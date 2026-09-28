@@ -6,7 +6,7 @@ import os
 from fnmatch import fnmatch
 from typing import Any
 
-from pi.tools.base import SKIP_DIRS, Tool, ToolContext, ToolResult, resolve_path
+from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
 
 MAX_RESULTS = 500
 
@@ -36,19 +36,18 @@ class FindTool(Tool):
             return ToolResult(content="Error: pattern is required", is_error=True)
 
         root = resolve_path(ctx, str(args.get("path", ".")))
-        if not root.is_dir():
+        fs = get_fs(ctx)
+        if not await fs.exists(root) or not await fs.is_dir(root):
             return ToolResult(
                 content=f"Error: directory not found: {args.get('path')}", is_error=True
             )
 
         hits: list[str] = []
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
-            rel_dir = os.path.relpath(dirpath, root).replace("\\", "/")
-            for name in dirnames + filenames:
-                rel = name if rel_dir == "." else f"{rel_dir}/{name}"
-                if fnmatch(rel, pattern) or fnmatch(name, pattern):
-                    hits.append(rel)
+        for full in await fs.walk(root):
+            rel = str(full.relative_to(root)).replace("\\", "/")
+            name = rel.rsplit("/", 1)[-1]
+            if fnmatch(rel, pattern) or fnmatch(name, pattern):
+                hits.append(rel)
             if len(hits) >= MAX_RESULTS:
                 break
 

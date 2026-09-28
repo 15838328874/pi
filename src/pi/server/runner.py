@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from collections.abc import AsyncIterator
 from dataclasses import replace
@@ -33,10 +34,22 @@ from pi.prompt import SYSTEM_PROMPT
 from pi.security.audit import AuditLogger
 from pi.security.policy import Policy, load_policy
 from pi.server.cache import CacheBackend, MemoryBackend
+from pi.server.archive import (
+    archive_workspace,
+    enabled as archive_enabled,
+    snapshot_files,
+)
 from pi.server.db import MemoryRepo, MessageRepo, RunRepo, SessionRow
 from pi.server.trajectory_store import append_trajectory
 from pi.tools.registry import ToolRegistry
 from pi.tools.sandbox import get_runner
+
+#: Total budget for sandbox teardown in a turn's finally. close() saves the
+#: workspace (tar round-trip) and kills the VM; if it blows this budget the
+#: turn stops waiting but the cleanup thread keeps going and still kills the
+#: VM, so the cap only bounds how long a turn can be held hostage by a slow
+#: tar - never whether the VM dies.
+_SANDBOX_CLOSE_TIMEOUT_S = float(os.environ.get("PI_SANDBOX_CLOSE_TIMEOUT_SECONDS", 90))
 
 
 def server_policy(policy_path: str) -> Policy:
@@ -102,6 +115,8 @@ class RunManager:
         """Execute one user turn; messages are persisted on completion."""
         # distributed session lock: correct across instances when Redis-backed
         lock_key = f"session:{session.id}"
+        runner = None  # owned by this turn; closed (workspace saved, VM dead) in finally
+        baseline = None  # turn-start workspace snapshot; archive diff in finally
         if not await self.cache.acquire_lock(lock_key, ttl_seconds=self.timeout + 60):
             yield ErrorEvent(message="another turn is already running for this session")
             return
@@ -200,6 +215,12 @@ class RunManager:
                         allow_network=self.sandbox_network,
                     )
                     agent.ctx.runner = runner
+                    runner.metrics = self.metrics  # sandbox health counters
+                    # a sandboxed runner with its own workspace filesystem
+                    # (CubeSandbox files API) also hosts the file tools
+                    agent.ctx.fs = getattr(runner, "fs", None)
+                    if agent.ctx.fs is not None and hasattr(agent.ctx.fs, "set_host_root"):
+                        agent.ctx.fs.set_host_root(Path(session.cwd))
                     # preheat the warm container while the LLM is thinking
                     # about its first tool call (no-op for non-pooled runners)
                     prewarm = getattr(runner, "prewarm", None)
@@ -208,6 +229,13 @@ class RunManager:
                             prewarm(Path(session.cwd))
                         except Exception:  # noqa: BLE001 - prewarm is best-effort
                             log.debug("sandbox prewarm failed", exc_info=True)
+
+                # workspace archive baseline: what did this turn change?
+                if archive_enabled() and self.sandbox:
+                    try:
+                        baseline = await asyncio.to_thread(snapshot_files, Path(session.cwd))
+                    except Exception:  # noqa: BLE001 - archiving must never break a run
+                        log.warning("archive baseline failed", exc_info=True)
 
                 final_usage = None
                 final_turns = 0
@@ -324,6 +352,43 @@ class RunManager:
                         except Exception:  # noqa: BLE001 - jsonl copy still exists
                             logging.getLogger("pi.server").exception("trajectory db save failed")
         finally:
+            # Session-scoped, no warm pool: close() saves the workspace back
+            # to the host and destroys the VM so no sandbox lingers after the
+            # turn (memory model = concurrent active turns x 256Mi, not x
+            # sessions). Close is best-effort and slow-safe: never blocks
+            # the turn outcome on a tar round-trip.
+            if runner is not None:
+                try:
+                    # Total-timeout the teardown: close() saves the workspace
+                    # (tar round-trip) then kills the VM. If it exceeds the cap
+                    # the turn proceeds - the to_thread worker keeps running and
+                    # finishes save+kill on its own, so the VM still dies; the
+                    # turn just stops waiting on it.
+                    await asyncio.wait_for(
+                        asyncio.to_thread(runner.close),
+                        timeout=_SANDBOX_CLOSE_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "sandbox close exceeded %ss; cleanup continues in background",
+                        _SANDBOX_CLOSE_TIMEOUT_S,
+                    )
+                except Exception:  # noqa: BLE001 - best-effort cleanup
+                    log.debug("sandbox close failed", exc_info=True)
+            # end-of-session workspace archive (host + optional S3/MinIO):
+            # tarball of the workspace as the agent left it, with a diff
+            # against the turn-start baseline. Only for sandboxed runs.
+            if baseline is not None:
+                try:
+                    await asyncio.to_thread(
+                        archive_workspace,
+                        session_id=session.id,
+                        username=username,
+                        cwd=Path(session.cwd),
+                        baseline=baseline,
+                    )
+                except Exception:  # noqa: BLE001 - archiving is best-effort
+                    log.warning("workspace archive failed", exc_info=True)
             await self.cache.release_lock(lock_key)
 
 

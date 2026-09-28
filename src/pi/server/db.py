@@ -220,13 +220,16 @@ class SessionRepo:
     def __init__(self, db: Database):
         self.db = db
 
-    async def create(self, user_id: int, title: str, model: str, cwd: Path) -> SessionRow:
+    async def create(self, user_id: int, title: str, model: str, cwd_root: Path) -> SessionRow:
+        # 会话级隔离：cwd 由 session id 派生（workspace_root/{session_id}），
+        # 同用户多会话互不串文件，与沙箱复用池/归档的 session 粒度对齐。
+        sid = uuid.uuid4().hex[:12]
         row = SessionRow(
-            id=uuid.uuid4().hex[:12],
+            id=sid,
             user_id=user_id,
             title=title[:128],
             model=model,
-            cwd=str(cwd),
+            cwd=str(cwd_root / sid),
         )
         async with AsyncSession(self.db.engine) as s:
             s.add(row)

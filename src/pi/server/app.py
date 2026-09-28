@@ -208,6 +208,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         pool_size=settings.sandbox_pool_size,
         pool_pressure_high=settings.sandbox_pool_pressure_high,
         pool_pressure_low=settings.sandbox_pool_pressure_low,
+        files_repo=files_repo,
+        store=store,
     )
     runs.sandbox_network = settings.sandbox_net
 
@@ -433,9 +435,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     async def create_session(body: SessionIn, username: str = Depends(current_user)) -> dict:
         user = await users.by_username(username)
         model = body.model or settings.default_model
-        cwd = settings.workspace_root / username
-        cwd.mkdir(parents=True, exist_ok=True)
-        row = await sessions.create(user.id, body.title, model, cwd)
+        row = await sessions.create(user.id, body.title, model, settings.workspace_root)
+        Path(row.cwd).mkdir(parents=True, exist_ok=True)
         return {"id": row.id, "title": row.title, "model": row.model, "cwd": row.cwd}
 
     # ---- 文件管线：MinIO 预签名直连（服务器只签发+记账，不搬字节）---------

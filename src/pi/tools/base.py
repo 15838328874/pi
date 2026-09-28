@@ -145,6 +145,8 @@ class ToolContext:
     user_id: str = ""
     user_db_id: int | None = None  # integer user id (for DB-scoped stores like memory)
     memory: Any = None  # MemoryRepo, injected by the server runner
+    files: Any = None  # FileRepo, injected by the server runner (list_files/fetch_file)
+    store: Any = None  # ObjectStore, presigned URLs for the file pipeline
 
 
 class Tool(ABC):

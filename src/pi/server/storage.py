@@ -110,3 +110,14 @@ class ObjectStore:
 
     def _delete_sync(self, object_key: str, bucket: str) -> None:
         self._client_sync().delete_object(Bucket=bucket, Key=object_key)
+
+    async def get_bytes(self, object_key: str, bucket: str) -> bytes:
+        """Read an object's bytes into memory (server-side staging for sandbox
+        injection). Used only because CubeSandbox VMs cannot reach the host's
+        MinIO endpoint directly (NAT-isolated egress); upload/download stay
+        presigned-direct. The caller caps size before staging."""
+        return await asyncio.to_thread(self._get_bytes_sync, object_key, bucket)
+
+    def _get_bytes_sync(self, object_key: str, bucket: str) -> bytes:
+        resp = self._client_sync().get_object(Bucket=bucket, Key=object_key)
+        return resp["Body"].read()

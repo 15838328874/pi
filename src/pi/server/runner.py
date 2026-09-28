@@ -14,6 +14,7 @@ import time
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 from pi.agent.events import (
     AgentEvent,
@@ -99,6 +100,8 @@ class RunManager:
         pool_size: int = 4,
         pool_pressure_high: int = 1_500 * 1024 * 1024,
         pool_pressure_low: int = 512 * 1024 * 1024,
+        files_repo: Any = None,  # FileRepo (files table), injected to tools
+        store: Any = None,  # ObjectStore (presigned URLs), injected to tools
     ):
         self.policy = policy
         self.audit = audit
@@ -123,6 +126,8 @@ class RunManager:
         self._pool_lock = asyncio.Lock()
         self._pool_sweep_task: asyncio.Task | None = None
         self._pool_sweep_interval_s = 30.0
+        self.files_repo = files_repo
+        self.store = store
 
     async def run_turn(
         self,
@@ -232,6 +237,9 @@ class RunManager:
                 if memory_repo is not None:
                     agent.ctx.memory = memory_repo
                     agent.ctx.user_db_id = user_id
+                # 文件管线工具依赖（list_files/fetch_file 走工具结果，不碰 system_prompt）
+                agent.ctx.files = self.files_repo
+                agent.ctx.store = self.store
                 if self.sandbox:
                     # 惰性沙箱：回合以本地模式起步，第一次 bash 调用（或显式
                     # 工具）通过 ensure_runner 现场创建/复用 VM。纯聊天回合

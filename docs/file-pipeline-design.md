@@ -74,10 +74,13 @@ CREATE TABLE files (
   客户端 ──PUT 直传──▶ MinIO（字节不过服务器）
   服务器：记 files 表元数据
 
-② 进沙箱（VM 直拉，不占宿主磁盘）
-  agent 调 file 工具 → 服务器签发预签名 GET URL
-  沙箱 VM：curl -sS -o /workspace/x.csv "<presigned GET>"
-  （沙箱有 curl/wget/python3，直拉现成）
+② 进沙箱（服务器内存中转 —— 方案 B，平台约束所致）
+  agent 调 fetch_file 工具 → 服务器：files 表校验归属 → get_bytes 从 MinIO 取 → 
+  SandboxFS.write_bytes 直写进 VM /workspace（不落宿主磁盘）
+  ※ 平台约束：CubeSandbox 沙箱 VM 是 NAT 单向出公网隔离，实测无法访问宿主的
+   任何内网 IP（MinIO/服务器/MySQL 全 000）—— 故"VM curl 直拉"不可行。上传/
+   下载仍预签名直连；仅"进沙箱"这一跳字节从服务器内存过一遍，真身始终在
+   MinIO、服务器磁盘零占用。MinIO 若未来给公网地址，可无缝切回真直连。
 
 ③ 处理
   模型用 bash/python 在 VM 内读写 /workspace 文件
@@ -89,8 +92,9 @@ CREATE TABLE files (
   客户端 ──GET /v1/files/{id}/url──▶ 预签名 GET URL → 直拉
 ```
 
-关键点：**服务器只"签发 + 记账"**，`_load_workspace`/`save_workspace` 保持给
-workspace 自身（agent 手写产物），上传文件走预签名直拉，两套互不干扰。
+关键点：**服务器只"签发 + 记账"**（上传/下载仍直连）；进沙箱因平台 VM 隔离
+改为内存中转（不落盘）。`_load_workspace`/`save_workspace` 保持给 workspace
+自身（agent 手写产物），与上传文件两套互不干扰。
 
 ## 6. MinIO 对象布局
 
@@ -104,11 +108,14 @@ pi-artifacts/ {session_id}/{yyyy-mm-dd}/{filename}     # 沙箱产物
 
 ## 7. 大文件边界策略（1GB VM 磁盘是硬约束；P0/P1 只支持 ≤900MB）
 
-| 文件大小 | 策略 |
-|---|---|
-| ≤ ~500MB | 预签名 GET → `curl` 直拉落盘 /workspace，常规处理 |
-| 500MB–900MB | 直拉 + 明确提示"VM 磁盘 1GB，处理完及时删中间产物" |
-| > 900MB | **P0/P1 直接拒绝**（HTTP 413），不落盘进沙箱 —— 流式/分片后续单独做 |
+| 文件大小 | 上传 | 进沙箱（fetch_file） |
+|---|---|---|
+| ≤256MB | 预签名直连 | 服务器内存中转 -> SandboxFS 直写（当前实现的硬上限） |
+| 256MB–900MB | 预签名直连 | **暂拒绝**（内存中转 OOM 风险，宿主 ~3.7G）→ 流式后续 |
+| >900MB | **P0/P1 拒绝**（HTTP 413） | 拒绝（流式/分片后续单独做） |
+
+> 256MB 中转上限来自内存安全（宿主可用 ~1.2G）；一旦落地流式（MinIO→分块→VM
+> 文件系统）或 MinIO 公网可达（VM 真直连），即可放开到 900MB。
 
 ## 8. 鉴权与安全
 
@@ -122,8 +129,8 @@ pi-artifacts/ {session_id}/{yyyy-mm-dd}/{filename}     # 沙箱产物
 
 | 阶段 | 交付 | 依赖 |
 |---|---|---|
-| **P0 · 数据入口** | 独立 MinIO 容器 + `files` 表/alembic + 上传/列表/预签名 API + boto3 依赖 | 本设计 §2§3§4§5① |
-| **P1 · 进沙箱** | 会话级 workspace 改造 + `file` 工具接预签名直拉 + 产物回写/下载 | P0 + §5②④ |
+| **P0 · 数据入口** | ✅ 已交付：独立 MinIO + `files` 表/alembic + 上传/列表/预签名 API + boto3 | 本设计 §2§3§4§5① |
+| **P1 · 进沙箱** | ✅ 已交付：会话级 workspace + `list_files`/`fetch_file` 工具（服务器内存中转，方案 B）+ 产物回写/下载 | P0 + §5②④ |
 | **P2 · 能力** | A+B 镜像构建成新模板（PDF/xlsx/docx 能力就位） | `deploy/sandbox/Dockerfile` |
 
 ## 10. 已定决策与未做项
@@ -135,6 +142,8 @@ pi-artifacts/ {session_id}/{yyyy-mm-dd}/{filename}     # 沙箱产物
 
 **未做项（后续单独做，先记档）**：
 - >900MB 大文件：预签名 + `Range: bytes=` 流式边下边算（不落全量盘）+ 结果流式写回；
+- fetch_file 流式进沙箱（>256MB：MinIO 分块读 → 分块写 VM 文件系统，当前全量内存中转）；
+- MinIO 公网可达后切回真直连（VM curl 预签名 GET/PUT，绕开宿主 NAT 隔离）；
 - 分片上传（multipart）加速大文件/弱网上传；
 - 结果产物 bucket（`pi-artifacts`）的对象生命周期/定期清理策略；
 - 同内容不同文件名的拆分（当前按 sha256 合并为一条记录）。

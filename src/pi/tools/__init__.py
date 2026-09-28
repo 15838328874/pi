@@ -1,8 +1,9 @@
-"""Built-in tools: bash, read, write, edit, grep, find, ls, memory, spawn_subagents."""
+"""Built-in tools: bash, read, write, edit, grep, find, ls, memory, files, spawn_subagents."""
 
 from pi.tools.base import Tool
 from pi.tools.bash import BashTool
 from pi.tools.edit import EditTool
+from pi.tools.files import FetchFileTool, ListFilesTool
 from pi.tools.find import FindTool
 from pi.tools.grep import GrepTool
 from pi.tools.ls import LsTool
@@ -24,6 +25,8 @@ def all_tools(
         GrepTool(),
         FindTool(),
         LsTool(),
+        ListFilesTool(),
+        FetchFileTool(),
         RememberTool(),
         RecallTool(),
         SpawnSubagentsTool(depth=subagent_depth, max_depth=max_subagent_depth),
@@ -40,5 +43,7 @@ __all__ = [
     "GrepTool",
     "FindTool",
     "LsTool",
+    "ListFilesTool",
+    "FetchFileTool",
     "SpawnSubagentsTool",
 ]

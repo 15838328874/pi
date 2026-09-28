@@ -33,7 +33,7 @@ pi-py 是 **earendol-works/pi**（TypeScript 版编码智能体外壳）的 **Py
 
 | 形态 | 入口 | 场景 |
 |---|---|---|
-| **多用户服务** | `pi-py serve` + HTTP/SSE API | 企业级服务：JWT 登录、配额、限流、审计、Docker 沙箱 |
+| **多用户服务** | `pi-py serve` + HTTP/SSE API | 企业级服务：JWT 登录、配额、限流、审计、沙箱（CubeSandbox microVM / Docker） |
 
 > 历史上还有"本地单人"形态（`pi-py chat / tui / run`，SQLite 存会话）。它已连同
 > `pi/tui/`、`pi/session/`、`pi/env.py` 一起删除；`pi.cli` 只剩 `serve` / `migrate`。
@@ -202,7 +202,7 @@ pi-python/
 │   ├── tools/
 │   │   ├── base.py          Tool 抽象 + ToolContext + 公共工具函数
 │   │   ├── bash.py read.py write.py edit.py grep.py find.py ls.py web.py
-│   │   └── sandbox.py       命令执行隔离：LocalRunner / Docker 冷路径 / 预热池；
+│   │   └── sandbox.py       命令执行隔离：LocalRunner / Docker 冷路径/预热池 / CubeSandboxRunner（microVM）；
 │   │                        SandboxLimits（内存/pids/cpu/user）在四处建容器路径统一生效
 │   ├── security/
 │   │   ├── policy.py        策略引擎（拒绝清单/命令模式/路径沙箱）
@@ -426,10 +426,10 @@ class Tool(ABC):
 （`web_fetch`/`web_search` 2026-09 已整体移除：进程内抓取有 SSRF 风险，沙箱内 bash 抓取替代。）
 **加工具就在这里注册**（扩展指南见 §16）。
 
-### 7.3 `sandbox.py` — 命令执行隔离（本层最复杂的文件，~800 行）
+### 7.3 `sandbox.py` — 命令执行隔离（本层最复杂的文件，~1300 行）
 
-三种执行器，实现同一个 `CommandRunner` 协议（`run(command, cwd, timeout)` +
-`prewarm(cwd)` 预热钩子）：
+四种执行器，实现同一个 `CommandRunner` 协议（`run(command, cwd, timeout)` +
+`prewarm(cwd)` 预热钩子）；**生产主线是 ④ CubeSandbox microVM**，Docker 为本地开发形态：
 
 **① `LocalRunner`**：`asyncio.create_subprocess_shell` 直跑——未配 `PI_SANDBOX` 时的默认。
 超时杀进程；输出统一 utf-8 解码（`errors="replace"`）。此时唯一的护栏是策略引擎的

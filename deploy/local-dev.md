@@ -1,6 +1,7 @@
 # 本地测试环境指南
 
-> 目标：在 WSL/本机搭一套**与生产同构**的完整环境（MySQL + Redis + Milvus + 云模型/embedding + Docker 沙箱），
+> 目标：在 WSL/本机搭一套**与生产同构**的完整环境（MySQL + Redis + Milvus + 云模型/embedding + Docker 沙箱
+> ——生产沙箱是 CubeSandbox microVM，本地用 Docker 形态验证协议），
 > 用真实模型跑通全链路并把数据落到本地库。**绝不连生产的 MySQL/Redis/Milvus，不污染生产数据。**
 
 ## 1. 生产 vs 本地测试（区分表）

@@ -20,7 +20,7 @@
 | Agent loop + 12 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 254 单测 |
 | LLM 接入层（openai/anthropic/fake）+ 降级链 + 退避重试 | `src/pi/llm/` | 单测 + 真实模型（qwen3.8-flash/max） |
 | 上下文压缩（摘要 + 保留尾部，非破坏落库） | `agent/compaction.py` | 单测 |
-| Docker 沙箱 + cgroup 限额 + 预热池 + 断网 | `tools/sandbox.py` | 压测 ~52 exec/s |
+| Docker 沙箱（本地形态）+ cgroup 限额 + 预热池 + 断网 | `tools/sandbox.py` | 压测 ~52 exec/s |
 | 多租户（JWT、配额、限流、审计、会话隔离、令牌撤销） | `server/` | 单测 |
 | SSE 流式 + think_filter | `server/runner.py` | 单测 + 真实浏览器 |
 | 可观测（tracing jsonl/otel + Prometheus + 计量成本） | `observability/` | 单测 |

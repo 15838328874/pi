@@ -1,343 +1,464 @@
-# pi-py × CubeSandbox 生产部署手册（单机 → 云服务器）
+# pi-py × CubeSandbox 生产部署手册（照做即可上线 + 大内存服务器适配）
 
-> 本手册的每一行都来自真实跑通的部署：作者在一台 **1 核 3.6GB 内存的
-> Ubuntu 24.04 云主机**上完成了 CubeSandbox v0.7.2 沙箱平台 + pi-py Agent
-> 服务的全部搭建、压力验证与生产就绪加固。因此本文不是"照文档抄"，而是
-> **踩过坑之后的可用清单** —— 资源数字、并发值、错误码、规避动作均为实测。
+> 这份手册的每一行都来自一台真实跑通、且已经过"上传→进沙箱→处理"全链路
+> 验证的部署。目标读者是**拿到这套代码、要在自己服务器上把它跑起来的人**：
+> 你不必复现作者的每一次试错，只需按本文顺序执行，遇到"改什么"的地方都标了
+> ★，并给出从 3.6G 小内存一路适配到 64G/128G 大内存的调参方法。
 >
-> 适用目标：8 核 64GB ~ 16 核 128GB 的云服务器，单机部署全部组件。
+> 一句话总结作者机器：**一台只有 4 核 3.6GB 内存、40GB 磁盘的腾讯云 Ubuntu
+> 24.04，就把 CubeSandbox 平台 + pi-py 服务 + 文件管线（对象存储）全部跑通了**。
+> 你迁移到更大的内存服务器，部署方式完全一样，唯一要动的就是第 9 节那几个数字。
 
 ---
 
-## 0. 配置选型建议（先看这个）
+## 0. 作者服务器真实画像（这台是怎么跑通的）
 
-| 项目 | 8 核 64GB | 16 核 128GB |
+| 项 | 值 | 说明 |
 |---|---|---|
-| 中间件（MySQL/Redis/Milvus/MinIO）| 余量充足 | 余量非常充足 |
-| 沙箱并发（256M VM）| 6-12 个并行 | 12-24 个并行 |
-| 并发 eval / 跑分 | 2-3 任务并行 | 6-10 任务并行 |
-| 月成本 | 低 | 中 |
+| 规格 | 4 vCPU / 3.6 GiB / 40 GiB 系统盘 | 腾讯云标准型，**磁盘已被用到 95%** |
+| 系统 | Ubuntu 24.04 LTS | 宿主 Python 3.12 |
+| 虚拟化 | /dev/kvm 可用 | 硬前提，见 §3 |
+| 网卡 | eth0 = `10.0.0.8/22`；docker0=`172.17.0.1`；cube 网桥若干 | 见 §2 拓扑 |
 
-**关键判断**：作者在 1 核 3.6GB 上已把**全部组件**跑通（平台 ~1GB、pi-py 117MB、
-系统 ~500MB、8 个沙箱 VM 并发时内存到极限 68MB free）。所以**内存从来不是
-单机瓶颈，CPU 才是** —— 1 核时沙箱创建/工具调用/模型往返全部串行。
+**内存账本（3.6G 上怎么塞下的）**：
 
-- **预算敏感 → 8 核 64GB**：首期生产 + 2-3 路并行 eval 完全够。65GB 里：
-  平台 1GB + MySQL 1.5GB + Redis 1GB + Milvus 3GB + MinIO 1GB + 系统 2GB ≈ 9.5GB，
-  剩下 54GB 够 12+ 个 4GB VM（或 20+ 个 256M VM）。
-- **"看真实生产情况"（你的原话）→ 16 核 128GB**：并发 eval、多模板、
-  大向量索引、MySQL 大 buffer 都不再需要精打细算；这个规格单机就能模拟
-  一个小团队的真实负载。
+```
+宿主常驻 ≈ CubeSandbox 平台(~1.0G) + MySQL(~0.4G) + Redis/registry/webui(~0.5G) + pi-py serve(~0.12G) + 系统(~0.6G)
+沙箱并发 ≈ 并发数 × (256M VM 配额 + ~20% 虚拟化开销)
+```
 
-**我的建议**：先租 **8 核 64GB** 起步。本手册第 7 节的并发模型可以精确算出
-你需要的规模；真到 64GB 打满（那意味着单机 20+ 并发沙箱任务），再升级 128GB
-也不迟 —— 因为部署方式完全一样，只是改两个数字。
+作者在这台机器上并发起 8 个 256M 沙箱时内存到极限（free 仅剩几十 MB），结论是
+**内存不是单机瓶颈，CPU 才是**（4 核时沙箱创建/工具调用/模型往返排队）。所以：
+
+> **迁往大内存服务器 = 把"沙箱并发数"和"池大小"按新内存放大，其余都不变。**
+> 具体每个参数怎么改 → 第 9 节。
 
 ---
 
-## 1. 组件全景与资源基线（本地 3.6G 实测）
+## 1. 组件全景 + 精确版本清单（照这个版本走，别漂移）
 
-| 组件 | 角色 | 本地实测内存 | 说明 |
-|---|---|---|---|
-| Cubelet | 沙箱数据面 agent（宿主机）| 261 MB | 每台宿主一个（现在 + 未来水平扩容各加一个）|
-| CubeMaster | 控制面（模板/快照/调度元数据）| 35 MB | 单点，随集群唯一 |
-| CubeTemplateCenter | 模板构建服务（镜像 → 模板）| 19 MB | 构建期间峰值更高 |
-| cube-proxy / cube-lifecycle / cube-egress | 数据面周边 | 各 ~50MB | 与 cubelet 同宿主 |
-| 平台容器 ×8（registry/redis/webui/minio/mysql）| 平台自身依赖 | ~600MB | registry 可换云镜像仓库 |
-| mysqld（宿主）| 业务库（用户/会话/audit/trace）| 126 MB | 中工作量下稳定值 |
-| pi-py serve | Agent 服务 | 117 MB | 每进程 |
-| MinIO（宿主）| 工作区归档 S3 | 66 MB | 归档可选 |
-| 沙箱 VM（256M/1核）| 每次任务一个 | 256MB + 开销 | 平台模板配置 |
+> 版本敏感的东西只有三样：**e2b 系 SDK、envd、平台 CLI**。其余（fastapi、
+> boto3 等）用 `pyproject.toml` 锁住的即可，装最新也不会崩。
 
-**内存模型（单机关键公式）**：
-
-```
-并发沙箱内存 ≈ 并发数 × (VM 配额 + 20% 虚拟化开销)
-宿主常驻 ≈ 平台(1GB) + 中间件(MySQL1.5+Redis1+Milvus3+MinIO1) + pi-py(0.2) + 系统(2)
-```
-
-8 核 64GB 上：`常驻 9.7GB`，沙箱预算 `54GB ÷ 0.3GB ≈ 100+ 个 256M VM`，
-CPU 限制（8 核）下实际可用 12-24 个同时跑 —— 平台并发上限远低于内存上限，
-**CPU 是单机并发的真实天花板**。
-
----
-
-## 2. 云服务器准备（硬前提：嵌套虚拟化）
-
-CubeSandbox 用 KVM（QEMU/PVM）跑微虚拟机，**没有 /dev/kvm 一切都是空谈**。
-
-```bash
-# ① 镜像：Ubuntu 24.04 LTS（实测环境），或 22.04 LTS
-# ② 买/开后立刻确认 KVM 可用：
-ls -l /dev/kvm           # 必须有这个设备
-# 云厂商注意：部分机型默认关闭嵌套虚拟化，需在控制台/工单开启
-#   腾讯云：大部分标准型/计算型默认支持（开/关在控制台-实例-更多）
-#   阿里云：需要工单申请开启 KVM 嵌套虚拟化
-sudo apt install -y qemu-kvm && sudo kvm-ok   # 提示 KVM acceleration can be used 才算过
-```
-
-```bash
-# ③ 磁盘与分区：建议 100GB+ 系统盘（模板镜像、工作区归档、MySQL 落盘）
-#    数据目录放数据盘，挂载后 xfs/ext4 均可（本地为 xfs 实测 OK）
-# ④ 安全组（云上最重要的一个动作）：
-#    80/443   → 只对公网反代开放（Caddy/域名 Web）
-#    8300     → 绝不暴露公网！pi-py 有开放注册接口，只允许本机/内网
-#    KVM/网格端口（见 cube 平台安装文档）→ 只允许宿主网段
-```
+| 组件 | 版本 | 角色 / 用途 |
+|---|---|---|
+| **CubeSandbox 平台** | `v0.7.2`（CLI `f1aaa737...` built 2026-09-24） | 沙箱控制面 + 数据面 + 模板中心 |
+| **envd**（沙箱内探针二进制） | `0.5.13`（静态 Go，~10MB） | CubeMaster 探活 `:49983/health`，**缺失则容器起不来** |
+| **沙箱镜像** | `pi-sandbox:1.0`（`alpine:3.20` + Python `3.12.13`） | 由本仓库 `deploy/sandbox/Dockerfile` 构建，见 §6 |
+| **沙箱模板** | `tpl-2492096525f04f0aac655acb`（alias `pi-sandbox-ab`） | cpu=1000m / mem=256Mi / writable-layer=1Gi |
+| e2b | `2.26.0` | 沙箱 SDK（连 CubeAPI 3000） |
+| e2b-code-interpreter | `2.8.1` | 沙箱 SDK 扩展 |
+| boto3 / botocore | `1.43.103` | 对象存储预签名（文件管线） |
+| fastapi / uvicorn | `0.141.1` / `0.54.0` | Web 服务框架 |
+| SQLAlchemy / aiomysql | `2.1.1` / `0.3.2` | 异步 ORM + MySQL 驱动（**连接串用 `mysql+aiomysql://`**） |
+| alembic | `1.20.0` | 数据库迁移（服务启动自动 `upgrade head`） |
+| httpx / pydantic | `0.28.1` / `2.13.5` | HTTP / 数据模型 |
+| Python | 宿主 `3.12` + 沙箱 `3.12.13` | 两侧一致，musllinux wheel 通用 |
+| MySQL | `8.0`（镜像 `opensource/mysql:8.0`） | 业务库（用户/会话/审计/文件元数据） |
+| Redis | `7-alpine` | 会话锁/缓存（db15） |
+| MinIO | `minio/minio`（latest） | 文件管线对象存储（**pi-minio，端口 19000**） |
+| registry | `registry:2` | 沙箱镜像仓库（本地 5000） |
 
 ---
 
-## 3. 中间件部署（全部 Docker，单机共存）
+## 2. 依赖服务拓扑 + 端口对照（先看，避免起冲突）
 
-### 3.1 Docker 与镜像加速
+一个单机上有**两套东西**：CubeSandbox 平台自带的依赖，和 pi-py 自己加的。
+端口冲突（尤其 MinIO 的 9000）是"服务起不来"的头号原因。
+
+### 2.1 CubeSandbox 平台（v0.7.2，随平台部署包安装，13 个 systemd 服务）
+
+| 名称 | 形态 | 端口/说明 |
+|---|---|---|
+| `cube-sandbox-cubemaster` | 宿主进程 | **:8089** 控制面（`cubemastercli` 连这里） |
+| `cube-sandbox-cube-api` | 宿主进程 | **:3000** E2B SDK 兼容层（pi-py 的 `PI_CUBE_API_URL`） |
+| `cube-sandbox-cubelet` | 宿主进程 | 每宿主一个的数据面 agent（建/杀 VM） |
+| `cube-sandbox-cube-proxy` | 宿主进程 | 沙箱数据面转发 |
+| `cube-sandbox-cube-templatecenter` | 宿主进程 | 镜像 → 模板构建（§6 依赖它） |
+| `cube-sandbox-cube-egress` | 宿主进程 | 出网网关（**沙箱出网白名单做在这里**） |
+| `cube-sandbox-cubeops` | 宿主进程 | 运维/健康 |
+| `cube-sandbox-coredns` / `cube-sandbox-dns` | 宿主进程 | 沙箱 DNS（`169.254.254.53`） |
+| `cube-sandbox-webui` | 容器(openresty) | **:12088** 平台控制台 |
+| `cube-sandbox-redis` | 容器 | `127.0.0.1:6379`（平台内部） |
+| `cube-sandbox-mysql` | 容器 | `127.0.0.1:3306`（平台内部） |
+| `cube-sandbox-minio` | 容器 | `10.0.0.8:9000`（**平台自己的归档 MinIO，别动**） |
+
+### 2.2 pi-py 自己加的（本仓库负责）
+
+| 名称 | 端口 | 说明 |
+|---|---|---|
+| **pi-minio** | `0.0.0.0:19000`（S3）/ `127.0.0.1:19001`（console） | 文件管线对象存储；**故意避开平台的 9000** |
+| **cube-registry** | `0.0.0.0:5000` | 沙箱镜像仓库（平台部署包的 registry，也可能平台已带） |
+| **pi-py serve** | `127.0.0.1:8300` | 本服务；**只绑本机，绝不暴露公网** |
+
+> **端口冲突铁律**：MinIO 默认就是 9000/9001，而平台自带一个 minio 占着。
+> 你的文件管线 MinIO 必须换端口（本环境 19000/19001），否则和平台 minio 抢端口，
+> 两个里至少一个起不来。Milvus 的 etcd 2379 / gRPC 19530 也要在起之前核对。
+
+---
+
+## 3. 硬前提：嵌套虚拟化 KVM
+
+CubeSandbox 用 QEMU/PVM 起微虚拟机，**没有 `/dev/kvm` 全部空谈**。
 
 ```bash
-curl -fsSL https://get.docker.com | bash
-# 国内加速（腾讯云内网免加速）：配 /etc/docker/daemon.json
-# {"registry-mirrors": ["https://mirror.ccs.tencentyun.com"]}
-sudo systemctl enable --now docker
+ls -l /dev/kvm                      # 必须有这个设备
+sudo apt install -y qemu-kvm && sudo kvm-ok   # 提示 "KVM acceleration can be used" 才过
 ```
 
-### 3.2 MySQL 8.0（业务库）
+云厂商注意：部分机型默认关闭嵌套虚拟化，需在控制台或工单开启（腾讯云大部分标准型
+默认支持；阿里云要工单申请）。**买机器前先确认 KVM，这是唯一没法靠代码绕过的前提。**
+
+---
+
+## 4. 中间件部署
+
+pi-py 的依赖：MySQL + Redis +（文件管线）MinIO；记忆层 Milvus 可选（不配自动降级）。
+
+> 资源紧张时可**复用平台自带的 MySQL/Redis**（作者这台就这么干的：在平台的
+> `cube-sandbox-mysql` 里建 `pi_py` 库、用平台 redis 的 db15）。生产建议独立。
+
+### 4.1 MySQL 8.0（业务库）
 
 ```bash
 docker run -d --name pi-mysql --restart always \
   -e MYSQL_ROOT_PASSWORD=CHANGE_ME \
   -v /data/mysql:/var/lib/mysql \
-  -p 127.0.0.1:3306:3306 \
-  mysql:8.0
-# pi-py 需要：CREATE DATABASE pi_py;（建表由服务自动 migrate）
+  -p 127.0.0.1:3306:3306 mysql:8.0
+# 只需建库：CREATE DATABASE pi_py; 表由服务启动时 alembic 自动建
 ```
 
-### 3.3 Redis（pi-py 会话锁/缓存，db15；Cube 平台自带自己的 redis）
+### 4.2 Redis（会话锁/缓存，db15）
 
 ```bash
 docker run -d --name pi-redis --restart always \
   -p 127.0.0.1:6379:6379 redis:7-alpine redis-server --requirepass CHANGE_ME
-# 只绑 127.0.0.1 —— 有密码也别暴露公网
 ```
 
-### 3.4 MinIO（工作区归档 S3 目标，可选但推荐）
+### 4.3 MinIO（文件管线对象存储 → 端口必须换成 19000 系）
 
 ```bash
 docker run -d --name pi-minio --restart always \
   -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=CHANGE_ME \
   -v /data/minio:/data \
-  -p 127.0.0.1:9000:9000 -p 127.0.0.1:9001:9001 \
-  minio/minio server /data --console-address :9001
-# ⚠️ 端口冲突警告：Cube 平台自带一个 minio 容器默认也占 9000/9001！
-#   二选一：① 只用平台的 minio（归档指向它）② 改本容器端口。
+  -p 0.0.0.0:19000:9000 -p 127.0.0.1:19001:9001 \
+  minio/minio server /data --console-address ":9001"
+# ⚠️ 端口改了 19000/19001 —— 避开平台 minio 的 9000/9001（§2 铁律）
+# 启动后建两个 bucket：pi-files（上传）pi-artifacts（产物），见 §7 的 PI_S3_BUCKET_*
 ```
 
-### 3.5 Milvus（pi-py 记忆层向量库，可选但"生产"建议要）
+### 4.4 Milvus（记忆向量库，可选）
 
-pi-py 的记忆检索：`PI_MILVUS_URI` + `PI_EMBEDDING_MODEL` 都配置才启用；
-**不配时自动降级为 MySQL 余弦兜底（index_fallbacks 指标可观测），不会崩**。
-本地验证阶段就是降级跑的 —— 生产开启记忆需要 Milvus standalone：
-
-```bash
-# 官方 standalone（etcd + minio + milvus 三个容器）：
-curl -sfL https://raw.githubusercontent.com/milvus-io/milvus/v2.4.x/scripts/standalone_embed.sh -o /tmp/milvus.sh
-bash /tmp/milvus.sh    # 或手动 docker compose（milvusdb/milvus:v2.4-stanchalone）
-# 端口：19530(gRPC) 2379(etcd) —— 注意与 pi-minio 的 9000 错开
-# 内存：~3GB；磁盘：向量数据落盘 /data/milvus
-```
-
-验证：`python -c "from pymilvus import MilvusClient; c=MilvusClient('http://127.0.0.1:19530'); print(c.list_collections())"`
+`PI_MILVUS_URI` + `PI_EMBEDDING_MODEL` 都配才启用；不配自动降级 MySQL 余弦兜底。
+官方 standalone：`standalone_embed.sh` 或 `docker compose`，端口 19530(gRPC)/2379(etcd)，
+内存 ~3GB。生产要记忆才需要，本环境是降级跑的。
 
 ---
 
-## 4. CubeSandbox 平台部署（v0.7.2）
+## 5. CubeSandbox 平台部署（v0.7.2）
 
-> 平台官方以部署工具/文档分发（cubemaster、cubelet、registry、带 proxy/
-> lifecycle/egress 的容器化数据面）。本节写**组件关系与本地实测要点**，
-> 具体安装命令以你拿到的 v0.7.2 部署包为准。
+平台以**官方部署工具/安装包**分发（cubemaster、cubelet、registry、proxy/lifecycle/
+egress 等）。本节写组件关系与必须核对点，**具体安装命令以你拿到的 v0.7.2 部署包为准**。
 
-### 4.1 控制面（一台机器）
+- **CubeMaster**：控制面，`:8089`（`cubemastercli` 默认连 `0.0.0.0:8089`）。
+- **CubeAPI**：E2B SDK 兼容层，`127.0.0.1:3000`（pi-py 的 `PI_CUBE_API_URL`）。
+- **Registry**：`:5000`，存沙箱模板镜像（平台一般自带 `cube-registry`）。
+- **CubeTemplateCenter**：镜像→模板构建服务；它不可用则 §6 的 `create-from-image` 直接失败。
+- **Cubelet**：每宿主一个，配置文件里指定数据目录 + 上报告制面 + 资源池。
 
-- **CubeMaster**：调度/元数据/模板注册。默认端口 8089（CLI 通路），
-  另起 CubeAPI（本环境 127.0.0.1:3000，由 nginx 把 3000 映射给 E2B SDK 用）。
-- **Registry**（`registry:2` / 5000 端口）：存模板镜像，本地即可，
-  云上可用 TKE 镜像仓库替代。
-- **CubeTemplateCenter**：模板构建服务（systemd：cube-sandbox-cube-templatecenter），
-  CubeMaster 把构建任务转发给它；它不可用则模板 build 直接失败。
-
-### 4.2 数据面（同机则与控制面同宿）
-
-- **Cubelet**（`cubelet --config /usr/local/services/cubetoolbox/Cubelet/config/config.toml`）：
-  每台宿主一个。配置文件关键项：
-  - 数据目录（XFS/ext4 均可；本地 /data/cubelet 15G 空间）
-  - 上报控制面地址
-  - 资源池配置（VM 配额/CPU 份额）
-- **cube-proxy / cube-lifecycle-manager / cube-egress**：容器，跟随 cubelet 宿主。
-
-### 4.3 平台自检（部署完必做）
+部署完自检：
 
 ```bash
-# ① 平台 CLI 能看到宿主在册：
-cubemastercli list
-# ② API 层建沙箱（E2B SDK 兼容层，本地 3000，必填字段 templateID）：
-#    curl -X POST http://127.0.0.1:3000/sandboxes \
-#      -H "Content-Type: application/json" -d '{"templateID": "tpl-xxx"}'
-# ③ 模板 READY（见下节）
+cubemastercli list            # 能看到宿主在册
+curl -s http://127.0.0.1:3000/sandboxes \
+  -H "Content-Type: application/json" -d '{"templateID":"tpl-xxx"}'   # API 层能建沙箱
 ```
 
 ---
 
-## 5. 模板构建（镜像 → 可调度模板）
+## 6. 沙箱镜像制作（完整流程，一条条照抄）
 
-本地实测流程（产物见 `cubemastercli template list` 的 READY 状态）：
+pi-py 的沙箱需要"能跑 pandas / openpyxl / python-docx / pypdf / 7z / poppler"的
+环境。本仓库 `deploy/sandbox/Dockerfile` 已经是成品，按下面 6 步走即可。
 
-1. **写镜像**：基于公开 python 镜像，装 pip/curl 等 agent 常用工具；
-   多档变体（128M / 256M / 1core / denyall / nonet）由同一镜像的不同
-   **模板资源配置**产生，不用重复做镜像。
-2. **推到本地 registry**：`docker tag cube-lite-py:1.0 127.0.0.1:5000/cube-lite-py:1.0 && docker push`。
-3. **发起构建**：CubeMaster 将"镜像 → 模板"任务转发给 TemplateCenter，
-   完成后 `cubemastercli template list` 可见 READY 模板 id（如
-   `tpl-d71ab23c3f18467ca80fb490`），IMAGE_INFO 为 registry 镜像 sha。
-4. **网络变体**：模板级 `denyall`/`nonet` 在**沙箱内**仍可被网络请求绕过
-   （实测模板级关闭无效）—— 真正的出网控制必须做在宿主层（cube-egress
-   网关白名单），设计时按"模板管配额、宿主管网络"分层。
+### 6.1 构建素材（已在仓库，不用你找）
 
-### 5.1 pi-sandbox（企业场景 A+B 镜像）落地记录
+`deploy/sandbox/` 下有 4 个文件：
 
-`deploy/sandbox/Dockerfile` 已产出 `pi-sandbox:1.0` → 模板
-`tpl-2492096525f04f0aac655acb`（alias `pi-sandbox-ab`，cpu=1000m/mem=256Mi/
-writable-layer 1Gi）。构建踩坑（每条都是实测血泪）：
+| 文件 | 作用 |
+|---|---|
+| `Dockerfile` | 镜像定义（alpine:3.20 + python3 + A/B 库 + envd 骨架） |
+| `envd` | CubeSandbox 平台探针二进制（v0.5.13，~10MB，静态 x86-64） |
+| `cube-entrypoint.sh` | ENTRYPOINT：拉起 envd 常驻 |
+| `verify.sh` | 构建即自检（命令 + 11 个 Python 库 + zip/tar/PDF 往返） |
 
-1. **沙箱镜像契约缺一不可**：CubeMaster 容器需要 `/usr/bin/envd`（探针守护，
-   版本 0.5.13，静态 Go 二进制）+ `cube-entrypoint.sh` 作 ENTRYPOINT（后台拉起
-   envd 常驻，:49983/health 探活）。缺 envd → `Exec mount failed`；ENTRYPOINT
-   是 `CMD ["python3"]` → 容器主进程读完 stdin 即退 → `mount namespace` 失败。
-2. **base 必须用 `alpine:3.20`，不能是官方 `python:3.12-alpine3.20`**：后者
-   实测 `reset guest time failed: BrokenPipe`。改用 `alpine:3.20` + apk
-   `python3 py3-pip`（3.12.13）即正常 —— CubeSandbox guest 对 base 敏感。
-3. **GNU 全集工具必装**（coreutils/findutils/grep/sed/gawk）：busybox 阉割版
-   撑不起模型生成的 `grep -P` / `find -exec` / `sed -i`（cube-lite-py 已踩）。
-4. **构建源用腾讯云内网 mirror**（apk `mirrors.tencentyun.com/alpine` + pip
-   `mirrors.tencentyun.com/pypi/simple`），否则 Dockerfile 内直连官方源极慢。
-5. **find 首启超时**：A+B 镜像 ~400MB → ext4 rootfs 大，模板 READY 后第一个
-   沙箱冷启动可能 502（openresty 探活超时）；后续实例化（rootfs 已缓存）稳定。
-   `create-from-image` 完成即 READY，但首个沙箱建议预热后再生任务。
+> `envd`/`cube-entrypoint.sh` 来自 CubeSandbox 平台分发（或从平台任一可用镜像里
+> `docker run --rm --entrypoint cat <img> /usr/bin/envd` 提取）。**换平台版本时，
+> 这两个文件要换成对应版本的**，否则与 CubeMaster 行为不符。
+
+### 6.2 构建（国内必须走腾讯云 mirror，否则直连官方源极慢）
+
+```bash
+cd /path/to/pi-py
+docker build -t pi-sandbox:1.0 -f deploy/sandbox/Dockerfile .
+# 构建过程会打印 "== 自检全部通过 =="，任何库/命令缺失都会 fail —— 这是有意的
+```
+
+### 6.3 推 registry
+
+```bash
+docker tag  pi-sandbox:1.0 127.0.0.1:5000/pi-sandbox:1.0
+docker push 127.0.0.1:5000/pi-sandbox:1.0
+```
+
+### 6.4 建模板（镜像 → 可调度模板）
+
+```bash
+cubemastercli template create-from-image \
+  --image 127.0.0.1:5000/pi-sandbox:1.0 \
+  --alias pi-sandbox-ab \
+  --cpu 1000 --memory 256 \
+  --writable-layer-size 1Gi
+# 完成后 template list 出现 READY 的 tpl-xxx，记下这个 id → 填 PI_SANDBOX_TEMPLATE
+```
+
+> `--cpu 1000`=1 核、`--memory 256`=256MiB、`--writable-layer-size 1Gi`=沙箱可写层
+> （workspace 所在）1GB。这三个是"模板管配额"，**不吃内存的任务保持 256Mi 即可，
+> 大文件/重型任务才加到 512Mi~1Gi**（见 §9）。
+
+### 6.5 预热首个沙箱（大镜像必做）
+
+A+B 镜像解包成 ext4 后约 400MB+，**模板 READY 后第一个沙箱冷启动可能 502**
+（openresty 探活超时），后续实例化（rootfs 已缓存）稳定。上线前先预热一次：
+
+```bash
+# 用 SDK 或 API 建一个沙箱跑 sleep 再销毁，把 rootfs 在节点上热起来
+```
+
+### 6.6 镜像契约（写 Dockerfile 的人必读，缺一条容器就起不来）
+
+1. **`/usr/bin/envd` 缺一不可**：ENTRYPOINT 里要 `envd -port 49983` 后台常驻，
+   CubeMaster 靠 `:49983/health` 探活。缺 envd → `Exec mount failed`。
+2. **ENTRYPOINT 必须是 `cube-entrypoint.sh`，`CMD []`**：若 `CMD ["python3"]`，
+   主进程读完 stdin 即退 → `mount namespace` 失败。
+3. **base 用 `alpine:3.20`，别用官方 `python:3.12-alpine`**：后者实测
+   `reset guest time failed: BrokenPipe`（CubeSandbox guest 对 base 敏感）。
+   做法：`FROM alpine:3.20` + `apk add python3 py3-pip`（PEP 668 需 pip.conf 加
+   `break-system-packages=true`）。
+4. **GNU 全集工具必装**（coreutils/findutils/grep/sed/gawk）：busybox 阉割版
+   撑不起模型生成的 `grep -P` / `find -exec` / `sed -i`。
+5. **构建源 mirror**：apk `mirrors.tencentyun.com/alpine` + pip
+   `mirrors.tencentyun.com/pypi/simple`（换云厂商改对应 mirror）。
 
 ---
 
-## 6. pi-py 服务部署（systemd 常驻）
+## 7. pi-py 服务部署 + 完整环境变量表
 
 ```bash
-# ① Python 3.12 venv（不用系统 python，避免污染）
 sudo python3.12 -m venv /opt/pi-venv
-sudo -E /opt/pi-venv/bin/pip install -e /path/to/pi-py
+sudo -E /opt/pi-venv/bin/pip install -e /path/to/pi-py[production]   # production 含 boto3
+```
 
-# ② 环境变量（模板，按需改；★ 为必改安全项）
-cat > /etc/pi.env <<'EOF'
-PI_DB_DSN=mysql+pymysql://root:CHANGE_ME@127.0.0.1:3306/pi_py
-PI_REDIS_URL=redis://:CHANGE_ME@127.0.0.1:6379/15
-PI_MILVUS_URI=http://127.0.0.1:19530          # 可选；不配则记忆降级
-PI_EMBEDDING_MODEL=text-embedding-3-small      # 可选；配 Milvus 时必填
-PI_MODEL=openai/qwen3-32b                      # 你的模型路由
-PI_SANDBOX=cubesandbox                          # 沙箱路由：cubesandbox / docker / local
-PI_SANDBOX_TEMPLATE=tpl-xxx                    # 模板 id（§5 构建产物）
-PI_SANDBOX_NET=host                            # ★ 沙箱出网开关（dev 版显式化）：默认关=断网
-                                               #   最安全；web 抓取类任务才设 host 开外网
-PI_CUBE_API_URL=http://127.0.0.1:3000          # E2B 兼容层
-PI_CUBE_API_KEY=e2b_000000                     # 本环境固定值；生产换强随机
-PI_CUBE_DOMAIN=cube.app                        # 沙箱数据面域名后缀
-PI_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates-meye.crt  # ★ 平台 CA（自签则合并）
-PI_POLICY=/etc/pi/policy.yaml                  # 命令/文件策略（安全分层之一）
-PI_ARCHIVE=1                                   # 工作区归档默认开
-PI_ARCHIVE_S3_ENDPOINT=http://127.0.0.1:9000   # 可选：MinIO 归档
-PI_ARCHIVE_S3_BUCKET=pi-archives
-PI_ARCHIVE_S3_ACCESS_KEY=minioadmin
-PI_ARCHIVE_S3_SECRET_KEY=CHANGE_ME
-PI_METRICS_TOKEN=CHANGE_ME                     # /metrics 拉取 token
-EOF
+下面这张表是**全部环境变量**（含默认值），★=上线必改。写进 `/etc/pi.env`，
+systemd `EnvironmentFile` 引用。
 
-# ③ systemd 单元 /etc/systemd/system/pi.service
+### 7.1 核心（★ 必改）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PI_DATABASE_URL` | 无（不设直接起不来） | `mysql+aiomysql://USER:PASS@127.0.0.1:3306/pi_py` ★ |
+| `PI_JWT_SECRET` | 空=自动生成并落盘 | 生产显式设强随机 ★ |
+| `PI_MODEL` | `openai/gpt-4o` | 你的模型路由（如 `openai/qwen3.8-flash`）★ |
+| `OPENAI_BASE_URL` | — | 模型网关 base_url ★ |
+| `OPENAI_API_KEY` | — | 模型网关 key ★ |
+| `PI_SANDBOX` | 空(本地模式) | `cubesandbox`（本手册场景） |
+| `PI_SANDBOX_TEMPLATE` | 空 | §6 建出的 `tpl-xxx` ★ |
+| `PI_CUBE_API_URL` | `http://127.0.0.1:3000` | CubeAPI 地址 |
+| `PI_CUBE_API_KEY` | `e2b_000000` | 换强随机 ★ |
+| `PI_CUBE_DOMAIN` | `cube.app` | 沙箱数据面域名后缀 |
+| `SSL_CERT_FILE` | — | 平台自签 CA + 系统 CA 合并文件（**是 `SSL_CERT_FILE`，httpx 标准变量**）★ |
+
+### 7.2 沙箱池（会话级复用，内存压力自适应）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PI_SANDBOX_POOL_SIZE` | `4` | 池上限（VM 数）。**大内存服务器按 §9 放大** |
+| `PI_SANDBOX_POOL_TTL` | `900` | 空闲回收秒数（内存宽裕时） |
+| `PI_SANDBOX_POOL_TTL_TIGHT` | `300` | 内存紧张时的回收秒数 |
+| `PI_SANDBOX_POOL_PRESSURE_HIGH` | `1572864000`(1.5G) | 可用内存低于此 → 进入紧张档 |
+| `PI_SANDBOX_POOL_PRESSURE_LOW` | `536870912`(512M) | 高于此 → 回到宽裕档 |
+| `PI_SANDBOX_NET` | 空=断网 | `host`=开外网（web 抓取类任务才开；出网白名单在宿主 egress） |
+| `PI_MAX_CONCURRENT_RUNS` | `8` | 服务端并发上限，必须 ≤ 平台能同时养的 VM 数 |
+| `PI_RUN_TIMEOUT_SECONDS` | `600` | 单回合超时 |
+
+### 7.3 文件管线（对象存储，P0-P2 的核心）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PI_S3_ENDPOINT` | 空 | 如 `http://10.0.0.8:19000`。**取值原则见 §8.3** ★ |
+| `PI_S3_ACCESS_KEY` / `PI_S3_SECRET_KEY` | 空 | MinIO 凭据 ★ |
+| `PI_S3_BUCKET_FILES` | `pi-files` | 上传 bucket（需预先建好） |
+| `PI_S3_BUCKET_ARTIFACTS` | `pi-artifacts` | 产物 bucket（预留） |
+| `PI_S3_REGION` | `us-east-1` | 任填（MinIO 忽略） |
+| `PI_MAX_UPLOAD_BYTES` | `943718400`(900M) | 上传大小上限；>900M 后续流式 |
+
+### 7.4 其余（多数保留默认）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `PI_REDIS_URL` | 空 | `redis://:PASS@127.0.0.1:6379/15`（不配则退内存缓存） |
+| `PI_WORKSPACE_ROOT` | `<base>/workspaces` | 会话 workspace 宿主目录 |
+| `PI_TRACER` | `jsonl` | 追踪落盘方式 |
+| `PI_METRICS_TOKEN` | 空 | `/metrics` 拉取 token ★ |
+| `PI_POLICY` | 空 | 命令/文件策略 yaml |
+| `PI_TOKEN_TTL_MIN` | `720` | JWT 有效期 |
+| `PI_MILVUS_URI` / `PI_EMBEDDING_MODEL` | 空 | 记忆层（可选） |
+| `PI_SKILLS_DIR` / `PI_MCP_SERVERS` | 空 | 技能/MCP |
+
+### 7.5 systemd 单元
+
+```ini
 [Unit]
 Description=pi-py agent service
-After=network.target docker.service
+After=network.target
 
 [Service]
 EnvironmentFile=/etc/pi.env
 ExecStart=/opt/pi-venv/bin/python -m pi.cli serve --host 127.0.0.1 --port 8300
 Restart=always
-# ★ 8300 只绑本机 —— 前面必须再放一层反向代理 + 认证
 
 [Install]
 WantedBy=multi-user.target
-
-sudo systemctl daemon-reload && sudo systemctl enable --now pi
 ```
 
-**安全要点**（本地事故的教训）：
-- `8300` 有 **开放注册**（`/v1/auth/register` 无鉴权）→ 只绑 127.0.0.1，
-  公网入口一律走反代（Caddy 等）并自行加认证层。
-- `PI_CUBE_API_KEY` 换强随机（e2b_000000 是占位）。
-- CA 合并文件是"平台自签 CA + 系统 CA"拼接产物 —— 云端用平台正式 CA 即可。
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now pi
+sudo journalctl -u pi -f    # 看启动日志，确认没有 PI_DATABASE_URL 报错
+```
+
+**安全三连**：①`8300` 有开放注册（`/v1/auth/register` 无鉴权）→ 只绑 127.0.0.1，
+公网入口走反代 + 认证；②`PI_CUBE_API_KEY`/`PI_JWT_SECRET`/所有密码换强随机；
+③`/metrics` 只会对持有 `PI_METRICS_TOKEN` 的请求放行。
 
 ---
 
-## 7. 配额与并发调参（实测值，直接用）
+## 8. 沙箱 VM 网络隔离（这是最容易踩的认知坑）
 
-| 参数 | 本地实测 | 8 核 64GB 建议 | 说明 |
+**结论：CubeSandbox 沙箱 VM 只能"NAT 单向出公网"，访问不到宿主的任何内网服务。**
+
+实测：在开网的沙箱内 `curl` 宿主的 eth0(10.0.0.8)/docker0(172.17.0.1)/cube 网关
+(169.254.68.5) 的 MinIO 端口，**全部 000 不可达**；而访问公网（网页）是通的。
+也就是说：VM 内的 `127.0.0.1` 是 VM 自己，宿主的 MinIO/MySQL/pi-py 它都够不着。
+
+### 8.1 它对文件管线的直接影响
+
+"沙箱 curl 直拉 MinIO 预签名 URL"这条主流做法，在这个平台隔离下**物理不通**。
+因此 pi-py 的 `fetch_file`（拉文件进沙箱）用的是**服务器内存中转（方案 B）**：
+
+```
+MinIO 对象 ──服务器 get_bytes──▶ 服务器内存 ──SandboxFS.write──▶ VM 的 /workspace
+```
+
+文件真身始终在 MinIO、**服务器磁盘零占用**（只内存过一遍）；上传/下载两端仍是
+预签名直连。当前中转上限 256MB（防 OOM 宿主），大文件流式记档待做。若你将来给
+MinIO 一个公网地址，可无缝切回 VM 真直连。
+
+### 8.2 出网控制（只影响"联网抓取"类任务）
+
+沙箱默认断网。`PI_SANDBOX_NET=host` 才开外网；**模板级的 denyall/nonet 在沙箱内
+仍可被绕过**（实测），真正的白名单必须做在宿主 cube-egress 层 —— 记住
+"模板管配额、宿主管网络"。
+
+### 8.3 `PI_S3_ENDPOINT` 怎么填（别人部署问得最多）
+
+这个值同时干两件事，所以必须让**两方都可达**：
+
+1. **服务器**用 boto3 连它去签发/读对象（fetch_file 中转、head 验证）→ 服务器可达；
+2. **客户端**（浏览器预签名直传、`curl` 下载）要拿着它生成的 URL 去 MinIO →
+   **客户端可达**。
+
+因此 `127.0.0.1` 只在"客户端就是服务器同一台机"时成立；生产上客户端是别的机器，
+必须填**内网 IP 或经反代的公网域名**。作者测试机填的 `http://10.0.0.8:19000`
+（eth0 内网 IP），生产建议换成内网 DNS 名或公网反代。
+
+---
+
+## 9. 迁往大内存服务器的适配（只动这几个数）
+
+部署方式与 3.6G 小机**完全相同**，按新内存放大下面几个值即可：
+
+| 参数 | 3.6G 本机值 | 8C/64G 建议 | 16C/128G 建议 | 依据 |
+|---|---|---|---|---|
+| `PI_SANDBOX_POOL_SIZE` | 4 | 8-12 | 12-24 | 池 = 常驻 VM 数；每 VM ≈ 256M×1.2 |
+| `PI_SANDBOX_POOL_PRESSURE_HIGH` | 1.5G | 16G | 32G | 可用内存低于此进"紧张档"（回收加速） |
+| `PI_SANDBOX_POOL_PRESSURE_LOW` | 512M | 8G | 16G | 回到"宽裕档"阈值 |
+| `PI_MAX_CONCURRENT_RUNS` | 8 | 16 | 32 | 受 **CPU** 限制而非内存（4 核→8 核→16 核） |
+| `--writable-layer-size`（模板） | 1Gi | 2Gi | 4Gi | 沙箱 workspace 磁盘；处理大文件时加大 |
+| 沙箱模板 `--memory` | 256Mi | 256/512Mi | 512Mi/1Gi | Python agent 任务 256Mi 够；重型任务才加 |
+| `PI_MAX_UPLOAD_BYTES` | 900M | 900M 不变 | 900M 不变 | 上限由"流式未实现"决定，与内存无关 |
+| fetch_file 中转上限 | 256M（代码常量） | 可放宽到 512M+ | 可放宽 | `pi/tools/files.py::_MAX_FETCH_BYTES` |
+
+**核心理由再强调**：沙箱并发上限由 **CPU 核数**决定（每沙箱 1 核 vCPU），内存只是
+容纳"常驻服务 + 池 + 峰值 VM"的容器。所以升级顺序是：**先升核数撑并发，内存跟着
+放大池/压力阈值即可，别提前把所有数字都拉满。**
+
+---
+
+## 10. 配额与并发调参（实测值）
+
+| 参数 | 本机实测 | 建议 | 说明 |
 |---|---|---|---|
-| `PI_MAX_CONCURRENT_RUNS` | 8 | 8-16 | 服务端并发上限；**必须 ≤ 平台能同时养的 VM 数** |
-| 沙箱模板配额 | 128M/256M/1核 | 256M-1G/1核 | 256M 跑 Python agent 任务实测 OK；吃内存任务用 1G |
-| 平台并发安全值 | 6-8（1核机器）| 12-24 | 受 CPU 限制而非内存；用 `pi_sandbox_create_duration` 观察创建延迟 |
-| 命令超时 | 120s 默认/600s 上限 | 不变 | 沙箱内 GNU timeout 包装，超时零残留 |
-| turn 总超时 | 600s（PI_RUN_TIMEOUT_SECONDS）| 不变 | |
-| close 总超时 | 90s（PI_SANDBOX_CLOSE_TIMEOUT_SECONDS）| 不变 | 超时后清理线程继续收尾，VM 必死 |
-| 平台 VM 空闲回收 | 600s | 不变 | 最后一道防泄漏防线 |
+| 沙箱模板配额 | 256M/1核 | 256M-1G/1核 | 256M 跑 Python agent 任务 OK |
+| 平台并发安全值 | 6-8（4核） | 核数 × 1.5-2 | 看 `pi_sandbox_create_duration` 是否恶化 |
+| 命令超时 | 120s 默认/600s 上限 | 不变 | 沙箱内 GNU timeout 包装，退出码 124 |
+| close 总超时 | 90s | 不变 | 超时后清理线程继续收尾，VM 必死 |
+| 平台 VM 空闲回收 | 600s | 不变 | 最后防泄漏防线 |
 
-**错误码速记**：平台返回 `error code 130597: no more resource` =
-平台配额耗尽 —— 先 `cubemastercli list`（或 API `GET /sandboxes`）看堆积 VM，
-kill 泄漏源再继续；不要盲目重试。
+**错误码速记**：平台返回 `error code 130597: no more resource` = 平台配额耗尽 →
+先 `cubemastercli list` 看堆积 VM，kill 泄漏源，别盲目重试。
 
 ---
 
-## 8. 生产化清单（部署完逐项打勾）
+## 11. 生产化清单（部署完逐项打勾）
 
-- [ ] `ls /dev/kvm` → 在用（嵌套虚拟化开启）—— 没有它沙箱全挂
+- [ ] `ls /dev/kvm` 在（嵌套虚拟化开）—— 没有它沙箱全挂
 - [ ] 8300 只绑本机；公网仅 80/443 反代；`/metrics` 带 token
-- [ ] pi-py 登录/注册走强密码策略；`PASSWORD` 全部换强随机
-- [ ] `/metrics` 拉取验证：`pi_sandbox_create_failures_total` 等 4 系列在（沙箱健康）
-- [ ] 工作区归档目录可写；配置 MinIO 后归档 json 的 `s3` 字段非 null
-- [ ] 平台模板 READY；API 建沙箱 + 销毁闭环（防泄漏防火墙）
-- [ ] 监控：Prometheus 抓 pi-py `/metrics` + 平台指标；告警盯
-      `sandbox_create_failures` / `sandbox_close_failures` / `trace_failures`
-- [ ] 备份：MySQL 每日 dump；归档 tar 同步到异机/对象存储
-- [ ] 出网控制：宿主层 egress 白名单（模板级无效，见 §5.4）
-- [ ] 换机后可复现：本手册 + `docs/cube-sandbox-design-notes.md` + pi-py 源码
-      三件套在手，任何一台 Ubuntu 24.04 + KVM 的机器 30 分钟内还原
+- [ ] 所有 `CHANGE_ME` / `e2b_000000` 换成强随机
+- [ ] `PI_S3_ENDPOINT` 用客户端可达地址（§8.3）；MinIO 已建 `pi-files`/`pi-artifacts`
+- [ ] 模板 READY 且做了首次预热（§6.5）
+- [ ] `pi_py` 库自动迁移成功（`journalctl -u pi` 里无 migration 报错）
+- [ ] 端到端冒烟：建会话 → 上传文件 → 让 agent `list_files`+`fetch_file` 处理 → 结果正确
+- [ ] `/metrics` 四个沙箱系列在（create/close/health/trace failures）
+- [ ] 归档目录可写；配 MinIO 后归档 json 的 `s3` 字段 non-null
+- [ ] 备份：MySQL 每日 dump；归档同步异机/对象存储
 
 ---
 
-## 9. 避坑清单（本地全部踩过 → 云端规避）
+## 12. 避坑清单（全部实测踩过）
 
 | 坑 | 现象 | 规避 |
 |---|---|---|
 | 无 /dev/kvm | 建沙箱报 virtualization 错误 | 买前确认嵌套虚拟化，`kvm-ok` 先测 |
-| VM 泄漏 | 跑几次任务后 `no more resource` 500 | 服务端 finally close + close 超时 + 平台回收 三重防线（已内置）|
-| close kill 静默失败 | VM 悄悄堆积 | kill 失败打 warning + `pi_sandbox_close_failures_total` 告警 |
-| 平台 CLI 视图陈旧 | `cubemastercli list` 显示已删 VM | 排查以 API（3000）/服务日志为准 |
-| 模板级断网无效 | denyall 模板仍能出网 | 出网控制做宿主 egress 层 |
-| 工作区 >10MB | 装载报 413 HTML | 已内置 10MB 上限 + 清晰报错；或清理工作区大文件 |
-| 命令超时语义乱 | timed_out 恒 False | 已内置沙箱内 GNU timeout 包装（退出码 124）|
-| 后台进程不重定向 | 命令挂到连接 deadline | 提示模型 `cmd >/dev/null 2>&1 &` 写法 |
+| MinIO 端口撞平台(9000) | pi-minio 或平台 minio 起不来 | 文件管线 MinIO 用 19000 系（§2/§4.3） |
+| PI_S3_ENDPOINT 用 127.0.0.1 | 客户端直传时 URL 指向自己 → 403/连不上 | 用客户端可达地址（§8.3） |
+| boto3 签名 403(SigV2) | 预签名 PUT 时 `SignatureDoesNotMatch` | storage 里强制 `Config(signature_version="s3v4")`（已内置） |
+| 沙箱镜像缺 envd/entrypoint | `Exec mount failed` / `mount namespace` | §6.6 三条契约 |
+| base 用官方 python 镜像 | `reset guest time BrokenPipe` | `FROM alpine:3.20`（§6.6） |
+| 大镜像首个沙箱 502 | 模板 READY 后首启超时 | §6.5 预热 |
+| VM 泄漏 | 跑几次后 `no more resource` | finally close + close 超时 + 平台回收（已内置） |
+| 模板级断网无效 | denyall 模板仍出网 | 出网控制在宿主 egress（§8.2） |
 | 8300 暴露公网 | 任何人可注册 | 只绑本机 + 反代认证 |
-| static 并发开太大 | 排队任务全撞配额 | `PI_MAX_CONCURRENT_RUNS` ≤ 平台 VM 上限 |
-| Milvus 端口撞 MinIO | 19530/2379/9000 冲突 | 部署时核对端口，MinIO 9000 尤其容易撞 |
+| `PI_MAX_CONCURRENT_RUNS` 开太大 | 排队任务全撞配额 | ≤ 平台 VM 上限 |
+| Galera/Milvus/MySQL 端口冲突 | 各服务起不来 | 部署前过一遍 §2 端口表 |
+| 连接串写 `mysql+pymysql`（同步） | 异步栈性能/兼容问题 | 用 `mysql+aiomysql://` |
 
 ---
 
-## 10. 从本机迁移到云（动作清单）
+## 13. 从本机迁移到大内存服务器（动作清单）
 
-1. 云机装 Ubuntu 24.04 → 开嵌套虚拟化 → `kvm-ok` 过。
-2. Docker + 镜像加速 → 部署 §3 中间件（MySQL/Redis/MinIO/Milvus）。
-3. 部署 CubeSandbox 平台（§4）→ 推模板镜像 → 构建模板（§5）→ READY。
-4. 拷 pi-py 源码 → venv 安装 → 写 `/etc/pi.env`（§6）→ systemd 起服务。
-5. 跑 §8 清单逐项打勾（尤其 /metrics 4 个沙箱系列、归档闭环、备份）。
-6. 回归：跑一遍企业 eval（5 任务）确认端到端；故障注入探针 /tmp/prod_probe.py
-   确认超时/假死/413 三个故障路径行为与本地一致。
-7. 旧机收尾：保留 30 天归档与审计日志后下线。
+1. 新机装 Ubuntu 24.04 → 开嵌套虚拟化 → `kvm-ok` 过。
+2. Docker + 镜像加速 → 部署 §4 中间件（MySQL/Redis/MinIO **19000**/可选 Milvus）。
+3. 部署 CubeSandbox 平台（§5）→ 推模板镜像（§6.1-6.3）→ 建模板（§6.4）→ 预热（§6.5）。
+4. 拷 pi-py 源码 → venv 装 `[production]` → 写 `/etc/pi.env`（§7 全表，按 §9 调资源数字）→ systemd 起服务。
+5. 按 §11 清单逐项打勾；重点跑一次 §11 的"端到端冒烟"（上传→进沙箱→处理）。
+6. 旧机收尾：保留 30 天归档与审计日志后下线。

@@ -20,12 +20,7 @@
     "env, printenv, set, /proc/self/environ and any interpreter one-liner all read the same",
     "environment. Only running bash in a container closes that."
   ],
-
-  "deny_tools": [
-    "web_fetch",
-    "web_search"
-  ],
-
+  "deny_tools": [],
   "deny_command_patterns": [
     ":\\(\\)\\s*\\{",
     "\\bdd\\b[^|;&]*\\bof=/dev/",
@@ -43,7 +38,6 @@
     "/root/\\.ssh",
     "(?:^|[;&|(]\\s*)mount\\s+-o\\b"
   ],
-
   "path_sandbox": true,
   "redact": true
 }

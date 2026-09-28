@@ -217,6 +217,8 @@ PI_EMBEDDING_MODEL=text-embedding-3-small      # 可选；配 Milvus 时必填
 PI_MODEL=openai/qwen3-32b                      # 你的模型路由
 PI_SANDBOX=cubesandbox                          # 沙箱路由：cubesandbox / docker / local
 PI_SANDBOX_TEMPLATE=tpl-xxx                    # 模板 id（§5 构建产物）
+PI_SANDBOX_NET=host                            # ★ 沙箱出网开关（dev 版显式化）：默认关=断网
+                                               #   最安全；web 抓取类任务才设 host 开外网
 PI_CUBE_API_URL=http://127.0.0.1:3000          # E2B 兼容层
 PI_CUBE_API_KEY=e2b_000000                     # 本环境固定值；生产换强随机
 PI_CUBE_DOMAIN=cube.app                        # 沙箱数据面域名后缀

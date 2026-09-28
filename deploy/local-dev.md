@@ -12,7 +12,7 @@
 | 向量库 | 云端 Milvus | Docker `milvusdb/milvus:v2.5.4` standalone（embedded 模式），`127.0.0.1:19531` |
 | 模型 | `openai/qwen3.8-flash`（阿里云 MaaS，本地默认；生产可在 .env 里另配） | **同一云模型**（本地无 GPU，只把 endpoint/key 指过去） |
 | embedding | 云 embedding（qwen3.7-text-embedding） | **同一云 embedding**（向量写入本地 Milvus，不进生产） |
-| 沙箱 | Docker（`PI_SANDBOX=docker`） | 同左，本机 Docker |
+| 沙箱 | CubeSandbox microVM（`PI_SANDBOX=cubesandbox`，见 `docs/production-deployment.md`）；Docker 亦可 | 本机 Docker（`PI_SANDBOX=docker`） |
 | 配置文件 | `.env`（生产，gitignored） | `deploy/env.local.example` → 复制为 `.env.local` |
 | 基础设施编排 | `docker-compose.cloud.yml`（app+caddy，DB/Redis 外部） | `docker-compose.local.yml`（mysql+redis+milvus，app 跑宿主机） |
 | 数据文件 | 服务器磁盘（`/root/...`） | 本机：`workspaces/`、`audit.jsonl`、`trajectories.jsonl` 都在项目目录下 |

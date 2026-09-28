@@ -543,6 +543,8 @@ systemd `EnvironmentFile` 引用。
 | `PI_DATABASE_URL` | 无（不设直接起不来） | `mysql+aiomysql://USER:PASS@127.0.0.1:3306/pi_py` ★ |
 | `PI_JWT_SECRET` | 空=自动生成并落盘 | 生产显式设强随机 ★ |
 | `PI_MODEL` | `openai/gpt-4o` | 你的模型路由（如 `openai/qwen3.8-flash`）★ |
+| `PI_MODEL_LIST` | 空=仅默认 | 前端模型选择器可选项，逗号分隔（如 `openai/qwen3.8-flash,openai/deepseek-v4-pro`）；只决定下拉清单，不改默认 |
+| `PI_RUN_TIMEOUT_SECONDS` | `600` | 单次 run 超时（秒）；写游戏/搭项目等大任务建议 `1800` |
 | `OPENAI_BASE_URL` | — | 模型网关 base_url ★ |
 | `OPENAI_API_KEY` | — | 模型网关 key ★ |
 | `PI_SANDBOX` | 空(本地模式) | `cubesandbox`（本手册场景） |

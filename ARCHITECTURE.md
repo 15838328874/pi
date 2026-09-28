@@ -929,6 +929,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_SANDBOX_POOL_SIZE` | 4 | 常驻 VM 池上限，超出 LRU 淘汰 |
 | `PI_SANDBOX_POOL_TTL` / `PI_SANDBOX_POOL_TTL_TIGHT` | 900 / 300 | 空闲 VM 回收阈值（内存宽裕 / 紧张两档） |
 | `PI_SANDBOX_POOL_PRESSURE_HIGH` / `_LOW` | 1.5GiB / 512MiB | 宿主可用内存双阈值，低于则收紧/激进回收 |
+| `PI_ALLOW_REGISTER` | 1 | 开放注册开关；0 = 注册接口 403、前端隐藏注册 tab（公网演示用） |
 | `PI_ARCHIVE` | 1 | 会话归档开关（0=关）；`PI_ARCHIVE_DIR`（默认 ~/.pi-py/archives）、`PI_ARCHIVE_S3_*`（MinIO 惰性上传） |
 | `PI_S3_ENDPOINT` / `PI_S3_ACCESS_KEY` / `PI_S3_SECRET_KEY` / `PI_S3_BUCKET_FILES` / `PI_S3_BUCKET_ARTIFACTS` | 空=关 | MinIO/S3 文件管线（预签名直连、sha256 用户级去重、files 表索引） |
 

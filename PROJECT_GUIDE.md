@@ -363,7 +363,7 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | 评估 | 任务集 + 4 种判分（file/command/tests/judge） | `evals/` | P4 |
 | 评估 | A/B 对比 + 报告 | `evals/report.py` | 量化"好不好" |
 | 飞轮 | rollout → reward → filter → SFT/RLVR JSONL | `evals/rollout.py` 等 | 数据生产者 |
-| 前端 | 用户聊天页（气泡/流式/工具折叠/用量面板） | `server/static/app.html` | 零构建 |
+| 前端 | 用户聊天页（气泡/流式/工具折叠/用量面板/markdown 渲染/模型选择器/思考过程折叠/文件上传面板） | `server/static/app.html` | 零构建 |
 | 前端 | 轨迹视图（时序图三模式/车道/联动） | `server/static/trajectory.html` | 面试演示 |
 | 前端 | 管理控制台（概览/用户/审计） | `server/static/admin.html` | 零构建 |
 | 部署 | 本地/生产双 compose + 文档 | `deploy/` | 环境严格区分 |
@@ -901,6 +901,7 @@ migrations/        Alembic 迁移（0001~0007）
 | `PI_SANDBOX_CLOSE_TIMEOUT_SECONDS` | 沙箱 close/save 总超时 | 默认 90s，超时 turn 先走、清理线程收尾 |
 | `PI_ARCHIVE` / `PI_ARCHIVE_DIR` / `PI_ARCHIVE_S3_*` | 会话归档开关/目录/MinIO 上传 | 默认开启，落 `~/.pi-py/archives` |
 | `PI_S3_ENDPOINT` / `PI_S3_ACCESS_KEY` / `PI_S3_SECRET_KEY` / `PI_S3_BUCKET_FILES` / `PI_S3_BUCKET_ARTIFACTS` | MinIO/S3 文件管线（预签名直连） | 未配置 = 文件管线关闭 |
+| `PI_ALLOW_REGISTER` | 开放注册开关 | 0 = 注册 403 + 前端藏注册 tab |
 
 ## 附录E 轨迹 JSON 样例（真实落盘的一行）
 

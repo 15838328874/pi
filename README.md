@@ -212,10 +212,12 @@ API (see `/docs` for OpenAPI): `POST /v1/auth/register|login|logout`, `GET /v1/m
 `GET /v1/trajectory/{run_id}` (replay one run) and `GET /v1/admin/trajectory/{run_id}`
 (admin cross-user replay),
 `POST /v1/sessions/{id}/runs` (SSE), `GET /v1/usage`, `GET /v1/admin/users`,
-`PATCH /v1/admin/users/{u}`, `POST /v1/admin/users/{u}/revoke`, `GET /v1/admin/audit`
+`PATCH /v1/admin/users/{u}`, `POST /v1/admin/users/{u}/revoke` (open registration off via `PI_ALLOW_REGISTER=0`), `GET /v1/admin/audit`
 (`?day=YYYY-MM-DD&user=&tool=&event=`, DB-backed with jsonl fallback),
 `GET /v1/admin/stats` (today's aggregates + fleet sizes), `GET /v1/admin/usage` (monthly per-user), `POST/GET/DELETE /v1/files` + `/v1/files/commit` + `/v1/files/{id}/url` (MinIO presigned file pipeline, sha256 user-scoped dedup).
 Official async SDK: `from pi.client import PiClient` (auth/sessions/messages/trajectories/usage + SSE run stream, `trust_env=False`). Zero-build web UI (single-file vanilla JS pages): user app at `GET /ui/app.html`
+(assistant markdown rendering, model picker per session, thinking-process display,
+file upload/download panel, register tab hidable via `PI_ALLOW_REGISTER=0`).
 (login/sessions/chat with full tool-call trace + monthly usage), the trajectory
 viewer at `GET /ui/trajectory.html?session=<id>`, and the admin console at
 `GET /ui/admin.html` (overview/users+quota/audit).

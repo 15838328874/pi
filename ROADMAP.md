@@ -34,7 +34,7 @@
 | **MCP 工具源**（stdio client + fail-soft + 生命周期） | `tools/mcp.py` `tools/registry.py` | 单测（假 MCP server） |
 | **Skills**（SKILL.md 加载 + 索引注入 prompt + use_skill + 脚本走沙箱） | `tools/skill.py` | 单测 |
 | **轨迹落盘 + 轨迹视图**（jsonl 按天滚动 + 查询端点 + 单文件时序图前端） | `server/trajectory_store.py` `/ui/trajectory.html` | 单测 + 真实浏览器 |
-| **Web 前端**（零构建单文件三件套：用户端 / 轨迹视图 / 管理台） | `server/static/*.html` | Playwright 无头浏览器实测 |
+| **Web 前端**（零构建三件套；用户端含 markdown 渲染/模型选择器/思考过程折叠/文件上传面板） | `server/static/*.html` | Playwright 无头浏览器实测 |
 | **管理 API**（用户管理/配额/禁用/强制下线/审计过滤/stats/usage） | `server/app.py` | 单测 + 冒烟 |
 | **沙箱生产化**（CubeSandbox microVM + GNU timeout + 退出码透传 + 10MB 装载上限 + 三层 VM 泄漏防线 + **懒加载/复用池/内存自适应回收生命周期**） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 |
 | **会话闭环归档**（turn 基线快照 + 结束 tar.gz + 差异元数据 + MinIO 惰性接口） | `server/archive.py` | 9 turns 实测 diff 精确 |

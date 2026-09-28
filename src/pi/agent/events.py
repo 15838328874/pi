@@ -13,6 +13,13 @@ class TextDeltaEvent:
 
 
 @dataclass
+class ThinkingEvent:
+    """Streamed reasoning text (<think>…</think>), surfaced separately and not persisted."""
+
+    text: str
+
+
+@dataclass
 class ToolCallStartEvent:
     id: str
     name: str
@@ -46,6 +53,7 @@ class ErrorEvent:
 
 AgentEvent = (
     TextDeltaEvent
+    | ThinkingEvent
     | ToolCallStartEvent
     | ToolCallEndEvent
     | CompactionEvent

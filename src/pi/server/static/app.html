@@ -185,6 +185,11 @@
   .msg .text blockquote { margin: 0.6em 0; padding-left: 12px; border-left: 3px solid var(--border); color: var(--muted); }
   .msg .text a { color: var(--model); }
   .msg .text hr { border: none; border-top: 1px solid var(--border); margin: 0.8em 0; }
+  .think-block { margin: 0 0 6px; border: 1px solid var(--border); border-radius: 8px; background: color-mix(in srgb, var(--tool) 5%, transparent); }
+  .think-block summary { cursor: pointer; padding: 6px 10px; font-size: 12px; color: var(--muted); user-select: none; list-style: none; display: flex; align-items: center; gap: 6px; }
+  .think-block summary::before { content: "▸"; transition: transform .15s; }
+  .think-block[open] summary::before { transform: rotate(90deg); }
+  .think-block .think-content { padding: 8px 12px; font-size: 13px; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; border-top: 1px solid var(--border); line-height: 1.6; }
   .msg.compact { justify-content: center; padding: 6px 16px; }
   .msg.compact .pill {
     color: var(--muted); font-size: 12px; border: 1px dashed var(--border);
@@ -643,6 +648,7 @@ async function sendPrompt() {
 
   let asst = null;             // 当前助手行
   let toolRows = {};           // 流中的工具行
+  let thinkBlock = null;       // 当前回合的思考折叠块
   const addRow = (row) => { live.appendChild(row); scrollBottom(); };
 
   function onText(t) {
@@ -654,6 +660,22 @@ async function sendPrompt() {
     const el = asst.querySelector(".text");
     el.dataset.md = (el.dataset.md || "") + t;
     el.innerHTML = renderMarkdown(el.dataset.md);
+    scrollBottom();
+  }
+  function onThinking(t) {
+    if (!asst) {
+      asst = assistantRow("");
+      asst.classList.add("blink");
+      addRow(asst);
+    }
+    if (!thinkBlock) {
+      thinkBlock = document.createElement("details");
+      thinkBlock.className = "think-block";
+      thinkBlock.innerHTML = `<summary>🧠 思考过程</summary><div class="think-content"></div>`;
+      const bubble = asst.querySelector(".bubble");
+      bubble.insertBefore(thinkBlock, bubble.querySelector(".text"));
+    }
+    thinkBlock.querySelector(".think-content").textContent += t;
     scrollBottom();
   }
   function onToolStart(d) {
@@ -711,6 +733,7 @@ async function sendPrompt() {
         if (!evt) continue;
         const d = data ? JSON.parse(data) : {};
         if (evt === "text_delta") onText(d.text);
+        else if (evt === "thinking_delta") onThinking(d.text);
         else if (evt === "toolcall_start") onToolStart(d);
         else if (evt === "toolcall_end") onToolEnd(d);
         else if (evt === "compaction") {

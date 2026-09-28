@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from pi.llm.base import LLMProvider, StreamEnd, StreamEvent, TextDelta, ToolCallDelta
+from pi.llm.base import LLMProvider, StreamEnd, StreamEvent, TextDelta, ThinkingDelta, ToolCallDelta
 from pi.llm.think_filter import ThinkFilter
 from pi.models import Message, Role, TextBlock, ToolCallBlock, ToolResultBlock, ToolSpec, Usage
 
@@ -106,9 +106,15 @@ class OpenAIProvider(LLMProvider):
             choice = chunk.choices[0]
             delta = choice.delta
             if delta and delta.content:
-                visible = think.feed(delta.content)
+                visible, thinking = think.feed(delta.content)
+                if thinking:
+                    yield ThinkingDelta(thinking)
                 if visible:
                     yield TextDelta(visible)
+            # 推理模型（deepseek/qwen）把思考放在独立的 reasoning_content 字段，
+            # 与 content 分开流式；这里同样透传为 ThinkingDelta。
+            if delta and getattr(delta, "reasoning_content", None):
+                yield ThinkingDelta(delta.reasoning_content)
             if delta and delta.tool_calls:
                 for tc in delta.tool_calls:
                     slot = calls.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
@@ -122,9 +128,11 @@ class OpenAIProvider(LLMProvider):
             if choice.finish_reason:
                 finish = choice.finish_reason
 
-        tail = think.flush()
-        if tail:
-            yield TextDelta(tail)
+        tail_visible, tail_think = think.flush()
+        if tail_think:
+            yield ThinkingDelta(tail_think)
+        if tail_visible:
+            yield TextDelta(tail_visible)
 
         for index in sorted(calls):
             c = calls[index]

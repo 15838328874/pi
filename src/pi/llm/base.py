@@ -21,6 +21,17 @@ class TextDelta:
 
 
 @dataclass
+class ThinkingDelta:
+    """Reasoning text (e.g. <think>…</think>) surfaced separately from the answer.
+
+    Providers emit this before/around TextDelta; the loop streams it to the UI as
+    a collapsible "thinking" pane and does NOT persist it into message history.
+    """
+
+    text: str
+
+
+@dataclass
 class ToolCallDelta:
     id: str
     name: str
@@ -33,7 +44,7 @@ class StreamEnd:
     usage: Usage
 
 
-StreamEvent = TextDelta | ToolCallDelta | StreamEnd
+StreamEvent = TextDelta | ThinkingDelta | ToolCallDelta | StreamEnd
 
 
 class LLMProvider(ABC):

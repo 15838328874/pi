@@ -29,28 +29,40 @@ class ThinkFilter:
         self._buf = ""
         self._in_think = False
 
-    def feed(self, text: str) -> str:
+    def feed(self, text: str) -> tuple[str, str]:
+        """Feed a chunk; return ``(visible, thinking)`` — text outside vs inside
+        the ``<think>…</think>`` spans."""
         self._buf += text
-        out: list[str] = []
+        out_visible: list[str] = []
+        out_think: list[str] = []
         while self._buf:
             tag = CLOSE if self._in_think else OPEN
             idx = self._buf.find(tag)
             if idx != -1:
-                if not self._in_think:
-                    out.append(self._buf[:idx])
+                content = self._buf[:idx]
+                if self._in_think:
+                    out_think.append(content)
+                else:
+                    out_visible.append(content)
                 self._buf = self._buf[idx + len(tag) :]
                 self._in_think = not self._in_think
                 continue
             # no full tag; hold back a possible partial tag at the end
             held = _longest_suffix_prefix(self._buf, tag)
-            emit_len = len(self._buf) - held if not self._in_think else 0
+            emit_len = len(self._buf) - held
             if emit_len > 0:
-                out.append(self._buf[:emit_len])
+                content = self._buf[:emit_len]
+                if self._in_think:
+                    out_think.append(content)
+                else:
+                    out_visible.append(content)
                 self._buf = self._buf[emit_len:]
             break
-        return "".join(out)
+        return "".join(out_visible), "".join(out_think)
 
-    def flush(self) -> str:
-        rest = "" if self._in_think else self._buf
+    def flush(self) -> tuple[str, str]:
+        """Return any remaining ``(visible, thinking)`` and reset the buffer."""
+        visible = "" if self._in_think else self._buf
+        think = self._buf if self._in_think else ""
         self._buf = ""
-        return rest
+        return visible, think

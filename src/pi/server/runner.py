@@ -21,6 +21,7 @@ from pi.agent.events import (
     CompactionEvent,
     ErrorEvent,
     TextDeltaEvent,
+    ThinkingEvent,
     ToolCallEndEvent,
     ToolCallStartEvent,
     TurnEndEvent,
@@ -544,6 +545,9 @@ def event_to_sse(ev: AgentEvent) -> str:
     if isinstance(ev, TextDeltaEvent):
         data = json.dumps({"text": ev.text}, ensure_ascii=False)
         return f"event: text_delta\ndata: {data}\n\n"
+    if isinstance(ev, ThinkingEvent):
+        data = json.dumps({"text": ev.text}, ensure_ascii=False)
+        return f"event: thinking_delta\ndata: {data}\n\n"
     if isinstance(ev, ToolCallStartEvent):
         data = json.dumps({"id": ev.id, "name": ev.name})
         return f"event: toolcall_start\ndata: {data}\n\n"

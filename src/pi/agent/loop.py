@@ -30,11 +30,12 @@ from pi.agent.events import (
     CompactionEvent,
     ErrorEvent,
     TextDeltaEvent,
+    ThinkingEvent,
     ToolCallEndEvent,
     ToolCallStartEvent,
     TurnEndEvent,
 )
-from pi.llm.base import LLMProvider, StreamEnd, TextDelta, ToolCallDelta
+from pi.llm.base import LLMProvider, StreamEnd, TextDelta, ThinkingDelta, ToolCallDelta
 from pi.models import Message, Role, TextBlock, ToolCallBlock, ToolResultBlock, ToolSpec, Usage
 from pi.observability.tracing import NoOpTracer, Tracer
 from pi.security.audit import AuditLogger
@@ -253,6 +254,8 @@ class AgentLoop:
                         if isinstance(ev, TextDelta):
                             text_parts.append(ev.text)
                             yield TextDeltaEvent(ev.text)
+                        elif isinstance(ev, ThinkingDelta):
+                            yield ThinkingEvent(ev.text)
                         elif isinstance(ev, ToolCallDelta):
                             slot = by_id.setdefault(ev.id, {"name": ev.name, "arguments": ""})
                             slot["name"] = slot["name"] or ev.name

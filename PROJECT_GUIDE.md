@@ -332,7 +332,7 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | Agent | 断点续传（checkpoint/resume） | `agent/loop.py` | P2 |
 | Agent | 连续拒绝熔断 | `agent/loop.py` | 防死磕 |
 | 轨迹 | canonical 事件日志（6 类事件 + ts 墙钟） | `agent/trajectory.py` | P1，评估/回放唯一事实源 |
-| 轨迹 | jsonl 按天落盘 + 查询端点 | `server/trajectory_store.py` | 落盘失败不影响 run |
+| 轨迹 | **双写**：runs 表（结构化）+ jsonl 按天（合规底稿） | `server/db.py` `server/trajectory_store.py` | 落盘失败不影响 run |
 | 工具 | 9 内置（bash/read/write/edit/grep/find/ls/web/subagent） | `src/pi/tools/` | 全走 policy 路径沙箱 |
 | 工具 | 子代理（递归委派 + max_depth） | `tools/subagent.py` | Multi-Agent |
 | 工具 | MCP 工具源（stdio + fail-soft + 生命周期） | `tools/mcp.py` | 标准协议 |
@@ -360,6 +360,7 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | 前端 | 轨迹视图（时序图三模式/车道/联动） | `server/static/trajectory.html` | 面试演示 |
 | 前端 | 管理控制台（概览/用户/审计） | `server/static/admin.html` | 零构建 |
 | 部署 | 本地/生产双 compose + 文档 | `deploy/` | 环境严格区分 |
+| SDK | 官方异步客户端（SSE 流式解析 + PiError 语义） | `src/pi/client.py` | 单测 + 真实模型实测 |
 
 ### 3.2 核心功能精讲
 
@@ -449,7 +450,10 @@ for call in calls:
 **落盘与查询**：run 结束后轨迹序列化成一行 JSON 追加到按天滚动的 jsonl
 （`PI_TRAJECTORY_PATH`，`""`=关）；**落盘失败只记日志**（fail-soft，有测试验证）；
 查询端点 `GET /v1/sessions/{id}/trajectory` 先做属主校验（跨用户 404 不泄漏存在性），
-再扫描最新一条。规模大了换 MySQL JSONB 时，`latest_trajectory()` 接口不变。
+落盘与查询：run 结束后轨迹序列化成一行 JSON **双写**——按天滚动的 jsonl（`PI_TRAJECTORY_PATH`，
+`""`=关，追加式合规底稿，fail-soft）+ `runs` 数据库表（结构化查询索引，迁移 0005）。
+查询三个层级：会话级端点（DB 优先、jsonl 兜底旧数据）、`/v1/trajectory/{run_id}`（属主校验）、
+`/v1/admin/trajectory/{run_id}`（管理员跨用户回放）。
 
 **可视化**：时序图三种模式——`sequence`（等宽按序，看流程）、`duration`（按耗时累加，
 看时间花哪）、`time`（真实墙钟，看空闲 gap）；模型/工具两条车道 + 轮次分隔线；
@@ -637,7 +641,7 @@ stdio 子进程只 spawn 一次，shutdown 时统一回收）。
 
 | 层 | 内容 | 规模 | 依赖 | 命令 |
 |---|---|---|---|---|
-| **单测** | 逻辑/协议/安全/降级/契约，共 246 例 | 20 秒 | 本地 MySQL（pi_py_test）+ Redis；LLM/embedding/Milvus 用替身 | `.venv/bin/python -m pytest -q` |
+| **单测** | 逻辑/协议/安全/降级/契约，共 254 例 | 20 秒 | 本地 MySQL（pi_py_test）+ Redis；LLM/embedding/Milvus 用替身 | `.venv/bin/python -m pytest -q` |
 | **真实栈集成** | 真 MySQL+Redis+Milvus+云 embedding | 2 例 | 完整本地栈 + 云 API | `PI_INTEGRATION=1 pytest integration/ -q` |
 | **浏览器** | Playwright 无头 Chromium：登录/流式/布局/联动/缓存头 | 脚本 | 运行中的服务 | `/tmp/*.py` 脚本或未来 `tests/browser/` |
 | **压测** | 沙箱容量、并发锁 | 2 工具 | Docker 沙箱 | `tools/sandbox_bench.py` `tools/loadtest.py` |
@@ -788,7 +792,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 3. 涉及 app 的测试用 `TestClient(create_app(...))` fixture 模式，参考 `tests/test_server.py`；
 4. 涉及 MySQL 数据断言：每个测试开始前库是干净的（conftest 自动清表 + 播种 u1..u20/s1..s9）；
 5. 前端改动：跑 node 语法检查 + Playwright 脚本（布局断言）；
-6. 全套 `.venv/bin/python -m pytest -q` 必须全绿——246 例是底线不是上限。
+6. 全套 `.venv/bin/python -m pytest -q` 必须全绿——254 例是底线不是上限。
 
 ---
 
@@ -796,7 +800,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 
 | 指标 | 数值 | 来源/条件 |
 |---|---|---|
-| 测试规模 | **246 单测 + 2 真实栈集成**，20 秒跑完 | 本地 MySQL+Redis 统一栈 |
+| 测试规模 | **254 单测 + 2 真实栈集成**，20 秒跑完 | 本地 MySQL+Redis 统一栈 |
 | 沙箱吞吐 | **~52 exec/s 饱和、零失败**（p50 44ms@N=1 → 1162ms@N=64） | `tools/sandbox_bench.py`，4 vCPU/16GiB，Docker 预热池 |
 | 沙箱内存 | 每预热容器 ~26 MiB；64 容器冷启动 3.0s | 同上 |
 | 登录哈希 | **PBKDF2 453ms → 40ms**（CPU 52.7% → 99.7%） | `asyncio.to_thread` 优化 |
@@ -818,7 +822,6 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 |---|---|---|
 | 高 | **Web 工具 SSRF 修复** | web_fetch/web_search 现在进程内直连且无地址校验（已被 deny）；修法=私网/元数据地址拒绝 + 每跳重定向重校验，理想形态搬进沙箱 |
 | 中 | 管理员会话浏览器 | 管理员查看任意用户会话/轨迹（需 admin_* 端点） |
-| 中 | 轨迹结构化落库 | jsonl → MySQL JSONB（接口不变） |
 | 中 | eval 补全 | 自动抽任务、regress、badcase 归因 |
 | 低 | checkpoint 接 server | 超时后从断点恢复（loop 钩子已就绪） |
 | 后续 | **RAG 企业知识库** | 铁律：先评测再调检索；v1=解析+切块+混合检索(BM25)+rerank+引用+ACL；与记忆共用 Milvus/embedding |
@@ -844,7 +847,7 @@ src/pi/
 │                  + rollout/reward/filter/export（RL 数据飞轮）
 ├── cli.py         入口：serve / migrate / eval run|diff|rollout
 └── prompt.py      系统提示词
-tests/             246 个单测（连本地 MySQL/Redis）
+tests/             254 个单测（连本地 MySQL/Redis）
 integration/       真实栈集成测试（PI_INTEGRATION=1）
 tools/             压测/播种脚本（sandbox_bench、loadtest、seed_testdb）
 deploy/            本地/生产 compose、环境模板、部署文档
@@ -938,7 +941,7 @@ pi-py serve                        # http://localhost:8300
 #    （admin 写库授予：UPDATE users SET is_admin=1 WHERE username='...'）
 
 # 5) 测试（本地 MySQL/Redis 必须在跑）
-.venv/bin/python -m pytest -q              # 246 例
+.venv/bin/python -m pytest -q              # 254 例
 PI_INTEGRATION=1 pytest integration/ -q    # 真实栈 2 例
 ```
 

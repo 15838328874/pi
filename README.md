@@ -292,7 +292,7 @@ deploy/                     Caddyfiles, cloud runbook, .env template
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 131 passed, 1 skipped
+python -m pytest -q          # 254 passed
 ```
 
 The suite needs no database, Redis, Docker, or API key: `tests/conftest.py` pins

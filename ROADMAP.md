@@ -15,7 +15,7 @@
 
 | 能力 | 位置 | 验证 |
 |---|---|---|
-| Agent loop + 9 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 246 单测 |
+| Agent loop + 9 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 254 单测 |
 | LLM 接入层（openai/anthropic/fake）+ 降级链 + 退避重试 | `src/pi/llm/` | 单测 + 真实模型（qwen3.8-flash/max） |
 | 上下文压缩（摘要 + 保留尾部，非破坏落库） | `agent/compaction.py` | 单测 |
 | Docker 沙箱 + cgroup 限额 + 预热池 + 断网 | `tools/sandbox.py` | 压测 ~52 exec/s |

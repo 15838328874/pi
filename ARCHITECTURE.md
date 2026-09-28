@@ -3,7 +3,7 @@
 > 面向后来人的完整说明：项目是什么、怎么设计的、每个模块每个函数干什么、
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
-> 最后更新：2026-09-27 · 代码规模约 5,500 行源码 + 246 个测试
+> 最后更新：2026-09-28 · 代码规模约 5,700 行源码 + 254 个测试
 >
 > **文档地图**（四个文档各管一段，知识点不重复）：
 >
@@ -205,7 +205,7 @@ pi-python/
 │   ├── security/
 │   │   ├── policy.py        策略引擎（拒绝清单/命令模式/路径沙箱）
 │   │   ├── redact.py        出站脱敏（发给模型前遮蔽密钥）
-│   │   └── audit.py         审计 JSONL（按天滚动）
+│   │   └── audit.py         审计（jsonl 按天滚动 + audit_events 表双写）
 │   ├── observability/
 │   │   ├── tracing.py       noop/jsonl/otel 三后端 span
 │   │   ├── metering.py      用量记录 + 月度汇总 + 配额检查
@@ -219,7 +219,7 @@ pi-python/
 │       ├── cache.py         缓存/锁后端（内存 / Redis）
 │       ├── auth.py          PBKDF2 哈希 + JWT
 │       └── ratelimit.py     每用户固定窗口限流
-├── tests/                   132 个测试（纯本地可跑，无外部依赖）
+├── tests/                   254 个测试（连本地 MySQL/Redis，服务替身分层）
 ├── migrations/              Alembic 迁移（0001 建表、0002 用户激活字段）
 ├── tools/loadtest.py        SSE 压测工具
 ├── tools/seed_testdb.py     给 *_test 库灌可复用的测试数据（幂等，拒绝跑在生产库上）
@@ -836,9 +836,10 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 免得对着生产库灌出一堆账号。另外用量记录写的是**当天**日期，而 `/v1/usage` 和
 配额检查只统计当月——跨月之后要重灌一次才有配额数据。
 
-**pytest 不用这个库**：单测仍然一律用一次性 SQLite（`conftest.py` 钉死环境变量），
-测试库只服务手工验证和压测。这条边界别混——pytest 一旦连上常驻库，测试之间就会
-互相看见数据，"131 passed" 也就不再可复现了。
+**pytest 用 `pi_py_test` 库**（2026-09 起测试与生产统一 MySQL/Redis）：conftest
+每测试清表 + 播种 fixture 行（u1..u20 用户、s1..s9 会话），保证每个测试从干净库开始、
+结果可复现；手工验证/压测用 `pi_py` 库。这条边界别混——同一张表若被 pytest 与手工
+操作同时读写，测试之间就会互相看见数据。
 
 ---
 
@@ -1247,7 +1248,6 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 | # | 缺口 | main 的形态 | 说明 / 建议 |
 |---|---|---|---|
 | 1 | 轨迹结构化落库 | `agent_runs` + `trace_fidelity` 表 | 已做 jsonl 版（落盘+端点+前端）；DB 表形态见 ROADMAP §3 |
-| 2 | DB 结构化审计 | `audit_events` 表 | 我们是 JSONL（够用不可查询）；main 可 SQL 过滤。与 #1 同批做 |
 | 3 | 迁移合流 | 生产库在 `0007_trace_fidelity` | 两边 0003/0004 **同名不同内容**（session_plan/user_memories vs compactions/memories）。合流必须设计整合迁移，**前提是定生产库未来形态** |
 | 4 | 语义检索的兜底档 | MySQL 暴力余弦兜底 | 索引挂了我们只有词法兜底（可用，语义质量降档更狠）。可选增强 |
 | 5 | 运维资产 | `deploy/pi-py.service`（生产实际走 systemd）+ L1~L15 事故记录 | 搬运即可；dev 文档目前仍以 compose 为主 |
@@ -1269,7 +1269,7 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 |---|---|---|
 | **服务层**（对外） | 多租户 agent API、工具（MCP/Skills）、记忆、沙箱、配额/限流/审计 | 完整，且深于 main |
 | **数据层**（对内，战略资产） | 轨迹、评估、RL 飞轮（rollout→reward→export JSONL） | 飞轮已建，但**轨迹不落库**（run 结束即丢）——数据层缺"存储"一环 |
-| **运营层**（对管理员） | metrics、审计查询、用量/配额管理 | metrics 有，审计 JSONL 不可查询、轨迹不可回放 |
+| **运营层**（对管理员） | metrics、审计查询、用量/配额管理 | metrics 有，审计 audit_events 表可查（jsonl 兜底），轨迹 runs 表 + admin runId 回放端点 |
 
 数据层是本项目最独特的定位：服务系统 + 评估系统 + RL 数据生产系统三位一体。
 飞轮边界是产品判断：**数据侧停手，训练交给 veRL/TRL，别回头把训练拉进来**。

@@ -59,7 +59,7 @@
 | 痛点 | 普通聊天产品 | pi-py 的答案 |
 |---|---|---|
 | 模型只会说不会做 | 网页版 ChatGPT 只能生成代码文本 | 模型调用**工具**（bash/读写文件/搜索），在沙箱里真实执行 |
-| 执行有风险 | 没有隔离，模型跑 `rm -rf` 就是真删 | **Docker 沙箱**：断网、限额、白名单路径，乱来也出不了沙箱 |
+| 执行有风险 | 没有隔离，模型跑 `rm -rf` 就是真删 | **microVM 沙箱**（CubeSandbox）：每回合独立 VM、用完即销毁，断网/限额/白名单路径，乱来也出不了沙箱 |
 | 单人玩具 | 插件/客户端每人各玩各的 | **多用户服务**：注册/登录/配额/限流/审计，企业级多租户 |
 | 无法判断好坏 | 没有评估标准 | **eval 评测闭环**：任务集 + 自动判分 + A/B 对比 |
 | 数据浪费 | 执行记录用完即弃 | **统一轨迹**落库 + **RL 数据飞轮**导出 JSONL 喂 veRL/TRL |
@@ -71,7 +71,8 @@
 3. 服务端检查配额、限流，然后把这轮对话历史 + 系统提示词 + **相关的跨会话记忆**（"用户喜欢简洁输出"）组装好，发给云上的大模型。
 4. 模型思考后决定调用工具：`write(path="hello.txt", content="hello world")`。
 5. 安全策略先检查：路径必须在用户自己的工作区里 → 放行。
-6. 工具在 **Docker 沙箱容器**里执行（这个容器没有网络、有内存/CPU 限额、预热好了等着），写入文件。
+6. 工具在**沙箱**里执行——生产是 CubeSandbox **microVM**（每回合独立 VM、71ms 冷启、用完即销毁），
+   本地开发是 Docker 容器（断网 + 限额 + 预热池）——写入文件。
 7. 模型拿到"写入成功"的结果，回复"已完成"，**流式**逐字推到用户浏览器上。
 8. 服务端落库：消息历史、token 用量（计入本月配额）、审计日志（脱敏）、**完整轨迹**（原始事件日志，含每一步耗时）。
 9. 用户点"查看轨迹"：一张**时序图**展示"模型想了 1.2 秒 → 工具跑了 45 毫秒"的全过程；哪一步慢了、哪一步失败了，一眼可见。
@@ -169,7 +170,7 @@
               │ fake        │  │ (registry)  │  └─────────────┘
               └─────────────┘  └──────┬──────┘
                                       ▼
-                          Docker 沙箱（预热池+限额+断网）
+               沙箱：CubeSandbox microVM（生产）/ Docker 预热池（本地）
               ─────────────────────────────────────────────────
               持久化：MySQL(消息/记忆/用量) Redis(锁/限流) Milvus(向量)
               投影：审计(脱敏jsonl) 指标(Prometheus) 计量(成本)
@@ -241,7 +242,7 @@ SSE 正常结束、消息照常落库。
 | 语言 | TypeScript（沿用上游）| **Python** | AI 生态、异步模型、开发速度（见 1.5） |
 | 数据库 | PostgreSQL（最初设想）/ SQLite（早期测试）| **MySQL**（生产实际）+ 测试同库 | 生产实际就是云端托管 MySQL；2026-09 起测试与生产统一，消除"测试 SQLite 与生产 MySQL 行为不一致"的整类问题（SQLite 不强制外键、日期格式等差异真踩过坑） |
 | 缓存 | 无/进程内存 | **Redis**（多实例必配）| 锁/限流/撤销要跨实例一致；单实例内存降级可跑 |
-| 沙箱 | 进程内直接执行 | **Docker + 预热池 + 限额 + 断网** | 进程内执行 = 模型能读应用环境变量（含密钥）；容器预热把冷启动从秒级压到毫秒级 |
+| 沙箱 | 进程内直接执行 | **microVM（CubeSandbox，生产）+ Docker 预热池（本地）** | 进程内执行 = 模型能读应用环境变量（含密钥）；microVM 每回合独立 VM、崩溃天然隔离，Docker 预热把冷启动压到毫秒级 |
 | 前端 | React/Vue 工程 | **零构建单文件 + vanilla JS** | 三个页面不需要工程链；改动即生效；无 node 依赖。代价：无组件生态，靠纪律保持一致性 |
 | 工具扩展 | 每种来源写一套 | **统一 ToolProvider + ToolRegistry** | MCP/Skills/内置本质都是"工具来源"；统一后自动获得 policy/审计/沙箱/配额 |
 | RL 飞轮 | 自己训模型 | **只做数据侧**（rollout→reward→filter→JSONL） | 训练是 veRL/TRL 的活；项目停在数据生产，接口是 JSONL |
@@ -263,11 +264,13 @@ run 结束后一次 `append_many` 批量落库——**不是每条消息单独�
 （摘要声称覆盖到 idx 10，实际只到 7，下一轮加载历史会丢三条消息）。交接纪律：
 **动压缩逻辑前先读 `message_idx` 的注释**。
 
-**3. 预热池与模型思考并行**：runner 在模型**思考第一轮该调什么工具时**就预热沙箱容器
+**3. 预热池与模型思考并行（Docker 形态的巧思）**：runner 在模型**思考第一轮该调什么工具时**就预热沙箱容器
 （`prewarm` 是 best-effort）。等模型决定用 bash 时，容器已经热了——把"模型 1 秒 + 容器冷启动 3 秒"变成"模型 1 秒 + 容器执行 45ms"。
 实现：`get_runner(...)` 拿到 runner 后立即 `runner.prewarm(cwd)`（有 prewarm 方法才调），
 预热是后台任务、失败只记日志。池的形态：**每工作区一个 `sleep infinity` 常驻容器**，
 调用 = `docker exec`，空闲回收；预热容器内存仅 ~26 MiB/个（实测）。
+CubeSandbox 形态不需要这套：**71ms 冷启直接建**，改用【懒加载 + 复用池 + 内存自适应回收】
+解决冷启与资源问题（见 3.2 生命周期管理）。
 
 **4. 连续拒绝熔断**：实测过模型被安全策略拒绝后**死磕**：25 次变着花样尝试越权路径，
 每次 600 秒超时。现在连续 N 次被拒就**大声终止**并告诉模型"重新读拒绝原因"——
@@ -340,7 +343,7 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | 工具 | MCP 工具源（stdio + fail-soft + 生命周期） | `tools/mcp.py` | 标准协议 |
 | 工具 | Skills 技能包（SKILL.md + 索引注入 + 脚本走沙箱） | `tools/skill.py` | 渐进披露 |
 | 工具 | ToolRegistry（聚合/去重/预热缓存） | `tools/registry.py` | 一个抽象管所有来源 |
-| 沙箱 | Docker（预热池+限额+断网）+ **CubeSandbox microVM**（GNU timeout/退出码透传/10MB 上限） | `tools/sandbox.py` | 52 exec/s 实测 + 真机故障注入探针 |
+| 沙箱 | **CubeSandbox microVM（生产）**：每回合独立 VM/GNU timeout/退出码透传/10MB 上限/生命周期管理 + Docker 预热池（本地） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 + 52 exec/s（Docker 形态） |
 | 归档 | 会话工作区 tar.gz + 差异元数据 + MinIO 惰性上传 | `server/archive.py` | 9 turns 实测 |
 | 文件管线 | MinIO 预签名直连 + sha256 用户级去重 + files 表索引 | `server/storage.py` `server/db.py` | 254 单测 |
 | 记忆 | episodic（compactions 表复用摘要） | `server/db.py` | 不重复花钱总结 |
@@ -399,7 +402,10 @@ for call in calls:
   拼错了参数就是损坏的 JSON。
 - **两种终止**：`stop_reason != "tool_use"` 正常收尾；`max_turns` 或连续拒绝熔断是保护性终止。
 
-#### （2）沙箱执行：从"进程内"到"容器+池"的进化
+#### （2）沙箱执行：从"进程内"到"隔离沙箱"的进化（Docker → microVM）
+
+**两种形态，同一协议**：生产 = CubeSandbox **microVM**（每回合独立 VM、用完即销毁），
+本地开发 = Docker 预热池。下面按"为什么隔离 → 协议 → 限额 → 生命周期"讲，Docker 专属细节已标注。
 
 - **为什么必须隔离**：进程内执行 bash = 模型能读应用进程的环境变量（数据库密码、JWT 密钥）、
   能读写别的用户的目录。这不是功能问题，是安全事故。
@@ -407,13 +413,13 @@ for call in calls:
   （`run(command, cwd, timeout) -> CommandResult`、`prewarm(cwd)`），
   上层（AgentLoop/工具）通过 `get_runner(PI_SANDBOX, ...)` 拿到实例，**对实现无感**。
   将来接 CubeSandbox（microVM）只需要再写一个 runner。
-- **限额必须显式**：Docker 默认**不限额**（Memory=0、NanoCpus=0、无 PidsLimit），
+- **限额必须显式（Docker 形态）**：Docker 默认**不限额**（Memory=0、NanoCpus=0、无 PidsLimit），
   开放注册的服务里一个 `while true` 就能吃光宿主机。所以
   `PI_SANDBOX_MEMORY/PIDS/CPUS` 在**全部四条建容器路径**（冷 CLI / 冷 API / 热 CLI / 热 API）
   都强制带上，且 `--memory-swap = --memory`（否则 Docker 默认允许 2 倍交换）。
 - **断网是默认**：`--network none`。联网是显式开关（`PI_SANDBOX_NET=host`），
   且进程内抓取工具（web_fetch/web_search）已因 SSRF 风险整体移除（见 4.12）——沙箱内 bash 抓取替代。
-- **预热池**：每工作区一个 `sleep infinity` 常驻容器，调用 = `docker exec`
+- **预热池（Docker 形态）**：每工作区一个 `sleep infinity` 常驻容器，调用 = `docker exec`
   （比 `docker run` 少一次容器创建）；空闲自动回收；预热是后台任务，
   与模型思考并行（见巧思 3）。实测每预热容器仅 ~26 MiB。
 - **fail-closed**：`PI_SANDBOX` 非法值**启动即拒绝**（曾静默降级为进程内执行 = 事故）。
@@ -817,8 +823,8 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 | 指标 | 数值 | 来源/条件 |
 |---|---|---|
 | 测试规模 | **254 单测 + 2 真实栈集成**，20 秒跑完 | 本地 MySQL+Redis 统一栈 |
-| 沙箱吞吐 | **~52 exec/s 饱和、零失败**（p50 44ms@N=1 → 1162ms@N=64） | `tools/sandbox_bench.py`，4 vCPU/16GiB，Docker 预热池 |
-| 沙箱内存 | 每预热容器 ~26 MiB；64 容器冷启动 3.0s | 同上 |
+| 沙箱吞吐（Docker 形态基准） | **~52 exec/s 饱和、零失败**（p50 44ms@N=1 → 1162ms@N=64） | `tools/sandbox_bench.py`，4 vCPU/16GiB，Docker 预热池 |
+| 沙箱内存（Docker 形态） | 每预热容器 ~26 MiB；64 容器冷启动 3.0s | 同上 |
 | 登录哈希 | **PBKDF2 453ms → 40ms**（CPU 52.7% → 99.7%） | `asyncio.to_thread` 优化 |
 | 真实模型一轮 | ~2,103 tokens in / 147 out（qwen3.8-max，一次短任务） | 本地 E2E 实测落库 |
 | 记忆向量 | 一次召回 embedding 15~28 tokens（qwen3.7-text-embedding） | 计量记录实测 |
@@ -881,7 +887,7 @@ migrations/        Alembic 迁移（0001~0007）
 | `PI_MODEL` | 默认模型 | 本地用 openai/qwen3.8-flash |
 | `PI_FALLBACK_CHAIN` | 降级链（逗号分隔） | 主模型挂了自动切 |
 | `PI_SANDBOX` | 沙箱模式（docker / 空=进程内） | 非法值启动即拒绝 |
-| `PI_SANDBOX_MEMORY/PIDS/CPUS` | 容器限额 | 1g / 256 / 1.0 |
+| `PI_SANDBOX_MEMORY/PIDS/CPUS` | 容器限额（Docker 形态） | 1g / 256 / 1.0 |
 | `PI_SANDBOX_NET` | `host` 才开网络 | 默认断网 |
 | `PI_POLICY` | 策略文件路径 | server 模式只加不减 |
 | `PI_TRAJECTORY_PATH` | 轨迹 jsonl 路径 | `""` = 关闭落盘 |
@@ -930,7 +936,7 @@ migrations/        Alembic 迁移（0001~0007）
 |---|---|
 | Agent | 能自己决定"下一步做什么"的 AI 程序（想→做→看结果→再想） |
 | 工具（Tool） | 给模型用的"手"：bash/读写文件/搜索等，有名字、参数、返回结果 |
-| 沙箱（Sandbox） | 隔离的执行环境（Docker 容器），模型在里面随便折腾，出不了边界 |
+| 沙箱（Sandbox） | 隔离的执行环境（生产 CubeSandbox microVM / 本地 Docker 容器），模型在里面随便折腾，出不了边界 |
 | 轨迹（Trajectory） | 一次运行的完整事件日志：模型每轮想了什么、每个工具怎么调、耗时多少 |
 | 上下文压缩（Compaction） | 对话太长时，把旧历史总结成一段摘要，省 token |
 | 向量检索 | 把文字变成数字向量，按"语义相近"找内容（能搜到"意思相近但用词不同"的） |

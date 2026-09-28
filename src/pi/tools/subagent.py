@@ -145,7 +145,7 @@ class SpawnSubagentsTool(Tool):
 
         # Reuse the parent's provider so the child uses the same model / fallback
         # chain. Fall back to the default model if the context carries none.
-        provider = ctx.provider
+        provider = getattr(ctx, "provider", None)
         if provider is None:
             from pi.llm.registry import DEFAULT_MODEL, resolve_chain
 
@@ -160,11 +160,11 @@ class SpawnSubagentsTool(Tool):
             messages=[],
             cwd=subdir,
             max_turns=MAX_SUBAGENT_TURNS,
-            policy=ctx.policy,
-            audit=ctx.audit,
-            session_id=ctx.session_id,
-            user_id=ctx.user_id,
-            tracer=ctx.tracer,
+            policy=getattr(ctx, "policy", None),
+            audit=getattr(ctx, "audit", None),
+            session_id=getattr(ctx, "session_id", ""),
+            user_id=getattr(ctx, "user_id", ""),
+            tracer=getattr(ctx, "tracer", None),
         )
         if ctx.runner is not None:
             child.ctx.runner = ctx.runner

@@ -25,12 +25,12 @@ class RememberTool(Tool):
     }
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
-        if ctx.memory is None:
+        if getattr(ctx, "memory", None) is None:
             return ToolResult(content="Error: memory store is not configured", is_error=True)
         text = str(args.get("text", "")).strip()
         if not text:
             return ToolResult(content="Error: `text` is required", is_error=True)
-        await ctx.memory.add(ctx.user_db_id, text)
+        await ctx.memory.add(getattr(ctx, "user_db_id", 0), text)
         return ToolResult(content="remembered")
 
 
@@ -57,7 +57,7 @@ class RecallTool(Tool):
         if not query:
             return ToolResult(content="Error: `query` is required", is_error=True)
         k = int(args.get("k", 3))
-        rows = await ctx.memory.search(ctx.user_db_id, query, k)
+        rows = await ctx.memory.search(getattr(ctx, "user_db_id", 0), query, k)
         if not rows:
             return ToolResult(content="(no relevant memories)")
         return ToolResult(content="\n".join(f"- {r.text}" for r in rows))

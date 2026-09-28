@@ -38,7 +38,9 @@ def test_remember_and_recall_tools(tmp_path):
     async def main():
         await db.init()
         repo = MemoryRepo(db)
-        ctx = ToolContext(cwd=tmp_path, memory=repo, user_db_id=7)
+        ctx = ToolContext(cwd=tmp_path)
+        ctx.memory = repo
+        ctx.user_db_id = 7
 
         remember = RememberTool()
         r = await remember.execute({"text": "project uses redis for locks"}, ctx)

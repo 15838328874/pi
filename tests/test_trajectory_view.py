@@ -138,9 +138,15 @@ class TestEndpoint:
 
 class TestStore:
     def test_latest_scans_across_days(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+
         base = tmp_path / "traj.jsonl"
+
+        def day(offset: int) -> str:
+            return (datetime.now(timezone.utc) + timedelta(days=offset)).strftime("%Y-%m-%d")
+
         old = {"session_id": "s1", "run_id": "old"}
-        _daily_path(base, "2026-09-26").write_text(
+        _daily_path(base, day(-1)).write_text(
             json.dumps(old, ensure_ascii=False) + "\n", encoding="utf-8"
         )
         assert latest_trajectory(base, "s1")["run_id"] == "old"  # only yesterday exists
@@ -149,7 +155,7 @@ class TestStore:
         assert latest_trajectory(base, "s1")["run_id"] == "new"  # today beats yesterday
 
         future = {"session_id": "s2", "run_id": "other"}
-        _daily_path(base, "2026-09-28").write_text(
+        _daily_path(base, day(1)).write_text(
             json.dumps(future, ensure_ascii=False) + "\n", encoding="utf-8"
         )
         assert latest_trajectory(base, "s2")["run_id"] == "other"

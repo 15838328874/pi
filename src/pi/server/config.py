@@ -16,6 +16,9 @@ class ServerSettings:
     jwt_secret: str = ""
     token_ttl_minutes: int = 720
     default_model: str = ""
+    # 前端模型选择器可选的模型列表，逗号分隔（如 openai/qwen3.8-flash,...）。
+    # 空 = 只有 default_model。PI_MODEL_LIST 只是「可选清单」，不改变默认模型。
+    model_list: str = ""
     workspace_root: Path = field(default_factory=lambda: Path.home() / ".pi-py" / "workspaces")
     max_concurrent_runs: int = 8
     run_timeout_seconds: int = 600
@@ -101,6 +104,7 @@ class ServerSettings:
             jwt_secret=os.environ.get("PI_JWT_SECRET") or _load_or_create_secret(base),
             token_ttl_minutes=int(os.environ.get("PI_TOKEN_TTL_MIN", 720)),
             default_model=os.environ.get("PI_MODEL", "openai/gpt-4o"),
+            model_list=os.environ.get("PI_MODEL_LIST", ""),
             workspace_root=Path(os.environ.get("PI_WORKSPACE_ROOT", base / "workspaces")),
             max_concurrent_runs=int(os.environ.get("PI_MAX_CONCURRENT_RUNS", 8)),
             run_timeout_seconds=int(os.environ.get("PI_RUN_TIMEOUT_SECONDS", 600)),

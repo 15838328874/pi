@@ -34,10 +34,12 @@
   }
   button.primary { background: var(--model); border-color: var(--model); color: #fff; }
   button:disabled { opacity: .5; cursor: not-allowed; }
-  input, textarea {
+  input, textarea, select {
     padding: 8px 10px; border-radius: 6px; border: 1px solid var(--border);
     background: var(--card); color: var(--text); font: inherit;
   }
+  .model-row { padding-top: 0; }
+  .model-row select { flex: 1; font-size: 13px; }
 
   /* ---- login ---- */
   #view-login { max-width: 380px; margin: 12vh auto 0; padding: 0 16px; }
@@ -294,6 +296,9 @@
         <input id="newTitle" placeholder="会话标题，回车创建">
         <button id="newBtn">＋</button>
       </div>
+      <div class="side-head model-row">
+        <select id="modelSelect" title="新建会话使用的模型"></select>
+      </div>
       <div id="sessionList"></div>
     </aside>
 
@@ -390,6 +395,28 @@ $("tabRegister").onclick = () => setAuthMode("register");
   } catch (_) { /* 接口不可用时保留默认行为 */ }
 })();
 
+// ---- 模型选择器（新建会话时选模型，记忆在 localStorage）----------------------
+const MODEL_KEY = "pi_model";
+async function loadModels() {
+  const sel = $("modelSelect");
+  try {
+    const d = await fetch("/v1/models").then((r) => r.json());
+    const models = d.models || [];
+    const def = d.default || "";
+    const chosen = localStorage.getItem(MODEL_KEY) || def;
+    sel.innerHTML = models
+      .map((m) => `<option value="${esc(m)}"${m === chosen ? " selected" : ""}>${esc(m)}</option>`)
+      .join("");
+    if (!sel.value && models.length) sel.value = models[0];
+  } catch (_) {
+    sel.innerHTML = "";
+  }
+}
+$("modelSelect").addEventListener("change", (e) => {
+  localStorage.setItem(MODEL_KEY, e.target.value);
+});
+loadModels();
+
 async function doAuth() {
   const u = $("fUser").value.trim(), p = $("fPass").value;
   $("fMsg").textContent = "";
@@ -485,7 +512,7 @@ $("newTitle").addEventListener("keydown", async (e) => {
   $("newTitle").value = ""; creating = false; $("newTitle").style.display = "none";
   const s = await apiJson("/v1/sessions", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title }),
+    body: JSON.stringify({ title, model: $("modelSelect").value || undefined }),
   });
   await refreshSessions();
   sid = s.id;
@@ -627,7 +654,7 @@ async function sendPrompt() {
   if (!sid) { // 没有会话时自动建一个
     const s = await apiJson("/v1/sessions", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ title: "新会话" }),
+      body: JSON.stringify({ title: "新会话", model: $("modelSelect").value || undefined }),
     });
     sid = s.id;
     await refreshSessions();

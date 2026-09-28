@@ -363,6 +363,15 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         """Public: tells the frontend whether to show the register tab."""
         return {"allowed": settings.allow_register}
 
+    @app.get("/v1/models")
+    async def list_models() -> dict:
+        """Public: available chat models for the frontend selector."""
+        if settings.model_list:
+            models = [m.strip() for m in settings.model_list.split(",") if m.strip()]
+        else:
+            models = [settings.default_model] if settings.default_model else []
+        return {"models": models, "default": settings.default_model}
+
     @app.post("/v1/auth/register")
     async def register(body: RegisterIn, request: Request) -> dict:
         """Open signup, always a normal user; admin is granted by editing the DB.

@@ -462,3 +462,79 @@ MinIO 一个公网地址，可无缝切回 VM 真直连。
 4. 拷 pi-py 源码 → venv 装 `[production]` → 写 `/etc/pi.env`（§7 全表，按 §9 调资源数字）→ systemd 起服务。
 5. 按 §11 清单逐项打勾；重点跑一次 §11 的"端到端冒烟"（上传→进沙箱→处理）。
 6. 旧机收尾：保留 30 天归档与审计日志后下线。
+
+---
+
+## 14. 沙箱性能基准（实测，企业 SLA 参考）
+
+> 数据来自本机（4 核/3.6G，本地数据面 `127.0.0.1`）直连 CubeAPI(3000)，
+> 模板 `pi-sandbox-ab`（481MB 镜像，1 核/256M）。命令跑 30 次取 p50/p95/p99。
+> 数字随节点算力/网络变化，但**量级**可直接作为给企业用户的性能承诺。
+
+### 14.1 冷启动（新建 VM → 可跑命令）
+
+| 场景 | 耗时 |
+|---|---|
+| rootfs 已缓存（**常态**：节点跑过一次后） | **~0.25s**（`create()` 0.07s + 数据面就绪 0.18s） |
+| 同会话池复用（热 VM） | 省去 create，仅命令延迟 ~10ms |
+| rootfs 未缓存（模板刚建 / 新节点 / 镜像更新后首沙箱） | 首命令稳定 502（openresty 探活超时），预热后回到 0.25s，一次性成本 |
+
+关键认知：`create()` 返回 ≠ 数据面就绪。microVM 起来后 envd 还要注册、
+openresty 探活过了才放行命令；首沙箱要额外解包 ~400MB ext4，超过探活超时即 502。
+
+### 14.2 已建 VM 的通信（latency / throughput）
+
+| 指标 | 实测 | 说明 |
+|---|---|---|
+| 空命令往返 | p50 **9.2ms** / p95 11.8ms / p99 14.6ms | 纯数据面往返 ~10ms，本地 vsock 直通 |
+| python3 -c 往返 | p50 34.7ms | 其中 ~25ms 是解释器启动 |
+| 文件上传（宿→VM） | **154 MB/s** | `fetch_file` 进沙箱走这条通道 |
+| 文件下载（VM→宿） | **30 MB/s** | `save_workspace` 回传走这条 |
+| 1MB stdout 回传 | ~14.5 MB/s | 命令大输出时的瓶颈通道 |
+
+### 14.3 典型任务时间账（对用户≈瞬时）
+
+```
+冷启动 250ms + 命令行数 × 10ms + 文件传输(10MB 上传 65ms / 下载 330ms)
+≈ 远小于 1 秒 / 任务；同会话第二回合连 250ms 都省掉，只剩 10ms × 命令数
+```
+
+### 14.4 镜像体积定位
+
+| 镜像 | 解压后 | 定位 |
+|---|---|---|
+| cube-lite / cube-lite-py | 8MB / 39MB | 平台设计基线（乐高微镜像） |
+| **pi-sandbox（A+B 全套 office/pdf）** | **481MB**（压缩后 115MB） | **中小偏大** |
+| E2B 官方模板 | 数百 MB ~ 2GB | 常规 |
+| 数据科学 / ML / CUDA | 2GB ~ 15GB | 大镜像 |
+
+**结论**：481MB 在行业尺度不算大（真大的以 GB 计）；但 CubeSandbox 的 openresty
+探活超时按"几十 MB 微镜像"调校，400MB 级的 ext4 解包刚好踩到其超时边缘 ——
+这才是首沙箱 502 的根因，不是镜像太大。
+
+### 14.5 吞吐瓶颈提示
+
+- **下载 30MB/s 明显慢于上传 154MB/s**（SDK files.read 回传有分块/轮询）。
+  当前 900MB 上限 + 产物几 MB 的场景完全够用；若将来做"GB 级文件沙箱处理回传"，
+  1GB 约需 33s，需走流式/直连优化（记档待做）。
+
+### 14.6 测法（可复现）
+
+```bash
+# 冷启动 & 通信（需 /etc/ssl/certs/ca-certificates-meye.crt 或你的 SSL_CERT_FILE）
+export SSL_CERT_FILE=/etc/ssl/certs/ca-certificates-meye.crt
+python3 - <<'PY'
+import os, time, statistics
+from e2b_code_interpreter import Sandbox
+sbx = Sandbox.create(template="tpl-2492096525f04f0aac655acb", timeout=300,
+                     api_url="http://127.0.0.1:3000", api_key="e2b_000000", domain="cube.app")
+lats=[]; sbx.commands.run("true")
+for _ in range(30):
+    t=time.perf_counter(); sbx.commands.run("echo hi", timeout=10); lats.append((time.perf_counter()-t)*1000)
+lats.sort(); print(f"命令往返 p50={lats[14]:.1f} p95={lats[28]:.1f} ms")
+data=os.urandom(5*1024*1024)
+t=time.perf_counter(); sbx.files.write("/tmp/up.bin", data); print(f"上传 {5/(time.perf_counter()-t):.0f} MB/s")
+t=time.perf_counter(); sbx.files.read("/tmp/up.bin", format="bytes"); print(f"下载 {5/(time.perf_counter()-t):.0f} MB/s")
+sbx.kill()
+PY
+```

@@ -13,7 +13,8 @@ MAX_DIFF_LINES = 60
 class EditTool(Tool):
     name = "edit"
     description = (
-        "Replace an exact string in a file. old_string must match exactly (including "
+        "Replace an exact string in a workspace file (RELATIVE path; the sandbox's /workspace "
+        "is this same directory bind-mounted). old_string must match exactly (including "
         "whitespace/indentation) and be unique in the file unless replace_all is true. "
         "Always read the file (or the relevant part) before editing."
     )

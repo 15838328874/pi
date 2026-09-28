@@ -10,7 +10,9 @@ from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
 class WriteTool(Tool):
     name = "write"
     description = (
-        "Write content to a file, creating parent directories as needed. "
+        "Write content to a file in the workspace, creating parent directories as needed. "
+        "Use a RELATIVE path (e.g. 'out.txt'); the sandbox's /workspace is this same directory "
+        "bind-mounted, so writing 'out.txt' creates /workspace/out.txt inside the sandbox. "
         "Overwrites the file if it exists. Use edit for partial changes."
     )
     input_schema = {

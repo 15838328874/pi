@@ -17,8 +17,11 @@ def _looks_binary(data: bytes) -> bool:
 class ReadTool(Tool):
     name = "read"
     description = (
-        "Read a text file, returned with 6-width line numbers (1-based). "
-        "Use offset/limit for paging through large files. Binary files are rejected."
+        "Read a text file from the workspace, returned with 6-width line numbers (1-based). "
+        "Use a RELATIVE path (e.g. 'out.txt'). The sandbox's /workspace is this same "
+        "directory bind-mounted, so a file bash wrote at /workspace/out.txt is read as "
+        "'out.txt' here — never pass /workspace/... to this tool. "
+        "Use offset/limit for paging. Binary files are rejected."
     )
     input_schema = {
         "type": "object",

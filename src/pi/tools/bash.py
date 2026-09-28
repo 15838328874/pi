@@ -11,9 +11,11 @@ from pi.tools.sandbox import LocalRunner
 class BashTool(Tool):
     name = "bash"
     description = (
-        "Run a shell command and return combined stdout/stderr plus the exit code. "
-        "Use for builds, tests, git, and any inspection not covered by other tools. "
-        "Prefer dedicated tools (read/write/edit/grep/find/ls) for file operations."
+        "Run a shell command inside the sandbox and return stdout/stderr plus the exit code. "
+        "The workspace is mounted at /workspace here — the SAME directory the file tools see, "
+        "so /workspace/out.txt here is 'out.txt' to read/write/edit. Use for builds, tests, "
+        "git, and inspecting files the sandbox produced. For reading/editing workspace files, "
+        "prefer read/write/edit/grep/find/ls with RELATIVE paths (not /workspace/...)."
     )
     input_schema = {
         "type": "object",

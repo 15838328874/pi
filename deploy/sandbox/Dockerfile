@@ -17,8 +17,16 @@
 
 FROM alpine:3.20
 
-ENV PIP_INDEX_URL=http://mirrors.tencentyun.com/pypi/simple/ \
-    PIP_TRUSTED_HOST=mirrors.tencentyun.com \
+# 构建源 mirror：默认腾讯云内网（作者环境）。换云厂商时用 --build-arg 覆盖，
+# 例如火山云/阿里云：--build-arg APK_MIRROR_HOST=dl-cdn.alpinelinux.org \
+#                    --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+#                    --build-arg PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn
+ARG APK_MIRROR_HOST=mirrors.tencentyun.com
+ARG PIP_INDEX_URL=http://mirrors.tencentyun.com/pypi/simple
+ARG PIP_TRUSTED_HOST=mirrors.tencentyun.com
+
+ENV PIP_INDEX_URL=${PIP_INDEX_URL} \
+    PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST} \
     ENVD_PORT=49983
 
 # ---- 系统层：python + GNU 完整工具 + 企业高频命令 ----------------------
@@ -27,7 +35,7 @@ ENV PIP_INDEX_URL=http://mirrors.tencentyun.com/pypi/simple/ \
 # poppler-utils: pdftotext/pdfinfo（PDF 提取）  7zip: 7z + rar 解压
 # git/tar/curl/jq/file: 仓库/解压/网络/JSON/类型判断
 # 腾讯云内网 mirror（本环境加速；换环境改回官方源）
-RUN sed -i 's#dl-cdn.alpinelinux.org#mirrors.tencentyun.com#g' /etc/apk/repositories \
+RUN sed -i "s#dl-cdn.alpinelinux.org#${APK_MIRROR_HOST}#g" /etc/apk/repositories \
     && apk add --no-cache \
         ca-certificates bash \
         coreutils findutils grep sed gawk \
@@ -44,7 +52,7 @@ RUN sed -i 's#dl-cdn.alpinelinux.org#mirrors.tencentyun.com#g' /etc/apk/reposito
 # pandas + numpy : 企业数据分析核心
 # openpyxl       : xlsx 读写；python-docx : docx；pypdf : PDF 提取/合并
 RUN python3 -m pip install --no-cache-dir \
-    -i http://mirrors.tencentyun.com/pypi/simple --trusted-host mirrors.tencentyun.com \
+    -i "${PIP_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST}" \
     pandas \
     openpyxl \
     python-docx \
@@ -53,7 +61,7 @@ RUN python3 -m pip install --no-cache-dir \
 # ---- B 档 Python 库（补边界）-------------------------------------------
 # requests / pillow / beautifulsoup4+lxml / python-pptx
 RUN python3 -m pip install --no-cache-dir \
-    -i http://mirrors.tencentyun.com/pypi/simple --trusted-host mirrors.tencentyun.com \
+    -i "${PIP_INDEX_URL}" --trusted-host "${PIP_TRUSTED_HOST}" \
     requests \
     pillow \
     beautifulsoup4 \

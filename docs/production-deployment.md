@@ -11,6 +11,75 @@
 
 ---
 
+## 🔢 三个反直觉的关键实测数字（先看，能省你几天）
+
+这三个都是**实测**出来的，且**与直觉相反**。完整数据与复现方法见 **§10**。
+
+### ① 空载密度：**一台 8 核 / 61GB 的普通云主机，实测扛住 1000 个沙箱**
+
+| 放开的配额闸门 | 实测上限 | 卡在哪 |
+|---|---|---|
+| 全默认配置 | **16** | `quota_cpu 16000 ÷ 模板 1000m` |
+| 只放开 CPU 配额 | **197** | `quota_mem_mb ÷ 400MB/沙箱` |
+| CPU + 内存 + 网卡池都放开 | **1000** | `max_mvm_num`（= `mem_limit ÷ 512MB`） |
+| 继续放大 `mem_limit` | ≈ **3800** | 物理内存 `58GB ÷ 15.2MB` |
+
+1000 个存活时**只吃了 15.2 GB**（单 VM 均摊 **15.2 MB**），机器还剩 42 GB。
+
+> **结论："只能跑十几个"是配额造成的，不是硬件不够。** 官方说的"单机数千"是同一口径（空载 CoW 密度）。
+
+### ② 但「能持有 1000 个」≠「能同时干 1000 个活」
+
+沙箱 90% 时间在等 LLM 返回，空载几乎不吃 CPU（160 个存活时宿主 `load` 仅 **0.3**）。
+**真跑 pandas 这类计算时，物理核数才是硬顶** —— 8 核机器实际只能并行干 **8~16** 个。
+
+> 所以 `PI_MAX_CONCURRENT_RUNS` 要对齐**物理核数**，不是配额算出来的密度（§10.6）。
+
+### ③ `cpu=100m` 不是"调度权重"，是**硬 cgroup 节流**
+
+| 模板 `--cpu` | guest `cpu.max` | 实际算力 | 实测耗时 |
+|---|---|---|---|
+| **1000m** | `100000 100000` | 单核 100% | 269 ms |
+| 100m | `10000 100000` | 单核 **10%** | **2699 ms（慢 10 倍）** |
+
+更糟：10% 算力下**沙箱创建后的第一条命令会 502**（envd 冷启动都撑不住）。
+
+> **生产模板 CPU 不要低于 500m**（§10.3）。
+
+### ④ 「能扛 1000 个沙箱」≠「能服务 1000 个用户」
+
+用户容量按**吞吐**算。实测本机峰值 **~100 回合/分钟**，且**用户多了不会失败、只会排队**
+（24 并发用户实测 24/24 成功）：
+
+| 使用强度 | 每用户 | 可服务 |
+|---|---|---|
+| 轻度（5 分钟 1 回合） | 0.2 回合/min | **~500 人** |
+| 中度（1 分钟 1 回合） | 1 回合/min | **~100 人** |
+| 重度（4 回合/min） | 4 回合/min | **~25 人** |
+
+> **注册用户总数无上限**（不活跃用户成本为零）。估服务器要用「**峰值同时活跃数**」，
+> 不是「注册了多少人」（§10.9）。
+
+---
+
+> ### 路径约定（全文通用，先看这条再抄命令）
+>
+> | 写法 | 含义 | 你要做什么 |
+> |---|---|---|
+> | `/path/to/pi-py` | **本仓库克隆到你机器上的位置** | 换成你的实际路径，例如 `/opt/pi-py`、`~/pi-py` |
+> | `/opt/pi-venv` | 示例 venv 路径 | 可换任意位置，但**必须与 systemd 单元里的 `ExecStart=` 一致**（§7），否则服务起不来 |
+> | `/etc/pi.env` | pi-py 的环境变量文件 | 由 systemd `EnvironmentFile=` 读取（§7 全表） |
+> | `/usr/local/services/cubetoolbox/...`、`/data/cubelet` | CubeSandbox 平台自身路径 | **由官方安装包决定，不要手改** |
+>
+> 建议开工前先定好变量，后面命令直接复用，避免手抄绝对路径出错：
+>
+> ```bash
+> export PI_SRC=/opt/pi-py       # 本仓库位置
+> export PI_VENV=/opt/pi-venv    # venv 位置
+> ```
+
+---
+
 ## 0. 作者服务器真实画像（这台是怎么跑通的）
 
 | 项 | 值 | 说明 |
@@ -32,6 +101,22 @@
 
 > **迁往大内存服务器 = 把"沙箱并发数"和"池大小"按新内存放大，其余都不变。**
 > 具体每个参数怎么改 → 第 9 节。
+
+### 0.1 第二台验证环境（本文档 §10 的密度数据出处）
+
+本文档除作者那台 3.6G 小机外，全部内容**已在一台不同云厂商的机器上完整复现**，
+§10 的密度/规格实测数据即来自这台：
+
+| 项 | 值 | 说明 |
+|---|---|---|
+| 规格 | **8 vCPU / 61 GiB / 200 GiB** | **火山引擎** Ubuntu 24.04，非腾讯云 |
+| 虚拟化 | **无 `/dev/kvm`** → 走 PVM 内核（§3.2） | 验证了"没有嵌套虚拟化也能部署" |
+| CPU 拓扑 | 4 核 × 2 线程 = 8 逻辑核 | 平台自动探测出 `quota_cpu=16000` 毫核 |
+| 网段 | eth0 = `192.168.0.151/24` | **与默认 CIDR `192.168.0.0/18` 冲突** → 见 §12 |
+| 磁盘 | 单块盘全给 ext4 根分区，无数据盘 | **`/data/cubelet` 需 XFS** → 见 §12 |
+| 镜像源 | `mirrors.tencentyun.com` **不可达** | Dockerfile 需 `--build-arg` 换源 → 见 §6.2 |
+
+**换一台机器 + 换一个云厂商，本文档照做即通**；两台机器的差异全部记录在 §12 避坑清单里。
 
 ---
 
@@ -97,9 +182,33 @@
 
 ---
 
-## 3. 硬前提：嵌套虚拟化 KVM
+## 3. 虚拟化能力：有 KVM 直接用；没有就装官方 PVM 内核
 
-CubeSandbox 用 QEMU/PVM 起微虚拟机，**没有 `/dev/kvm` 全部空谈**。
+> 结论先行：**最终一定要有 `/dev/kvm`，但这不等于必须买一台"支持嵌套虚拟化"的机器** ——
+> 官方提供 **PVM 宿主内核**，装完就在原本没有 KVM 的普通云主机上提供了 `/dev/kvm`。
+> 没有 KVM 的机器走 §3.2。
+
+### 3.0 部署前环境自检（30 秒，提前暴露 §12 里的大半坑）
+
+```bash
+echo "架构: $(uname -m)  内核: $(uname -r)"
+echo "内存: $(free -g | awk 'NR==2{print $2}') GB   根盘可用: $(df -h / | awk 'NR==2{print $4}')"
+echo "--- KVM ---"
+[ -e /dev/kvm ] && echo "  ✅ 有 /dev/kvm → §3.1" || echo "  ⚠️  无 /dev/kvm → §3.2 装 PVM 内核"
+grep -qE 'vmx|svm' /proc/cpuinfo && echo "  CPU 有硬件虚拟化标志" || echo "  CPU 无 vmx/svm（PVM 不需要）"
+echo "--- /data/cubelet（必须 XFS）---"
+df -T /data/cubelet 2>/dev/null | awk 'NR==2{print "  文件系统: "$2}' || echo "  未挂载 → 需准备 XFS，见 §12"
+echo "--- 网段（192.168.x 会和默认 CIDR 冲突）---"
+ip -4 -br addr | awk '$1!="lo"{print "  "$1" "$3}'
+grep nameserver /etc/resolv.conf | sed 's/^/  DNS /'
+echo "--- 引导 ---"
+grep -qE '^GRUB_DISABLE_SUBMENU="?true' /etc/default/grub && echo "  ⚠️  GRUB_DISABLE_SUBMENU=true → §3.2② 需特殊处理" || echo "  GRUB 子菜单正常"
+echo "--- 拉镜像可达性 ---"
+curl -sS -o /dev/null -w "  docker.io      -> %{http_code}\n" --max-time 10 https://registry-1.docker.io/v2/ 2>/dev/null || echo "  ⚠️  docker.io 不可达 → §12 配镜像源"
+curl -sS -o /dev/null -w "  镜像加速源     -> %{http_code}\n" --max-time 10 https://docker.m.daocloud.io/v2/ 2>/dev/null
+```
+
+### 3.1 有 KVM（标准路径，优先选）
 
 ```bash
 ls -l /dev/kvm                      # 必须有这个设备
@@ -107,7 +216,66 @@ sudo apt install -y qemu-kvm && sudo kvm-ok   # 提示 "KVM acceleration can be 
 ```
 
 云厂商注意：部分机型默认关闭嵌套虚拟化，需在控制台或工单开启（腾讯云大部分标准型
-默认支持；阿里云要工单申请）。**买机器前先确认 KVM，这是唯一没法靠代码绕过的前提。**
+默认支持；阿里云要工单申请）。**买机器前先确认 KVM 最省事。**
+
+### 3.2 没有 KVM：装 PVM 宿主内核（官方路径，无需嵌套虚拟化）
+
+**怎么判断属于这一档**：`ls /dev/kvm` 不存在，且
+
+```bash
+grep -oE 'vmx|svm' /proc/cpuinfo | sort -u     # 无输出 → CPU 没暴露硬件虚拟化
+systemd-detect-virt                            # 输出 kvm → 这台自己就是虚拟机
+modprobe kvm_intel || modprobe kvm_amd         # 报 Operation not supported
+```
+
+说明宿主没开嵌套虚拟化。**PVM（Pagetable-based VM）不依赖宿主暴露 VT-x/AMD-V**，
+在 guest 内核层用影子页表实现，对宿主 hypervisor 完全透明 —— 这正是官方为普通云服务器
+准备的路径（详见 CubeSandbox 官方 `docs/zh/guide/pvm-deploy.md`）。
+
+```bash
+# ① 下载 PVM 宿主内核主包
+#    Releases 页 https://cnb.cool/CubeSandbox/CubeSandbox/-/releases 过滤 kernel-release
+dpkg -i linux-image-*opencloudos9.cubesandbox.pvm.host*_amd64.deb    # DEB 系
+rpm -ivh --oldpackage kernel-*opencloudos9.cubesandbox.pvm.host*.rpm # RPM 系
+
+# ② 设为默认启动项
+#    ★ 不要照抄官方 PVM 指南的 GRUB_DEFAULT="Advanced options for Ubuntu>..." 写法：
+#      若 /etc/default/grub 里有 GRUB_DISABLE_SUBMENU="true"（部分云厂商镜像默认如此），
+#      就没有 "Advanced options" 子菜单，该写法会【静默失效】——
+#      重启后仍进旧内核、PVM 不生效，且全程没有任何报错。
+#    稳妥做法：直接从 grub.cfg 取顶层标题，保证逐字节匹配
+TITLE=$(grep -oE "^menuentry '[^']*opencloudos9[^']*'" /boot/grub/grub.cfg | head -1 \
+        | sed "s/^menuentry '//; s/'\$//")
+sed -i "s|^GRUB_DEFAULT=.*|GRUB_DEFAULT=\"$TITLE\"|" /etc/default/grub
+update-grub
+grep -qF "menuentry '$TITLE'" /boot/grub/grub.cfg && echo "✅ 启动项匹配" || echo "❌ 不匹配，别重启！"
+
+# ③ 写入 PVM 所需内核参数并重启
+curl -sL https://cnb.cool/CubeSandbox/CubeSandbox/-/git/raw/master/deploy/pvm/grub/host_grub_config.sh | bash
+reboot
+
+# ④ 重启后验证（四条都要过）
+uname -r | grep -q cubesandbox.pvm.host && echo "✅ PVM 内核已生效"
+modprobe kvm_pvm && lsmod | grep kvm_pvm
+ls -la /dev/kvm
+echo 'kvm_pvm' > /etc/modules-load.d/kvm-pvm.conf      # 开机自动加载
+```
+
+> **重启前务必确认能通过云控制台 VNC/救援模式登录**，以防新内核起不来。
+>
+> 安装 CubeSandbox 时记得带 **`CUBE_PVM_ENABLE=1`**（见 §5），否则装的是普通 guest 内核，
+> PVM 不生效。安装日志里应出现
+> `[one-click] CUBE_PVM_ENABLE=1, selected PVM guest kernel: ... vmlinux -> vmlinux-pvm`。
+
+**已实测环境**（供对照）：火山引擎 8C/61G Ubuntu 24.04，宿主无 `vmx`/`svm`、无 `/dev/kvm`；
+装 `kernel-release-260921-1`（`6.6.69-...pvm.host`）后 `/dev/kvm` 出现，平台与沙箱全部跑通。
+
+**回滚**（新内核起不来时，从云控制台 VNC/救援模式进去）：
+
+```bash
+cp /root/grub.backup.* /etc/default/grub && update-grub && reboot   # 改回旧内核（修改前先备份！）
+dpkg -r linux-image-6.6.69-opencloudos9.cubesandbox.pvm.host-*     # 卸载 PVM 内核
+```
 
 ---
 
@@ -196,19 +364,54 @@ pi-py 的沙箱需要"能跑 pandas / openpyxl / python-docx / pypdf / 7z / popp
 > `docker run --rm --entrypoint cat <img> /usr/bin/envd` 提取）。**换平台版本时，
 > 这两个文件要换成对应版本的**，否则与 CubeMaster 行为不符。
 
-### 6.2 构建（国内必须走腾讯云 mirror，否则直连官方源极慢）
+### 6.2 构建（镜像源按云厂商选，选错会慢几十倍）
+
+Dockerfile 的 apk / pip 源通过 `--build-arg` 传入，**默认值指向腾讯云内网**
+（作者环境）。换云厂商必须覆盖，否则 `mirrors.tencentyun.com` 不可达或极慢。
 
 ```bash
 cd /path/to/pi-py
+
+# 腾讯云（默认值，可省略全部 --build-arg）
 docker build -t pi-sandbox:1.0 -f deploy/sandbox/Dockerfile .
+
+# 其他云（示例：火山云/阿里云）—— apk 用官方源、pip 用清华源
+docker build -t pi-sandbox:1.0 -f deploy/sandbox/Dockerfile \
+  --build-arg APK_MIRROR_HOST=dl-cdn.alpinelinux.org \
+  --build-arg PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple \
+  --build-arg PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn \
+  .
+
 # 构建过程会打印 "== 自检全部通过 =="，任何库/命令缺失都会 fail —— 这是有意的
 ```
 
+| build-arg | 默认（腾讯云） | 说明 |
+|---|---|---|
+| `APK_MIRROR_HOST` | `mirrors.tencentyun.com` | 替换 alpine 的 `dl-cdn.alpinelinux.org` |
+| `PIP_INDEX_URL` | `http://mirrors.tencentyun.com/pypi/simple` | pip 索引 |
+| `PIP_TRUSTED_HOST` | `mirrors.tencentyun.com` | pip 信任主机 |
+
+> **实测速度差**（火山云，下 alpine APKINDEX）：`mirrors.aliyun.com` 0.16s ·
+> 清华 1.4s · 官方 `dl-cdn` 5.7s。apk 阶段用慢源会让 81 个包的安装拖到十几分钟。
+> 非腾讯云环境建议 `APK_MIRROR_HOST=mirrors.aliyun.com`。
+
 ### 6.3 推 registry
+
+> ⚠️ 先确认 `127.0.0.1:5000` 有 registry 在跑。**一键安装不一定带 registry**
+> （实测平台 13 个服务里没有它），没有就先起一个：
+>
+> ```bash
+> ss -ltn | grep :5000 || docker run -d --name cube-registry --restart always \
+>   -p 0.0.0.0:5000:5000 registry:2
+> curl -s http://127.0.0.1:5000/v2/_catalog      # 期望 {"repositories":[]}
+> ```
 
 ```bash
 docker tag  pi-sandbox:1.0 127.0.0.1:5000/pi-sandbox:1.0
 docker push 127.0.0.1:5000/pi-sandbox:1.0
+
+# 确认真的进去了（§6.4 会用这个镜像）
+curl -s http://127.0.0.1:5000/v2/pi-sandbox/tags/list   # 期望 {"name":"pi-sandbox","tags":["1.0"]}
 ```
 
 ### 6.4 建模板（镜像 → 可调度模板）
@@ -257,7 +460,15 @@ A+B 镜像解包成 ext4 后约 400MB+，**模板 READY 后第一个沙箱冷启
 ```bash
 sudo python3.12 -m venv /opt/pi-venv
 sudo -E /opt/pi-venv/bin/pip install -e /path/to/pi-py[production]   # production 含 boto3
+
+# ★ 必须补装 greenlet：pyproject 只声明了 sqlalchemy>=2.0，而 SQLAlchemy 2.1 的
+#   asyncio 扩展【硬性要求】greenlet。缺了服务直接起不来：
+#     ImportError: The SQLAlchemy asyncio module requires that the Python 'greenlet' library is installed
+sudo -E /opt/pi-venv/bin/pip install greenlet
 ```
+
+> pi-py 的 `pyproject.toml` 未包含 **e2b 系 SDK**，必须按 §1 的版本单独装
+> （`e2b==2.26.0` + `e2b-code-interpreter==2.8.1`），否则 `PI_SANDBOX=cubesandbox` 起不来。
 
 下面这张表是**全部环境变量**（含默认值），★=上线必改。写进 `/etc/pi.env`，
 systemd `EnvironmentFile` 引用。
@@ -314,6 +525,15 @@ systemd `EnvironmentFile` 引用。
 | `PI_TOKEN_TTL_MIN` | `720` | JWT 有效期 |
 | `PI_MILVUS_URI` / `PI_EMBEDDING_MODEL` | 空 | 记忆层（可选） |
 | `PI_SKILLS_DIR` / `PI_MCP_SERVERS` | 空 | 技能/MCP |
+| `PI_ARCHIVE_S3_ENDPOINT` | 空 | **工作区归档**上传目标（不设则只落本地，§11 的 `s3` 字段会是 null）★ |
+| `PI_ARCHIVE_S3_BUCKET` | 空 | 归档 bucket，如 `pi-archives`（**不会自动创建，需先建**） |
+| `PI_ARCHIVE_S3_ACCESS_KEY` / `PI_ARCHIVE_S3_SECRET_KEY` | 空 | 归档 MinIO 凭据 |
+
+> ⚠️ **`PI_ARCHIVE_S3_*` 与文件管线的 `PI_S3_*` 是两套独立变量**，别只配一套。
+> 前者管"回合结束把 workspace 打包归档到对象存储"（`src/pi/server/archive.py`），
+> 后者管"用户上传文件/产物"。只配 `PI_S3_*` 时归档仍只落本地，
+> §11 清单里的「归档 json 的 `s3` 字段 non-null」永远打不上勾，且**不报错**（静默跳过）。
+> 归档只在该回合**真用过沙箱**（有 baseline）时触发，纯聊天回合不产生归档。
 
 ### 7.5 systemd 单元
 
@@ -385,6 +605,9 @@ MinIO 一个公网地址，可无缝切回 VM 真直连。
 
 ## 9. 迁往大内存服务器的适配（只动这几个数）
 
+> ⚠️ **先读 §10**：模板 CPU/内存怎么定、并发上限由什么决定、为什么"密度 ≠ 吞吐"，
+> 都在 §10。本节只讲"换了大机器要改哪几个数"。
+
 部署方式与 3.6G 小机**完全相同**，按新内存放大下面几个值即可：
 
 | 参数 | 3.6G 本机值 | 8C/64G 建议 | 16C/128G 建议 | 依据 |
@@ -392,7 +615,7 @@ MinIO 一个公网地址，可无缝切回 VM 真直连。
 | `PI_SANDBOX_POOL_SIZE` | 4 | 8-12 | 12-24 | 池 = 常驻 VM 数；每 VM ≈ 256M×1.2 |
 | `PI_SANDBOX_POOL_PRESSURE_HIGH` | 1.5G | 16G | 32G | 可用内存低于此进"紧张档"（回收加速） |
 | `PI_SANDBOX_POOL_PRESSURE_LOW` | 512M | 8G | 16G | 回到"宽裕档"阈值 |
-| `PI_MAX_CONCURRENT_RUNS` | 8 | 16 | 32 | 受 **CPU** 限制而非内存（4 核→8 核→16 核） |
+| `PI_MAX_CONCURRENT_RUNS` | 8 | **12**（别用 16） | **24**（别用 32） | 对齐**物理核数**并留余量；**等于平台配额上限 = 零余量**，第 N+1 个请求必失败（§10.6） |
 | `--writable-layer-size`（模板） | 1Gi | 2Gi | 4Gi | 沙箱 workspace 磁盘；处理大文件时加大 |
 | 沙箱模板 `--memory` | 256Mi | 256/512Mi | 512Mi/1Gi | Python agent 任务 256Mi 够；重型任务才加 |
 | `PI_MAX_UPLOAD_BYTES` | 900M | 900M 不变 | 900M 不变 | 上限由"流式未实现"决定，与内存无关 |
@@ -404,18 +627,255 @@ MinIO 一个公网地址，可无缝切回 VM 真直连。
 
 ---
 
-## 10. 配额与并发调参（实测值）
+## 10. 沙箱规格、并发与密度（为什么这样设计 + 实测数据）
 
-| 参数 | 本机实测 | 建议 | 说明 |
+> 本节回答三个后来者一定会问的问题：**模板该给多少 CPU/内存？能跑多少并发？为什么官方说"单机数千"而我这里只有十几个？**
+
+### 10.1 一句话结论
+
+**模板用 `1 核 / 256Mi`。并发上限 = `CPU 配额 ÷ 模板 CPU`，与内存几乎无关。**
+
+### 10.2 并发上限的真实公式：三道闸门取最小
+
+```bash
+# ① CPU 闸门（绝大多数情况下就是它）
+平台 quota_cpu(毫核) ÷ 模板 cpu(毫核)
+# ② 内存闸门 —— 注意：平台按【每沙箱固定 ~400MB】计费，与模板申请多少无关（见 10.7）
+平台 quota_mem_mb ÷ 400
+# ③ 网卡池闸门
+cubelet 配置里的 tap_init_num（默认 500）
+```
+
+查你这台的实际值：
+
+```bash
+# 平台侧配额
+docker exec cube-sandbox-mysql mysql -ucube -pcube_pass cube_mvp \
+  -e "SELECT quota_cpu, quota_mem_mb, max_mvm_num FROM t_cube_node_registration\G"
+# 网卡池
+grep tap_init_num /usr/local/services/cubetoolbox/Cubelet/config/config.toml
+```
+
+**实测验证（8 核 / 61GB 机器，`quota_cpu=16000`）**——公式与实测精确吻合：
+
+| 模板 CPU | 公式预测 | 实测结果 |
+|---|---|---|
+| 1000m | 16000÷1000 = **16** | 16 成功，**17 失败** ✅ |
+| 100m | 16000÷100 = 160 | 160 成功，170 失败 ✅ |
+
+### 10.3 ★ `cpu=NNNm` 不是"调度权重"，是硬 cgroup 节流
+
+这是**最容易误配**的地方。它不是"抢 CPU 的优先级"，而是直接换算成 guest 内的 `cpu.max`：
+
+| 模板 `--cpu` | guest `/sys/fs/cgroup/cpu.max` | 实际算力 | 实测纯 CPU 负载(3e6 循环) |
 |---|---|---|---|
-| 沙箱模板配额 | 256M/1核 | 256M-1G/1核 | 256M 跑 Python agent 任务 OK |
-| 平台并发安全值 | 6-8（4核） | 核数 × 1.5-2 | 看 `pi_sandbox_create_duration` 是否恶化 |
-| 命令超时 | 120s 默认/600s 上限 | 不变 | 沙箱内 GNU timeout 包装，退出码 124 |
-| close 总超时 | 90s | 不变 | 超时后清理线程继续收尾，VM 必死 |
-| 平台 VM 空闲回收 | 600s | 不变 | 最后防泄漏防线 |
+| **1000m** | `100000 100000` | **单核 100%** | **269 ms** |
+| 100m | `10000 100000` | 单核 **10%** | **2699 ms（慢 10 倍）** |
 
-**错误码速记**：平台返回 `error code 130597: no more resource` = 平台配额耗尽 →
-先 `cubemastercli list` 看堆积 VM，kill 泄漏源，别盲目重试。
+```bash
+# 自己验证（沙箱内）
+cat /sys/fs/cgroup/cpu.max     # 输出 "<quota> <period>"，quota/period 就是算力比例
+```
+
+> ⚠️ **`cpu=100m` 不只是"慢"，还会让数据面间歇性不可用**：实测 10% 算力下，**沙箱创建后的第一条命令直接 502**
+> （envd 冷启动都撑不住，重试一次才通）。任何生产模板都**不要低于 500m**。
+
+**为什么容易被误用**：调小模板 CPU 能让"并发数"这个数字变大（16→160），看起来更漂亮 ——
+但那只是**配额除法**，代价是每个沙箱慢 10 倍。**别为了好看的密度数字牺牲算力。**
+
+### 10.4 内存该给多少：实测各负载的真实峰值
+
+A+B 镜像（`deploy/sandbox/Dockerfile`）里，各负载的 cgroup `memory.peak`（每个负载用**全新沙箱**单独测，否则高水位会累加）：
+
+| 负载 | 峰值内存 |
+|---|---|
+| 空载（仅 guest OS + envd） | **3.7 MiB** |
+| `import pandas + numpy` | 52.9 MiB |
+| **pandas 读 20MB CSV + groupby** | **118.9 MiB** |
+| openpyxl 写 5 万行 xlsx | 55.2 MiB |
+| 处理 30MB 二进制 | 67.8 MiB |
+
+**关键换算**：模板 `--memory 256` 在 guest 内实际可见 `MemTotal` 只有 **209 MiB**（有虚拟化开销）。
+所以 pandas 那个 119 MiB 峰值已经吃掉了一半以上 —— **256Mi 是底线，不是宽裕值**。
+
+### 10.5 推荐配比（及理由）
+
+| 场景 | CPU | 内存 | 为什么 |
+|---|---|---|---|
+| **pi-py agent 默认** | **1000m** | **256Mi** | Python agent 任务以单线程为主，1 核=满速单核；256Mi 够跑常规 pandas/openpyxl |
+| 大文件 / 重任务 | 1000m | **512Mi~1Gi** | pandas 峰值已 119MiB/209MiB，稍大的 CSV 就会 OOM |
+| 通用代码沙箱（含浏览器） | 2000m | 2 GiB | 官方基准口径 |
+| 只读轻查询（提密度用） | **500m（下限）** | 128~256Mi | 想多塞几个时降 CPU，但别低于 500m（见 10.3） |
+
+**三条设计原则：**
+1. **CPU 决定"单个干得多快" + "能并发几个"**（配额除法）；**内存决定"能处理多大的文件"**。
+2. **CPU 别低于 500m**：100m 实测慢 10 倍且首条命令 502。
+3. **内存 256Mi 是 A+B 镜像的底线**：由 pandas 峰值 119MiB 对 guest 可见 209MiB 量出来的。
+
+### 10.6 ★ 密度 ≠ 吞吐（最重要的认知）
+
+**"能同时持有多少空载沙箱"和"能同时干多少活"是两回事。**
+
+- 空载沙箱**几乎不吃资源**：实测 160 个沙箱时宿主 `load` 只有 **0.3**，单 VM 真实内存仅 **16 MiB**
+- 但**真跑任务时物理核数是硬顶**：8 核机器上，8~16 个沙箱同时跑 pandas 就会互相排队
+
+平台侧也是同一逻辑：官方基准里 **1000 个沙箱 × 2 vCPU = 2000 vCPU 跑在 96 核上**（20 倍超配）。
+超配对"等待 LLM 返回"的 agent 负载完全合理（沙箱 90% 时间在空转），但不能据此估算计算吞吐。
+
+**配置建议**：`PI_MAX_CONCURRENT_RUNS` 应对齐**物理核数量级**，而不是配额算出来的密度上限。
+例如 8 核机器 → `PI_MAX_CONCURRENT_RUNS=12`（留余量），而不是 16（正好等于配额上限，零余量）。
+
+### 10.7 为什么官方说"单机数千"，而你这里只有十几个？（口径澄清）
+
+官方 README 写「单沙箱**额外开销** <5MB，CoW + 内核共享，单机可运行**数千个**实例」。
+这句话**是对的，但说的是"空载密度"，不是"并发处理能力"**。官方基准报告里写得很清楚：
+
+| 口径 | 官方数据（96 核 / 375 GiB 裸金属，2vCPU/2GiB 规格） |
+|---|---|
+| 实测创建 | **1000 个**，零回滚，单 VM 均摊 **~25 MB**，1000 个仅耗 25 GiB |
+| 官方自己的估算 · **空载** | 受 ~25MB 摊销主导 → **可达数千** |
+| 官方自己的估算 · **满载** | `375 GiB ÷ 2 GiB ≈` **185 个** |
+
+**为什么空载这么省**：2 GiB 规格的沙箱**空载时不预占 2 GiB**，CoW 按需分配，只在真写入时分配。
+
+**但要注意平台调度器的"计费"和"实际占用"是两回事**（实测发现）：
+- 调度器按**每沙箱固定 ~400 MB** 计费（`quota_mem_mb 78797 ÷ 197 = 400.0` 正好整除）
+- 而**与模板申请多少无关**：128Mi 模板拐点 197，512Mi 模板拐点 196，几乎一样
+- 真实占用却只有 ~16 MB/沙箱（197 个总共 3.2 GB，机器还剩 55 GB）
+
+所以「能塞多少」由**配额**决定，「实际吃多少内存」由 **CoW** 决定，两者不要混为一谈。
+
+**一台 8 核 / 61GB 普通云主机上，逐层放开配额实测出的"空载能到多少"**（模板均为 1 核）：
+
+| 放开的闸门 | 实测上限 | 卡在哪 |
+|---|---|---|
+| 全默认（`mcpu_limit=0` → 16000） | **16** | `quota_cpu 16000 ÷ 模板 1000m` |
+| 只放开 CPU（`mcpu_limit=2000000`） | **197** | `quota_mem_mb 78797 ÷ 400MB/沙箱` |
+| CPU + 内存（`mem_limit="500Gi"`）+ `tap_init_num=1500` | **1000** | `max_mvm_num`（由 `mem_limit ÷ 512MB` 推导，500Gi→1000） |
+| 继续放大 `mem_limit`（如 `1Ti`） | ≈ **3800**（理论） | 物理内存：`58GB ÷ 15.2MB` 摊销 |
+
+关键实测数据（1000 个存活时）：
+
+```
+单 VM 均摊开销 : 15.2 MB     （vs 官方 BMI5 的 ~25MB，同量级）
+1000 个共耗    : 15.2 GB     （机器还有 42 GB 可用）
+创建耗时       : 8.6s / 100 个（快照恢复）
+销毁耗时       : 25.6s / 1000 个
+```
+
+> **三个闸门是"串行"的：放开一个就露出下一个。** 这也是为什么"我放开配额后还是没到几千" ——
+> 每层都得放。而 `max_mvm_num` 是**由 `mem_limit` 推导**的（`mem_limit ÷ 512MB`），
+> 所以调 `mem_limit` 时它会被自动重算，不用单独改。
+
+### 10.8 真要提密度怎么做（以及代价）
+
+> **三层闸门要一起放**（§10.7 的实测表），只放一层会在下一层卡住。
+
+```bash
+# ① 抬高 CPU 配额 + 内存配额（cubelet 动态配置，0/"" = 自动探测）
+vi /usr/local/services/cubetoolbox/Cubelet/dynamicconf/conf.yaml
+#   host:
+#     quota:
+#       mcpu_limit: 2000000    # 毫核；原 0 = 自动探测出 16000
+#       mem_limit: "500Gi"     # k8s 风格数量串；原 "" = 自动探测出 78797(MB)
+#                              # ★ max_mvm_num 会按 mem_limit÷512MB 自动重算（500Gi→1000）
+systemctl restart cube-sandbox-cubelet.service
+
+# ② 提高网卡池上限（默认 500；目标密度必须 ≤ 这个值，否则建不下去）
+vi /usr/local/services/cubetoolbox/Cubelet/config/config.toml
+#   [plugins."io.cubelet.internal.v1.network"]
+#     tap_init_num = 1500
+systemctl restart cube-sandbox-cubelet.service
+#   ⚠️ tap 池【只能增不能减】：把它改回 500 并重启后，已预建的 tap 设备不会消失
+#      （实测等过两个 reconcile 周期仍是 1500 个，cubelet 继续持有约 6000 个句柄）。
+#      无害——只是多占一点 slab 和 fd；若确实要回收需整机重启或手工 ip link del。
+#      所以压测时按需调，别为了"试试"随手调到几千。
+
+# ③ 验证配额已生效（三项都要看）
+docker exec cube-sandbox-mysql mysql -ucube -pcube_pass cube_mvp \
+  -e "SELECT quota_cpu, quota_mem_mb, max_mvm_num FROM t_cube_node_registration\G"
+```
+
+**代价与注意**：
+- 抬高 `mcpu_limit` 会让调度器允许**远超物理核数**的 CPU 超配（例如 8 核机器上允许 250 倍）。
+  空载没事，**一旦多个沙箱同时算东西就会互相拖垮**。生产上要配合 `PI_MAX_CONCURRENT_RUNS` 兜住。
+- **测完务必还原**，三个都要还：`mcpu_limit: 0`、`mem_limit: ""`、`tap_init_num: 500`。
+  验证还原是否干净：`diff` 一下改动前的备份，或核对 `quota_cpu` 是否回到自动探测值（8 核机器 → 16000）。
+- 改完配置要 `systemctl restart cube-sandbox-cubelet`，重启后**约 15-30 秒**节点才重新注册，
+  期间 `cubemastercli list` 会显示 `NODES_SCANNED 0/0`，**这是正常的，别当成故障**。
+- **压测会留下沙箱**：如果测试进程异常退出（例如此前的 502），沙箱不会被回收，会一直占着模板导致
+  `template delete failed: template is still in use`。测试后先 `cubemastercli list` 清干净再删模板。
+
+### 10.9 能服务多少用户？（实测吞吐换算）
+
+"能扛 1000 个沙箱" ≠ "能服务 1000 个用户"。用户容量要按**吞吐**算，量的是端到端回合（含 LLM 往返 + 工具调用 + 沙箱冷启动）。
+
+**实测（8 核 / 61GB，`PI_MAX_CONCURRENT_RUNS=12`，每用户一个独立账号跑一个回合）：**
+
+| 并发用户 | 成功 | 总墙钟 | 吞吐 | 单回合 p50 | p95 | 失败 |
+|---|---|---|---|---|---|---|
+| 4 | 4/4 | 27.8s | 9 /min | 9.0s | 27.8s | 0 |
+| 8 | 8/8 | 6.6s | 73 /min | 6.2s | 6.6s | 0 |
+| **12** | **12/12** | 7.9s | **91 /min**（峰值） | 4.9s | 7.9s | 0 |
+| 16 | 16/16 | 12.5s | 77 /min | 6.5s | 12.5s | 0 |
+| **24** | **24/24** | 14.2s | 101 /min | 8.8s | 13.2s | **0** |
+
+> 第一档 4 用户 27.8s 是**冷启动**（首次建沙箱 + 解包），§6.5 说的预热问题；后续档位无此开销。
+
+**三个关键结论：**
+
+1. **用户多了不会失败，只会排队。** 24 个并发用户（是配额 12 的**两倍**）依然 24/24 成功，
+   只是 p95 从 7.9s 涨到 13.2s。pi-py 用信号量排队（`RunManager` 的 `max_concurrent`），不是拒绝。
+2. **吞吐在高并发处走平**：12 用户 91/min 是峰值，16 用户反而降到 77/min（排队调度开销）。
+   这就是 `PI_MAX_CONCURRENT_RUNS` 该对齐物理核数的原因（§10.6）。
+3. **热池只留 8 个会话**（`PI_SANDBOX_POOL_SIZE=8`）：前 8 个用户的下一个回合是"秒回"，
+   第 9 个起每回合走一次冷启动快照恢复（~0.5s，代价很小，不是失败）。
+
+**换算成"能服务多少用户"**（用 `服务用户数 = 吞吐 ÷ 每用户回合频率`，假设必须明说）：
+
+| 使用强度 | 每用户 | 本机可服务 |
+|---|---|---|
+| 轻度（5 分钟 1 回合） | 0.2 回合/min | **~500 人** |
+| 中度（1 分钟 1 回合） | 1 回合/min | **~100 人** |
+| 重度（4 回合/min） | 4 回合/min | **~25 人** |
+
+按业界"峰值并发 ≈ 注册用户数的 2%~5%"估：
+
+| 峰值并发占比 | 对应注册用户数 |
+|---|---|
+| 2% | **~600 人** |
+| 5% | **~240 人** |
+
+> **注册用户总数本身没有上限**（只占数据库行）—— 不活跃的用户成本为零，
+> 只有"正在跑回合"的用户才占并发槽。所以别用"注册了多少人"来估服务器，要用"**峰值同时活跃**"。
+
+**注意**：本测试的延迟**包含外部模型网关往返**。若网关有速率限制或变慢，实际吞吐会随之下降——
+这部分不在本机可控范围内。
+
+### 10.10 本节避坑清单
+
+| 坑 | 现象 | 原因 / 规避 |
+|---|---|---|
+| **用 1 核模板测"密度"** | 测出"只能跑 16 个" | 那是 `quota_cpu÷模板CPU` 的配额除法，**不是密度**。密度要用小 CPU 模板 + 看真实内存占用 |
+| **为了密度把 CPU 调到 100m** | "并发 160 个！" 但每个慢 10 倍，首条命令 502 | 别刷这种数字。CPU 下限 500m |
+| **只放开一层配额就以为到顶了** | "放开了 CPU 配额，还是只有 197 个" | 三层闸门是**串行**的：放开 CPU → 撞内存计费(400MB/沙箱) → 放开 `mem_limit` → 撞 `max_mvm_num`（由 mem_limit 推导）。见 §10.7 实测表 |
+| **忘了 `tap_init_num` 也要放大** | 配额够但建到 500 就失败 | 默认 500，目标密度必须 ≤ 它 |
+| **压测异常退出留下沙箱** | 删模板报 `template is still in use` | 测试后先 `cubemastercli list` 清理残留沙箱（挂着的会占住模板） |
+| **以为内存配额会限制密度** | 想不通"2GiB 规格怎么能在 375GiB 上跑 1000 个" | 空载不预占配额（CoW），调度器另有 ~400MB/沙箱的固定计费 |
+| **按密度上限设 `PI_MAX_CONCURRENT_RUNS`** | 高峰时"看起来没满"却排队/超时 | 并发上限要对齐**物理核数**，不是配额密度；且留余量 |
+| **改配额测试后忘记还原** | 后续真实负载互相拖垮 | 测完把 `mcpu_limit` 还原为 `0`、`tap_init_num` 还原为 `500` |
+| **重启 cubelet 后立刻判定"节点掉了"** | `NODES_SCANNED 0/0` | 重新注册要 15-30s，等一会儿再看 |
+
+**错误码速记**：平台返回 `error code 130597: no more resource` = 配额耗尽（CPU 或内存计费）→
+先 `cubemastercli list` 看堆积 VM 并清理，再核对 10.2 的三道闸门，**别盲目重试**。
+
+**其余调参项**：
+
+| 参数 | 实测值 | 建议 |
+|---|---|---|
+| 命令超时 | 120s 默认 / 600s 上限 | 不变（沙箱内 GNU timeout 包装，超时退出码 124） |
+| close 总超时 | 90s | 不变（超时后清理线程继续收尾，VM 必死） |
+| 平台 VM 空闲回收 | 600s | 不变（最后一道防泄漏防线） |
 
 ---
 
@@ -428,6 +888,9 @@ MinIO 一个公网地址，可无缝切回 VM 真直连。
 - [ ] 模板 READY 且做了首次预热（§6.5）
 - [ ] `pi_py` 库自动迁移成功（`journalctl -u pi` 里无 migration 报错）
 - [ ] 端到端冒烟：建会话 → 上传文件 → 让 agent `list_files`+`fetch_file` 处理 → 结果正确
+- [ ] **模板规格核对**：`cpu=1000m`、`memory=256Mi`（重任务 512Mi）；**`cpu` 不低于 500m**（§10.3）
+- [ ] **`PI_MAX_CONCURRENT_RUNS` 对齐物理核数**（8 核→12），不是按配额密度上限设（§10.6）
+- [ ] **若做过压测**：`mcpu_limit` 已还原为 `0`、`tap_init_num` 已还原为 `500`（§10.8）
 - [ ] `/metrics` 四个沙箱系列在（create/close/health/trace failures）
 - [ ] 归档目录可写；配 MinIO 后归档 json 的 `s3` 字段 non-null
 - [ ] 备份：MySQL 每日 dump；归档同步异机/对象存储
@@ -438,12 +901,16 @@ MinIO 一个公网地址，可无缝切回 VM 真直连。
 
 | 坑 | 现象 | 规避 |
 |---|---|---|
-| 无 /dev/kvm | 建沙箱报 virtualization 错误 | 买前确认嵌套虚拟化，`kvm-ok` 先测 |
+| 无 /dev/kvm | 建沙箱报 virtualization 错误 | 有 KVM 直接买；**没有也能救 → 装 PVM 内核（§3.2）** |
+| PVM 内核没生效 | 重启后 `uname -r` 仍是旧内核，`ls /dev/kvm` 仍不存在，**且无任何报错** | 宿主机 `GRUB_DISABLE_SUBMENU="true"` 时官方 `GRUB_DEFAULT` 写法会静默失效，按 §3.2 ② 用顶层标题 |
 | MinIO 端口撞平台(9000) | pi-minio 或平台 minio 起不来 | 文件管线 MinIO 用 19000 系（§2/§4.3） |
 | PI_S3_ENDPOINT 用 127.0.0.1 | 客户端直传时 URL 指向自己 → 403/连不上 | 用客户端可达地址（§8.3） |
 | boto3 签名 403(SigV2) | 预签名 PUT 时 `SignatureDoesNotMatch` | storage 里强制 `Config(signature_version="s3v4")`（已内置） |
 | 沙箱镜像缺 envd/entrypoint | `Exec mount failed` / `mount namespace` | §6.6 三条契约 |
+| **怎么快速判断模板镜像合格** | create 返回里 `envdVersion` 是 `0.2.0`（占位值，正常应 `0.5.x`）；数据面 `502 ... connect() failed ... :49983` | 该镜像没有可用的 envd，换 §6 构建的镜像 |
 | base 用官方 python 镜像 | `reset guest time BrokenPipe` | `FROM alpine:3.20`（§6.6） |
+| **e2b 系 SDK 版本漂移** | 建沙箱报 `405`（`POST /v2/sandboxes`，`allow: GET,HEAD`），或 connect 报 `404 /v2/sandboxes/{id}/connect` | **必须锁 §1 的 `e2b==2.26.0` + `e2b-code-interpreter==2.8.1`**：新版会改用 `/v2/` 前缀而 v0.7.2 的 CubeAPI 只有 v1 路径。`pip install` 不锁版本会漂到 2.5x/2.10 就必现 |
+| **数据面 TLS 校验失败** | `CERTIFICATE_VERIFY_FAILED: unable to get local issuer certificate` | 设 `SSL_CERT_FILE` 指向「平台自签 CA + 系统 CA」合并文件（§7 环境变量表） |
 | 大镜像首个沙箱 502 | 模板 READY 后首启超时 | §6.5 预热 |
 | VM 泄漏 | 跑几次后 `no more resource` | finally close + close 超时 + 平台回收（已内置） |
 | 模板级断网无效 | denyall 模板仍出网 | 出网控制在宿主 egress（§8.2） |
@@ -451,6 +918,16 @@ MinIO 一个公网地址，可无缝切回 VM 真直连。
 | `PI_MAX_CONCURRENT_RUNS` 开太大 | 排队任务全撞配额 | ≤ 平台 VM 上限 |
 | Galera/Milvus/MySQL 端口冲突 | 各服务起不来 | 部署前过一遍 §2 端口表 |
 | 连接串写 `mysql+pymysql`（同步） | 异步栈性能/兼容问题 | 用 `mysql+aiomysql://` |
+| **宿主网段是 192.168.x** | 安装报 `default CubeSandbox network CIDR '192.168.0.0/18' conflicts with existing host network` | 加 `CUBE_SANDBOX_NETWORK_CIDR=10.66.0.0/16`（掩码须 /16~/24 且网络地址对齐，避开已有网段与 DNS） |
+| **/data/cubelet 不是 XFS** | 安装预检报 `... is not XFS` | 预检硬性要求 XFS。无空闲数据盘时可用文件+loop 临时造：`truncate -s 80G /var/lib/cubelet-disk.img && mkfs.xfs -f 它 && mount -o loop,noatime 它 /data/cubelet`（生产仍建议真实 XFS 数据盘） |
+| **拉不到 docker.io** | 建模板 `pull image fail: ... index.docker.io ... i/o timeout` | 配 containerd 镜像源（`Cubelet/config/config.toml` 的 `registry.mirrors."docker.io"`）与 `/etc/docker/daemon.json`；建模板时也可直接用全限定镜像地址绕过 |
+| **镜像源挡特定仓库**（403） | 配了加速源仍拉不到某个镜像，如 `unexpected status from HEAD request ... 403 Forbidden`（实测 daocloud 对 `minio/minio` 返回 403，token 有效但仓库被挡） | 换一个源：`daemon.json` 里**按顺序配多个** `registry-mirrors` 做兜底，或显式用能拉到的源，例如 `docker pull docker.1panel.live/minio/minio:latest`，再 `docker tag` 成本地标准名。注意 `docker` 重启会**杀掉正在跑的 build**（见 §12 末行） |
+| **重启 docker 打断镜像构建** | 构建中途 `exit code: 137`，日志停在某个 `apk add` / `pip install` | 137=SIGKILL，**先确认是不是自己 `systemctl restart docker` 杀的**。改 `daemon.json` 请避开构建期间，或构建完再重启 |
+| **集群外客户端解析不了 `*.cube.app`** | `DNS error: no records found` | 用官方 `cubesandbox` SDK 时设 `CUBE_PROXY_NODE_IP`（内置 `IPOverrideTransport`，直连节点 IP 并保留 Host 头，同时免掉 DNS 与自签证书） |
+| **pi-py 侧 `*.cube.app` 解析不了** | 服务日志 `Name or service not known`；e2b SDK 建完沙箱连不上数据面 | pi-py 用的是裸 e2b SDK（无 IP 覆盖），必须让**宿主机**能解析 `*.cube.app`。**不要手改 `/etc/resolv.conf`**——systemd-resolved 会重新生成覆盖掉。正确做法是按域路由（持久，且不影响其他域名解析）：<br>`/etc/systemd/resolved.conf.d/cube-app.conf`：<br>`[Resolve]`<br>`DNS=169.254.254.53`<br>`Domains=~cube.app`<br>然后 `systemctl restart systemd-resolved` |
+| **服务起不来：`requires greenlet`** | `ImportError: The SQLAlchemy asyncio module requires that the Python 'greenlet' library is installed` | `pip install greenlet`（`pyproject.toml` 缺这个依赖，`[production]` 不会带上，见 §7） |
+| **归档 `s3` 字段一直是 null** | 归档 json 里 `s3: null` 且 `s3_error: null`（**无任何报错**） | 归档用 `PI_ARCHIVE_S3_*` 而**不是** `PI_S3_*`，两套独立；配齐并先建好归档 bucket（见 §7.4）。另注意归档只在"该回合真用过沙箱"时触发 |
+
 
 ---
 

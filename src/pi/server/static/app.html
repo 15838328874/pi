@@ -387,6 +387,7 @@ async function logout(callApi = true) {
   $("view-login").style.display = "block";
   $("fMsg").textContent = "";
 }
+$("logout").onclick = () => logout();
 
 // ---- 进入主界面 ------------------------------------------------------------
 async function enterApp() {

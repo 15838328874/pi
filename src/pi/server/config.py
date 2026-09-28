@@ -27,6 +27,16 @@ class ServerSettings:
     sandbox: str = ""
     sandbox_image: str = "python:3.12-slim"
     sandbox_net: bool = False
+    # 会话级沙箱池（懒加载 + 复用 + 自适应空闲回收）：
+    # - sandbox_pool_ttl_s：空闲 VM 的回收阈值（秒），内存宽裕时用
+    # - sandbox_pool_size：常驻 VM 上限（LRU 淘汰超出部分）
+    # - sandbox_pool_pressure_high / low：宿主可用内存阈值（字节）。
+    #   可用内存 <high 时 TTL 收紧为 pool_ttl_tight_s，<low 时立即回收全部空闲 VM。
+    sandbox_pool_ttl_s: int = 900
+    sandbox_pool_ttl_tight_s: int = 300
+    sandbox_pool_size: int = 4
+    sandbox_pool_pressure_high: int = 1_500 * 1024 * 1024  # 1.5 GiB
+    sandbox_pool_pressure_low: int = 512 * 1024 * 1024  # 512 MiB
     audit_path: Path = field(default_factory=lambda: Path.home() / ".pi-py" / "audit.jsonl")
     # Canonical run trajectories (P1), one JSON line per run, daily rotation.
     # Trajectories are RAW (tool args unredacted) - same sensitivity class as
@@ -86,6 +96,15 @@ class ServerSettings:
             sandbox=os.environ.get("PI_SANDBOX", ""),
             sandbox_image=os.environ.get("PI_SANDBOX_IMAGE", "python:3.12-slim"),
             sandbox_net=os.environ.get("PI_SANDBOX_NET", "") == "host",
+            sandbox_pool_ttl_s=int(os.environ.get("PI_SANDBOX_POOL_TTL", 900)),
+            sandbox_pool_ttl_tight_s=int(os.environ.get("PI_SANDBOX_POOL_TTL_TIGHT", 300)),
+            sandbox_pool_size=int(os.environ.get("PI_SANDBOX_POOL_SIZE", 4)),
+            sandbox_pool_pressure_high=int(
+                os.environ.get("PI_SANDBOX_POOL_PRESSURE_HIGH", 1_500 * 1024 * 1024)
+            ),
+            sandbox_pool_pressure_low=int(
+                os.environ.get("PI_SANDBOX_POOL_PRESSURE_LOW", 512 * 1024 * 1024)
+            ),
             audit_path=Path(os.environ.get("PI_AUDIT_PATH", base / "audit.jsonl")),
             trajectory_path=(
                 None

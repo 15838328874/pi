@@ -34,6 +34,10 @@ class BashTool(Tool):
             return ToolResult(content="Error: command is required", is_error=True)
         timeout = max(1, min(int(args.get("timeout", 120) or 120), 600))
 
+        # 惰性沙箱：回合没建 VM 时，第一次 bash 调用现场创建（会话级池复用）。
+        # 纯聊天回合上下文里 ensure_runner 为 None，永远走本地执行。
+        if ctx.runner is None and ctx.ensure_runner is not None:
+            await ctx.ensure_runner()
         runner = ctx.runner if ctx.runner is not None else LocalRunner()
         result = await runner.run(command, ctx.cwd, timeout)
 

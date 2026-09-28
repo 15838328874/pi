@@ -12,7 +12,7 @@ import logging
 import os
 import time
 from collections.abc import AsyncIterator
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from pi.agent.events import (
@@ -52,6 +52,15 @@ from pi.tools.sandbox import get_runner
 _SANDBOX_CLOSE_TIMEOUT_S = float(os.environ.get("PI_SANDBOX_CLOSE_TIMEOUT_SECONDS", 90))
 
 
+@dataclass
+class _PoolEntry:
+    """One idle sandbox in the session-scoped reuse pool."""
+
+    session_id: str
+    runner: Any
+    last_used: float  # monotonic; LRU eviction + idle-reap key
+
+
 def server_policy(policy_path: str) -> Policy:
     """Server-mode policy: a PI_POLICY file adds rules, it cannot subtract isolation.
 
@@ -85,6 +94,11 @@ class RunManager:
         registry: ToolRegistry | None = None,
         metrics: Metrics | None = None,
         trajectory_path: Path | None = None,
+        pool_ttl_s: int = 900,
+        pool_ttl_tight_s: int = 300,
+        pool_size: int = 4,
+        pool_pressure_high: int = 1_500 * 1024 * 1024,
+        pool_pressure_low: int = 512 * 1024 * 1024,
     ):
         self.policy = policy
         self.audit = audit
@@ -99,6 +113,16 @@ class RunManager:
         self.metrics = metrics or Metrics(enabled=False)
         self.trajectory_path = trajectory_path
         self._semaphore = asyncio.Semaphore(max_concurrent)
+        # 会话级沙箱池（懒加载 + 复用 + 自适应空闲回收）
+        self.pool_ttl_s = pool_ttl_s
+        self.pool_ttl_tight_s = pool_ttl_tight_s
+        self.pool_size = pool_size
+        self.pool_pressure_high = pool_pressure_high
+        self.pool_pressure_low = pool_pressure_low
+        self.sandbox_pool: dict[str, _PoolEntry] = {}
+        self._pool_lock = asyncio.Lock()
+        self._pool_sweep_task: asyncio.Task | None = None
+        self._pool_sweep_interval_s = 30.0
 
     async def run_turn(
         self,
@@ -209,33 +233,35 @@ class RunManager:
                     agent.ctx.memory = memory_repo
                     agent.ctx.user_db_id = user_id
                 if self.sandbox:
-                    runner = get_runner(
-                        self.sandbox,
-                        image=self.sandbox_image,
-                        allow_network=self.sandbox_network,
-                    )
-                    agent.ctx.runner = runner
-                    runner.metrics = self.metrics  # sandbox health counters
-                    # a sandboxed runner with its own workspace filesystem
-                    # (CubeSandbox files API) also hosts the file tools
-                    agent.ctx.fs = getattr(runner, "fs", None)
-                    if agent.ctx.fs is not None and hasattr(agent.ctx.fs, "set_host_root"):
-                        agent.ctx.fs.set_host_root(Path(session.cwd))
-                    # preheat the warm container while the LLM is thinking
-                    # about its first tool call (no-op for non-pooled runners)
-                    prewarm = getattr(runner, "prewarm", None)
-                    if callable(prewarm):
-                        try:
-                            prewarm(Path(session.cwd))
-                        except Exception:  # noqa: BLE001 - prewarm is best-effort
-                            log.debug("sandbox prewarm failed", exc_info=True)
+                    # 惰性沙箱：回合以本地模式起步，第一次 bash 调用（或显式
+                    # 工具）通过 ensure_runner 现场创建/复用 VM。纯聊天回合
+                    # 永不触发 —— 零 VM、零装载、零归档。
+                    # baseline 也推迟到首次触发时取：复用回合的 host workspace
+                    # 是上一回合 save 回来的，此刻快照 = 本回合的真实起点。
+                    async def ensure_runner():
+                        nonlocal runner, baseline
+                        if runner is not None:
+                            return
+                        runner = await self._acquire_sandbox(session.id, Path(session.cwd))
+                        agent.ctx.runner = runner
+                        runner.metrics = self.metrics  # sandbox health counters
+                        # a sandboxed runner with its own workspace filesystem
+                        # (CubeSandbox files API) also hosts the file tools
+                        agent.ctx.fs = getattr(runner, "fs", None)
+                        if agent.ctx.fs is not None and hasattr(agent.ctx.fs, "set_host_root"):
+                            agent.ctx.fs.set_host_root(Path(session.cwd))
+                        if baseline is None and archive_enabled():
+                            try:
+                                baseline = await asyncio.to_thread(
+                                    snapshot_files, Path(session.cwd)
+                                )
+                            except Exception:  # noqa: BLE001 - archiving never breaks a run
+                                log.warning("archive baseline failed", exc_info=True)
 
-                # workspace archive baseline: what did this turn change?
-                if archive_enabled() and self.sandbox:
-                    try:
-                        baseline = await asyncio.to_thread(snapshot_files, Path(session.cwd))
-                    except Exception:  # noqa: BLE001 - archiving must never break a run
-                        log.warning("archive baseline failed", exc_info=True)
+                    agent.ctx.ensure_runner = ensure_runner
+                    # 后台回收扫描器（池复用 + 空闲回收）只启一次
+                    if self._pool_sweep_task is None:
+                        self._pool_sweep_task = asyncio.create_task(self._pool_sweep())
 
                 final_usage = None
                 final_turns = 0
@@ -352,44 +378,157 @@ class RunManager:
                         except Exception:  # noqa: BLE001 - jsonl copy still exists
                             logging.getLogger("pi.server").exception("trajectory db save failed")
         finally:
-            # Session-scoped, no warm pool: close() saves the workspace back
-            # to the host and destroys the VM so no sandbox lingers after the
-            # turn (memory model = concurrent active turns x 256Mi, not x
-            # sessions). Close is best-effort and slow-safe: never blocks
-            # the turn outcome on a tar round-trip.
-            if runner is not None:
+            # 会话级池语义：回合结束不销毁 VM —— workspace 回传宿主（归档与
+            # 复用延续都需要）→ 归档 → 归还池。销毁只发生在：idle 超 TTL、
+            # 池满淘汰、僵尸重建、服务关闭（均为后台/非回合路径）。
+            if runner is not None and self.sandbox:
+                # 1) VM 内最新 workspace 回传宿主（快，本地 tar round-trip）
                 try:
-                    # Total-timeout the teardown: close() saves the workspace
-                    # (tar round-trip) then kills the VM. If it exceeds the cap
-                    # the turn proceeds - the to_thread worker keeps running and
-                    # finishes save+kill on its own, so the VM still dies; the
-                    # turn just stops waiting on it.
+                    await asyncio.to_thread(runner.save_workspace)
+                except Exception:  # noqa: BLE001 - best-effort
+                    log.debug("sandbox workspace save failed", exc_info=True)
+                # 2) 回合级归档（只在真用过沙箱时；聊天回合跳过分文不取）
+                if baseline is not None:
+                    try:
+                        await asyncio.to_thread(
+                            archive_workspace,
+                            session_id=session.id,
+                            username=username,
+                            cwd=Path(session.cwd),
+                            baseline=baseline,
+                        )
+                    except Exception:  # noqa: BLE001 - archiving is best-effort
+                        log.warning("workspace archive failed", exc_info=True)
+                # 3) 归还池（VM 存活复用；不关不杀）
+                await self._release_sandbox(session.id, runner)
+                runner = None  # 已归还，不再 close
+            await self.cache.release_lock(lock_key)
+
+    # -- 会话级沙箱池 -------------------------------------------------------
+    # 懒加载 + 复用 + 自适应空闲回收。池按 session_id 绑定（绝不跨会话共享，
+    # 数据隔离第一）；容量由 pool_size 上限 + LRU 淘汰约束；空闲回收 TTL 随
+    # 宿主可用内存自适应（宽裕 15min/收紧 5min/极紧立即清空）。
+
+    async def _acquire_sandbox(self, session_id: str, host_cwd: Path) -> Any:
+        """回合首次工具调用时取沙箱：同会话池命中（仍存活）→ 复用；否则新建。
+
+        新建的 runner 由调用方装配（ctx.runner/fs/metrics）——与复用路径一致，
+        拿到手就是一个可直接下命令的沙箱。僵尸 VM（平台 TTL 已回收）就地销毁
+        并静默重建，绝不复用。
+        """
+        async with self._pool_lock:
+            entry = self.sandbox_pool.pop(session_id, None)
+            if entry is not None:
+                if await entry.runner.is_alive():
+                    if self.metrics is not None:
+                        self.metrics.sandbox_pool_hit()
+                    return entry.runner
+                # 僵尸：平台可能已回收长闲置 VM，销毁残留并继续新建
+                try:
                     await asyncio.wait_for(
-                        asyncio.to_thread(runner.close),
+                        asyncio.to_thread(entry.runner.close),
                         timeout=_SANDBOX_CLOSE_TIMEOUT_S,
                     )
-                except asyncio.TimeoutError:
-                    log.warning(
-                        "sandbox close exceeded %ss; cleanup continues in background",
-                        _SANDBOX_CLOSE_TIMEOUT_S,
-                    )
-                except Exception:  # noqa: BLE001 - best-effort cleanup
-                    log.debug("sandbox close failed", exc_info=True)
-            # end-of-session workspace archive (host + optional S3/MinIO):
-            # tarball of the workspace as the agent left it, with a diff
-            # against the turn-start baseline. Only for sandboxed runs.
-            if baseline is not None:
+                except Exception:  # noqa: BLE001 - best-effort
+                    log.debug("zombie sandbox close failed", exc_info=True)
+        runner = get_runner(
+            self.sandbox,
+            image=self.sandbox_image,
+            allow_network=self.sandbox_network,
+        )
+        runner.metrics = self.metrics  # sandbox health counters
+        return runner
+
+    async def _release_sandbox(self, session_id: str, runner: Any) -> None:
+        """回合结束归还：VM 存活复用。池满 → LRU 淘汰最久未用再放入。"""
+        async with self._pool_lock:
+            while len(self.sandbox_pool) >= self.pool_size and self.pool_size > 0:
+                victim = min(self.sandbox_pool.values(), key=lambda e: e.last_used)
+                del self.sandbox_pool[victim.session_id]
                 try:
-                    await asyncio.to_thread(
-                        archive_workspace,
-                        session_id=session.id,
-                        username=username,
-                        cwd=Path(session.cwd),
-                        baseline=baseline,
+                    await asyncio.wait_for(
+                        asyncio.to_thread(victim.runner.close),
+                        timeout=_SANDBOX_CLOSE_TIMEOUT_S,
                     )
-                except Exception:  # noqa: BLE001 - archiving is best-effort
-                    log.warning("workspace archive failed", exc_info=True)
-            await self.cache.release_lock(lock_key)
+                except Exception:  # noqa: BLE001 - eviction is best-effort
+                    log.debug("sandbox eviction close failed", exc_info=True)
+                if self.metrics is not None:
+                    self.metrics.sandbox_pool_evict()
+            if len(self.sandbox_pool) < self.pool_size:
+                self.sandbox_pool[session_id] = _PoolEntry(
+                    session_id, runner, time.monotonic()
+                )
+
+    def _effective_pool_ttl(self) -> int:
+        """宿主可用内存压力自适应 TTL：宽裕→pool_ttl_s；紧张→pool_ttl_tight_s；
+        极紧→0（立即回收全部空闲 VM）。读 /proc/meminfo 无第三方依赖。"""
+        avail = 1 << 60
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        avail = int(line.split()[1]) * 1024
+                        break
+        except OSError:
+            pass
+        if avail < self.pool_pressure_low:
+            return 0
+        if avail < self.pool_pressure_high:
+            return self.pool_ttl_tight_s
+        return self.pool_ttl_s
+
+    async def _pool_sweep(self) -> None:
+        """后台扫描循环：回收 idle 超 TTL 的 VM；内存极紧时整体清空。"""
+        while True:
+            await asyncio.sleep(self._pool_sweep_interval_s)
+            try:
+                await self._sweep_once()
+            except Exception:  # noqa: BLE001 - sweeper must never die
+                log.debug("sandbox pool sweep failed", exc_info=True)
+
+    async def _sweep_once(self) -> None:
+        ttl = self._effective_pool_ttl()
+        now = time.monotonic()
+        async with self._pool_lock:
+            if ttl <= 0:
+                for e in list(self.sandbox_pool.values()):
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.to_thread(e.runner.close),
+                            timeout=_SANDBOX_CLOSE_TIMEOUT_S,
+                        )
+                    except Exception:  # noqa: BLE001 - best-effort
+                        log.debug("sandbox pool flush close failed", exc_info=True)
+                self.sandbox_pool.clear()
+                return
+            expired = [
+                sid
+                for sid, e in self.sandbox_pool.items()
+                if now - e.last_used > ttl
+            ]
+            for sid in expired:
+                e = self.sandbox_pool.pop(sid)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(e.runner.close),
+                        timeout=_SANDBOX_CLOSE_TIMEOUT_S,
+                    )
+                except Exception:  # noqa: BLE001 - best-effort
+                    log.debug("sandbox pool reap close failed", exc_info=True)
+
+    async def shutdown_pool(self) -> None:
+        """应用关闭：销毁池内全部 VM（孤儿由平台自身 TTL 兜底回收）。"""
+        async with self._pool_lock:
+            entries = list(self.sandbox_pool.values())
+            self.sandbox_pool.clear()
+        for e in entries:
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(e.runner.close),
+                    timeout=_SANDBOX_CLOSE_TIMEOUT_S,
+                )
+            except Exception:  # noqa: BLE001 - teardown must not block shutdown
+                log.debug("sandbox pool shutdown close failed", exc_info=True)
 
 
 def event_to_sse(ev: AgentEvent) -> str:

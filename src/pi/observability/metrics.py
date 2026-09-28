@@ -195,6 +195,18 @@ class Metrics:
             buckets=_CALL_BUCKETS,
             registry=registry,
         )
+        # 会话级池健康：hits 说明复用生效（省了冷启/装载）；evictions 是
+        # 池上限/内存压力触发的销毁——爬升说明常驻 VM 需求超过配置上限。
+        self.sandbox_pool_hits = Counter(
+            "pi_sandbox_pool_hits_total",
+            "Sandbox pool reuse hits (VM reused across turns of one session).",
+            registry=registry,
+        )
+        self.sandbox_pool_evictions = Counter(
+            "pi_sandbox_pool_evictions_total",
+            "Pooled sandboxes destroyed by capacity/memory-pressure reclaim.",
+            registry=registry,
+        )
 
     # ------------------------------------------------------------------ recording
 
@@ -266,6 +278,16 @@ class Metrics:
         if self.registry is None:
             return
         self.sandbox_close_failures.inc()
+
+    def sandbox_pool_hit(self) -> None:
+        if self.registry is None:
+            return
+        self.sandbox_pool_hits.inc()
+
+    def sandbox_pool_evict(self) -> None:
+        if self.registry is None:
+            return
+        self.sandbox_pool_evictions.inc()
 
     def retrieval(self, *, outcome: str, duration_s: float) -> None:
         if self.registry is None:

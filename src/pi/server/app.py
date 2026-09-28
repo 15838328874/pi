@@ -181,6 +181,11 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         registry=registry,
         metrics=metrics,
         trajectory_path=settings.trajectory_path,
+        pool_ttl_s=settings.sandbox_pool_ttl_s,
+        pool_ttl_tight_s=settings.sandbox_pool_ttl_tight_s,
+        pool_size=settings.sandbox_pool_size,
+        pool_pressure_high=settings.sandbox_pool_pressure_high,
+        pool_pressure_low=settings.sandbox_pool_pressure_low,
     )
     runs.sandbox_network = settings.sandbox_net
 
@@ -198,6 +203,11 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             except Exception:  # noqa: BLE001 - teardown must not block shutdown
                 log.debug("vector store close failed", exc_info=True)
         await shutdown_docker_pool()  # destroy warm sandbox containers
+        # 会话级沙箱池：关闭前销毁全部常驻 VM，避免孤儿（平台 TTL 兜底）。
+        try:
+            await runs.shutdown_pool()
+        except Exception:  # noqa: BLE001 - teardown must not block shutdown
+            log.debug("sandbox pool shutdown failed", exc_info=True)
 
     app = FastAPI(title="pi-py server", version="0.1.0", docs_url="/docs", lifespan=lifespan)
     app.state.settings = settings

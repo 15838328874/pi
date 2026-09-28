@@ -131,6 +131,10 @@ class ToolContext:
     max_output: int = 30_000
     runner: Any = None  # CommandRunner (pi.tools.sandbox); None -> local shell
     fs: WorkspaceFS | None = None  # file tools' filesystem; None -> LocalFS
+    # 惰性沙箱钩子（会话级池）：None 表示回合以本地模式起步，第一次需要沙箱的
+    # 工具（bash）调用前由 runner.py 注入的可等待回调现场创建 VM。纯聊天回合
+    # 永不触发，零沙箱开销。
+    ensure_runner: Any = None  # Callable[[], Awaitable[None]] | None
     # Sub-agent spawning deps, populated by AgentLoop so a tool can delegate to a
     # child loop with the same model / policy / audit / tracer context.
     provider: Any = None

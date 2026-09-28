@@ -1127,10 +1127,41 @@ class CubeSandboxRunner:
         if proc.returncode != 0:
             raise RuntimeError(f"rollback failed: {(proc.stderr or proc.stdout)[-200:]}")
 
+    def save_workspace(self) -> None:
+        """Push the VM's /workspace back to the host copy, WITHOUT teardown.
+
+        Pool-returned sandboxes live on after a turn (reused by the next
+        turn of the same session); call this before archiving so the host
+        copy reflects the VM's current files. close() = save_workspace() + kill."""
+        if self._sbx is not None and not self._closed:
+            try:
+                self._save_workspace()
+            except Exception:  # noqa: BLE001 - archiving must never fail a turn
+                log.warning("sandbox workspace save failed", exc_info=True)
+
+    async def is_alive(self) -> bool:
+        """Cheap liveness probe for pooled sandboxes.
+
+        The platform may reap a long-idle VM (platform TTL), so reuse must
+        verify the VM before handing it back to a turn. Ensures the VM is
+        created (creation is lazy) then probes the raw SDK command channel
+        (no workspace tar, no flags - a bare `true` must just execute).
+        Any transport error = dead VM."""
+        if self._closed:
+            return False
+        try:
+            sbx = await asyncio.to_thread(self._ensure_sandbox)
+            handle = await asyncio.to_thread(
+                lambda: sbx.commands.run("true", timeout=10)
+            )
+            return handle.exit_code == 0
+        except Exception:  # noqa: BLE001 - dead VM => not alive
+            return False
+
     def close(self) -> None:
         """Save the workspace back, then destroy the VM (both best-effort)."""
         if self._sbx is not None and not self._closed:
-            self._save_workspace()
+            self.save_workspace()
             try:
                 self._sbx.kill()
             except Exception:  # noqa: BLE001 - cleanup must never raise,

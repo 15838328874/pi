@@ -199,6 +199,27 @@ cubemastercli list
    （实测模板级关闭无效）—— 真正的出网控制必须做在宿主层（cube-egress
    网关白名单），设计时按"模板管配额、宿主管网络"分层。
 
+### 5.1 pi-sandbox（企业场景 A+B 镜像）落地记录
+
+`deploy/sandbox/Dockerfile` 已产出 `pi-sandbox:1.0` → 模板
+`tpl-2492096525f04f0aac655acb`（alias `pi-sandbox-ab`，cpu=1000m/mem=256Mi/
+writable-layer 1Gi）。构建踩坑（每条都是实测血泪）：
+
+1. **沙箱镜像契约缺一不可**：CubeMaster 容器需要 `/usr/bin/envd`（探针守护，
+   版本 0.5.13，静态 Go 二进制）+ `cube-entrypoint.sh` 作 ENTRYPOINT（后台拉起
+   envd 常驻，:49983/health 探活）。缺 envd → `Exec mount failed`；ENTRYPOINT
+   是 `CMD ["python3"]` → 容器主进程读完 stdin 即退 → `mount namespace` 失败。
+2. **base 必须用 `alpine:3.20`，不能是官方 `python:3.12-alpine3.20`**：后者
+   实测 `reset guest time failed: BrokenPipe`。改用 `alpine:3.20` + apk
+   `python3 py3-pip`（3.12.13）即正常 —— CubeSandbox guest 对 base 敏感。
+3. **GNU 全集工具必装**（coreutils/findutils/grep/sed/gawk）：busybox 阉割版
+   撑不起模型生成的 `grep -P` / `find -exec` / `sed -i`（cube-lite-py 已踩）。
+4. **构建源用腾讯云内网 mirror**（apk `mirrors.tencentyun.com/alpine` + pip
+   `mirrors.tencentyun.com/pypi/simple`），否则 Dockerfile 内直连官方源极慢。
+5. **find 首启超时**：A+B 镜像 ~400MB → ext4 rootfs 大，模板 READY 后第一个
+   沙箱冷启动可能 502（openresty 探活超时）；后续实例化（rootfs 已缓存）稳定。
+   `create-from-image` 完成即 READY，但首个沙箱建议预热后再生任务。
+
 ---
 
 ## 6. pi-py 服务部署（systemd 常驻）

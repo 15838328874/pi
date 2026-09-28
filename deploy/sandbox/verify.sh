@@ -5,7 +5,7 @@ set -e
 echo "== pi-py 沙箱能力自检 =="
 
 # ---- 1. 系统命令 ----
-for cmd in python3 pip git pdftotext pdfinfo 7z; do
+for cmd in python3 pip3 git pdftotext pdfinfo 7z; do
   if command -v "$cmd" >/dev/null 2>&1; then
     echo "  [OK] cmd $cmd"
   else

@@ -131,7 +131,7 @@ pi-artifacts/ {session_id}/{yyyy-mm-dd}/{filename}     # 沙箱产物
 |---|---|---|
 | **P0 · 数据入口** | ✅ 已交付：独立 MinIO + `files` 表/alembic + 上传/列表/预签名 API + boto3 | 本设计 §2§3§4§5① |
 | **P1 · 进沙箱** | ✅ 已交付：会话级 workspace + `list_files`/`fetch_file` 工具（服务器内存中转，方案 B）+ 产物回写/下载 | P0 + §5②④ |
-| **P2 · 能力** | A+B 镜像构建成新模板（PDF/xlsx/docx 能力就位） | `deploy/sandbox/Dockerfile` |
+| **P2 · 能力** | ✅ 已交付：A+B 镜像 `pi-sandbox:1.0` + 模板 `tpl-2492096525f04f0aac655acb`（alias `pi-sandbox-ab`），poppler/7zip + pandas/openpyxl/docx/pypdf/requests/pillow/bs4/lxml/pptx 就位 | `deploy/sandbox/Dockerfile` |
 
 ## 10. 已定决策与未做项
 

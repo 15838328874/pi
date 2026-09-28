@@ -904,6 +904,9 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_METRICS_TOKEN` | 空 | `/metrics` 门控 token；空=开放（启动打 warning），错 token 回 404 |
 | `PI_CUBE_API_KEY` | 空 | CubeSandbox（E2B 兼容 API）密钥；`PI_SANDBOX=cubesandbox` 必配 |
 | `PI_SANDBOX_CLOSE_TIMEOUT_SECONDS` | 90 | 沙箱 close/save 总超时；超时 turn 先走、清理线程收尾（VM 必死） |
+| `PI_SANDBOX_POOL_SIZE` | 4 | 常驻 VM 池上限，超出 LRU 淘汰 |
+| `PI_SANDBOX_POOL_TTL` / `PI_SANDBOX_POOL_TTL_TIGHT` | 900 / 300 | 空闲 VM 回收阈值（内存宽裕 / 紧张两档） |
+| `PI_SANDBOX_POOL_PRESSURE_HIGH` / `_LOW` | 1.5GiB / 512MiB | 宿主可用内存双阈值，低于则收紧/激进回收 |
 | `PI_ARCHIVE` | 1 | 会话归档开关（0=关）；`PI_ARCHIVE_DIR`（默认 ~/.pi-py/archives）、`PI_ARCHIVE_S3_*`（MinIO 惰性上传） |
 
 ---

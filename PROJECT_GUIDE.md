@@ -423,6 +423,11 @@ for call in calls:
   工作区 >10MB 装载拒绝并给可操作提示；close 有总超时（默认 90s），三层 VM 泄漏防线。
   生产化审计（7 个真实缺口 + 故障注入探针）见 `docs/cube-sandbox-design-notes.md` /
   `docs/production-readiness.md`。
+- **生命周期管理**（2026-09 重构）：**懒加载**——聊天回合（无工具）不建 VM（实测平台
+  VM=0），工具回合才建、用完**留池复用**（同会话复用 `pool_hits` 命中，create 不增）；
+  回收三档自适应——空闲 TTL（默认 900s，内存紧张 300s）+ LRU 淘汰（池上限默认 4）+ 
+  **宿主内存压力双阈值**（可用内存 <1.5GiB 收紧、<512MiB 激进回收）；服务关闭清池。
+  实测：size=1 双会话 LRU 淘汰 ✓、TTL 回收 ✓、真实模型 eval 回归 PASS、SandboxFS 11/11。
 
 #### （3）分层记忆：两个时间尺度的记忆
 

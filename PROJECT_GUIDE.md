@@ -335,13 +335,14 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | Agent | 连续拒绝熔断 | `agent/loop.py` | 防死磕 |
 | 轨迹 | canonical 事件日志（6 类事件 + ts 墙钟） | `agent/trajectory.py` | P1，评估/回放唯一事实源 |
 | 轨迹 | **双写**：runs 表（结构化）+ jsonl 按天（合规底稿） | `server/db.py` `server/trajectory_store.py` | 落盘失败不影响 run |
-| 工具 | 10 内置（bash/read/write/edit/grep/find/ls/remember/recall/subagent） | `src/pi/tools/` | 全走 policy 路径沙箱 |
+| 工具 | 12 内置（bash/read/write/edit/grep/find/ls/remember/recall/subagent/list_files/fetch_file） | `src/pi/tools/` | 全走 policy 路径沙箱 |
 | 工具 | 子代理（递归委派 + max_depth） | `tools/subagent.py` | Multi-Agent |
 | 工具 | MCP 工具源（stdio + fail-soft + 生命周期） | `tools/mcp.py` | 标准协议 |
 | 工具 | Skills 技能包（SKILL.md + 索引注入 + 脚本走沙箱） | `tools/skill.py` | 渐进披露 |
 | 工具 | ToolRegistry（聚合/去重/预热缓存） | `tools/registry.py` | 一个抽象管所有来源 |
 | 沙箱 | Docker（预热池+限额+断网）+ **CubeSandbox microVM**（GNU timeout/退出码透传/10MB 上限） | `tools/sandbox.py` | 52 exec/s 实测 + 真机故障注入探针 |
 | 归档 | 会话工作区 tar.gz + 差异元数据 + MinIO 惰性上传 | `server/archive.py` | 9 turns 实测 |
+| 文件管线 | MinIO 预签名直连 + sha256 用户级去重 + files 表索引 | `server/storage.py` `server/db.py` | 254 单测 |
 | 记忆 | episodic（compactions 表复用摘要） | `server/db.py` | 不重复花钱总结 |
 | 记忆 | semantic（remember/recall 工具 + 自动召回注入） | `tools/memory.py` | 跨会话 |
 | 记忆 | 向量检索（Milvus + 云 embedding，词法兜底） | `server/vectorstore.py` `llm/embedding.py` | 换后端只改一处 |
@@ -841,7 +842,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 | 中 | eval 补全 | 自动抽任务、regress、badcase 归因 |
 | 低 | checkpoint 接 server | 超时后从断点恢复（loop 钩子已就绪） |
 | 后续 | **RAG 企业知识库** | 铁律：先评测再调检索；v1=解析+切块+混合检索(BM25)+rerank+引用+ACL；与记忆共用 Milvus/embedding |
-| 后续 | 文件上传 + MinIO | 与 RAG 解析层共用 parser；配额+解压炸弹防护 |
+| 已落地 | 文件管线 P0/P1/P2（MinIO 预签名 + 去重 + 工具）；剩余：配额/防解压炸弹/RAG parser 共用 |
 | 后续 | SSO/RBAC | 现在只有 JWT + admin 开关 |
 | ~~后续~~ 已落地 | CubeSandbox microVM（`PI_SANDBOX=cubesandbox`，KVM 前置 + 云 runbook 见 docs/） |
 
@@ -853,10 +854,10 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 src/pi/
 ├── llm/           模型接入层：openai/anthropic 提供商、统一流事件、降级链、think_filter、embedding
 ├── agent/         智能体核心：loop（循环/压缩/断点）、trajectory（P1 事件日志）、compaction
-├── tools/         工具层：10 内置 + subagent + memory + mcp + skill + registry + sandbox
+├── tools/         工具层：12 内置（含 files 文件工具）+ mcp + skill + registry + sandbox
 ├── server/        FastAPI 服务：app（路由）、runner（RunManager）、db（ORM+repo）、
 │                  cache（Redis/内存）、auth、config、ratelimit、trajectory_store、
-│                  vectorstore（Milvus）、static（三个前端页面）、archive.py（会话归档）
+│                  vectorstore（Milvus）、static（三个前端页面）、archive.py（会话归档）、storage.py（MinIO 文件管线）
 ├── security/      policy（策略/路径沙箱）、audit（审计）、redact（脱敏）
 ├── observability/ tracing、metrics（Prometheus）、metering（用量/配额/成本）、prices
 ├── evals/         评估与飞轮：schema/load/runner/scorers/report（P4）
@@ -868,7 +869,7 @@ integration/       真实栈集成测试（PI_INTEGRATION=1）
 tools/             压测/播种脚本（sandbox_bench、loadtest、seed_testdb）
 deploy/            本地/生产 compose、环境模板、部署文档
 docs/              CubeSandbox 设计笔记、生产部署手册、生产就绪审计
-migrations/        Alembic 迁移（0001~0006）
+migrations/        Alembic 迁移（0001~0007）
 ```
 
 ## 附录D 环境变量速查（关键项，完整清单见 ARCHITECTURE §13）
@@ -893,6 +894,7 @@ migrations/        Alembic 迁移（0001~0006）
 | `PI_CUBE_API_KEY` | CubeSandbox（E2B 兼容 API）密钥 | `PI_SANDBOX=cubesandbox` 时必配 |
 | `PI_SANDBOX_CLOSE_TIMEOUT_SECONDS` | 沙箱 close/save 总超时 | 默认 90s，超时 turn 先走、清理线程收尾 |
 | `PI_ARCHIVE` / `PI_ARCHIVE_DIR` / `PI_ARCHIVE_S3_*` | 会话归档开关/目录/MinIO 上传 | 默认开启，落 `~/.pi-py/archives` |
+| `PI_S3_ENDPOINT` / `PI_S3_ACCESS_KEY` / `PI_S3_SECRET_KEY` / `PI_S3_BUCKET_FILES` / `PI_S3_BUCKET_ARTIFACTS` | MinIO/S3 文件管线（预签名直连） | 未配置 = 文件管线关闭 |
 
 ## 附录E 轨迹 JSON 样例（真实落盘的一行）
 

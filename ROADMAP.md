@@ -17,7 +17,7 @@
 
 | 能力 | 位置 | 验证 |
 |---|---|---|
-| Agent loop + 10 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 254 单测 |
+| Agent loop + 12 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 254 单测 |
 | LLM 接入层（openai/anthropic/fake）+ 降级链 + 退避重试 | `src/pi/llm/` | 单测 + 真实模型（qwen3.8-flash/max） |
 | 上下文压缩（摘要 + 保留尾部，非破坏落库） | `agent/compaction.py` | 单测 |
 | Docker 沙箱 + cgroup 限额 + 预热池 + 断网 | `tools/sandbox.py` | 压测 ~52 exec/s |
@@ -39,6 +39,7 @@
 | **沙箱生产化**（CubeSandbox microVM + GNU timeout + 退出码透传 + 10MB 装载上限 + 三层 VM 泄漏防线 + **懒加载/复用池/内存自适应回收生命周期**） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 |
 | **会话闭环归档**（turn 基线快照 + 结束 tar.gz + 差异元数据 + MinIO 惰性接口） | `server/archive.py` | 9 turns 实测 diff 精确 |
 | **沙箱健康指标**（创建失败/命令超时/close 失败/创建耗时 4 系列） | `observability/metrics.py` | 真实任务实测 |
+| **文件管线 P0/P1/P2**（MinIO 预签名直连 + sha256 用户级去重 + files 表 + list_files/fetch_file 工具 + 沙箱能力镜像） | `server/storage.py` `server/db.py` `tools/files.py` | 254 单测 |
 | **轨迹结构化落库**（runs 表 + `/v1/trajectory/{run_id}` 回放 + `/v1/admin/trajectory/{run_id}` 跨用户） | `server/db.py` `server/app.py` | 单测 + 实测 |
 | **审计结构化查询**（audit_events 表双写，jsonl 仍是合规底稿） | `server/db.py` `security/audit.py` | 单测 + 实测 |
 | **官方 SDK**（异步客户端：SSE 流式解析、PiError 语义、trust_env=False） | `src/pi/client.py` | 单测 + 真实模型实测 |
@@ -86,8 +87,8 @@
   `RagTool`（实现 Tool 接口自动享受 policy/审计/配额）+ `pi-py rag ingest` CLI。
 - **复用**：embedder + vectorstore 与语义记忆共用一套 Milvus + 云 embedding，别各写各的。
 - **v2 才考虑**：多模态（VLM+OCR）、图搜图、GraphRAG。
-- **文件上传/下载 + MinIO** 与 RAG 解析层是同一个 parser，一起做；存储方案：MinIO（S3
-  兼容）+ 磁盘配额（每用户/单文件上限 + 解压炸弹防护）+ 闲置清理策略。
+- 文件管线已落地（MinIO 预签名直连 + sha256 去重 + files 表 + list_files/fetch_file 工具）；
+  剩余：磁盘配额（每用户/单文件上限 + 解压炸弹防护）、闲置清理策略、与 RAG 解析层共用 parser。
 
 ### 4.2 产品化
 

@@ -222,9 +222,10 @@ pi-python/
 │       ├── auth.py          PBKDF2 哈希 + JWT
 │       ├── ratelimit.py     每用户固定窗口限流
 │       ├── archive.py        会话工作区归档（tar.gz + 差异元数据 + MinIO 惰性上传）
+│       ├── storage.py         MinIO/S3 文件管线（预签名直连 + sha256 去重）
 │       └── client.py         SDK（异步 HTTP 客户端，SSE 流式解析）
 ├── tests/                   254 个测试（连本地 MySQL/Redis，服务替身分层）
-├── migrations/              Alembic 迁移（0001 建表 ~ 0006 audit_events）
+├── migrations/              Alembic 迁移（0001 建表 ~ 0007 files）
 ├── docs/                    CubeSandbox 设计笔记 / 生产部署手册 / 生产就绪审计（专项文档）
 ├── tools/loadtest.py        SSE 压测工具
 ├── tools/seed_testdb.py     给 *_test 库灌可复用的测试数据（幂等，拒绝跑在生产库上）
@@ -421,7 +422,7 @@ class Tool(ABC):
 | `find` | pattern, path | fnmatch 相对路径 glob，≤500 条 |
 | `ls` | path | 目录在前（带 `/`）、文件带大小，≤500 项 |
 
-`all_tools()`（`__init__.py`）返回全部 10 个工具的实例列表，是唯一的工具注册点。
+`all_tools()`（`__init__.py`）返回全部 12 个工具的实例列表（含 `list_files`/`fetch_file`），是唯一的工具注册点。
 （`web_fetch`/`web_search` 2026-09 已整体移除：进程内抓取有 SSRF 风险，沙箱内 bash 抓取替代。）
 **加工具就在这里注册**（扩展指南见 §16）。
 
@@ -908,6 +909,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_SANDBOX_POOL_TTL` / `PI_SANDBOX_POOL_TTL_TIGHT` | 900 / 300 | 空闲 VM 回收阈值（内存宽裕 / 紧张两档） |
 | `PI_SANDBOX_POOL_PRESSURE_HIGH` / `_LOW` | 1.5GiB / 512MiB | 宿主可用内存双阈值，低于则收紧/激进回收 |
 | `PI_ARCHIVE` | 1 | 会话归档开关（0=关）；`PI_ARCHIVE_DIR`（默认 ~/.pi-py/archives）、`PI_ARCHIVE_S3_*`（MinIO 惰性上传） |
+| `PI_S3_ENDPOINT` / `PI_S3_ACCESS_KEY` / `PI_S3_SECRET_KEY` / `PI_S3_BUCKET_FILES` / `PI_S3_BUCKET_ARTIFACTS` | 空=关 | MinIO/S3 文件管线（预签名直连、sha256 用户级去重、files 表索引） |
 
 ---
 

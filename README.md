@@ -133,7 +133,7 @@ Twelve built-ins, registered in `tools/__init__.py::all_tools()`:
 
 `bash` (timeout + exit code), `read` (line numbers, paging), `write`, `edit` (exact unique
 match, replace_all, unified diff), `grep` (regex, skips VCS/build dirs), `find` (glob), `ls`,
-`remember`, `recall`, `spawn_subagents` (10 tools total; in-process `web_fetch`/`web_search` were removed over SSRF risk — sandboxed bash is the fetch path).
+`remember`, `recall`, `spawn_subagents`, `list_files`, `fetch_file` (12 tools total; in-process `web_fetch`/`web_search` were removed over SSRF risk — sandboxed bash is the fetch path).
 
 Two extra tool sources, merged by `ToolRegistry` (builtin first; name collisions keep the
 builtin; one broken source never takes the others down):
@@ -214,7 +214,7 @@ API (see `/docs` for OpenAPI): `POST /v1/auth/register|login|logout`, `GET /v1/m
 `POST /v1/sessions/{id}/runs` (SSE), `GET /v1/usage`, `GET /v1/admin/users`,
 `PATCH /v1/admin/users/{u}`, `POST /v1/admin/users/{u}/revoke`, `GET /v1/admin/audit`
 (`?day=YYYY-MM-DD&user=&tool=&event=`, DB-backed with jsonl fallback),
-`GET /v1/admin/stats` (today's aggregates + fleet sizes), `GET /v1/admin/usage` (monthly per-user).
+`GET /v1/admin/stats` (today's aggregates + fleet sizes), `GET /v1/admin/usage` (monthly per-user), `POST/GET/DELETE /v1/files` + `/v1/files/commit` + `/v1/files/{id}/url` (MinIO presigned file pipeline, sha256 user-scoped dedup).
 Official async SDK: `from pi.client import PiClient` (auth/sessions/messages/trajectories/usage + SSE run stream, `trust_env=False`). Zero-build web UI (single-file vanilla JS pages): user app at `GET /ui/app.html`
 (login/sessions/chat with full tool-call trace + monthly usage), the trajectory
 viewer at `GET /ui/trajectory.html?session=<id>`, and the admin console at

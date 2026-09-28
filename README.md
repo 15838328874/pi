@@ -24,7 +24,7 @@ tools, and optional Docker sandboxing. Mirrors pi's package layering:
 | 亮点 | 一句话 | 详情 |
 |---|---|---|
 | 🏜️ **会话级沙箱（方案 B）** | 每个回合**新建独立 VM**（71ms 冷启）、用完即销毁：零常驻、崩溃隔离、内存模型 = 并发回合数 × 256Mi 而非会话数 | [功能全景](PROJECT_GUIDE.md#第三部分-功能全景) · [设计笔记](docs/cube-sandbox-design-notes.md) |
-| 🛡️ **SSRF 防线** | 进程内抓取工具（web_fetch/web_search）已**移除**，抓取一律降级到沙箱内执行——宿主内网（MySQL/Redis/云元数据）对模型不可达 | [坑 4.12（已解决）](PROJECT_GUIDE.md#412-web-工具的-ssrf-隐患现役问题未修复) |
+| 🛡️ **SSRF 防线** | 进程内抓取工具（web_fetch/web_search）已**移除**，抓取一律降级到沙箱内执行——宿主内网（MySQL/Redis/云元数据）对模型不可达 | [坑 4.12（已解决）](PROJECT_GUIDE.md#412-web-工具的-ssrf-隐患已解决移除方案) |
 | 🗂️ **工作区闭环归档** | 每回合基线快照 → 结束 tar.gz + 差异元数据（added/modified/deleted），MinIO 惰性接口就绪 | [数据与实测](PROJECT_GUIDE.md#第六部分-数据与实测) |
 | 🧪 **自治验证** | 真实模型跑企业任务：数据分析/日志解析/GitHub 情报/文档摘要/数据清洗 **5/5 PASS**；安全回归 **40/40**；沙箱组合 **11/11** | [测试体系](PROJECT_GUIDE.md#第五部分-测试体系) |
 | ☁️ **生产就绪** | 部署手册（10 节）+ 生产就绪审计（7 项修复、剩余清单全部闭环） | [部署手册](docs/production-deployment.md) · [审计](docs/production-readiness.md) |

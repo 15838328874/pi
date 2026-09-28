@@ -416,8 +416,9 @@ for call in calls:
   （比 `docker run` 少一次容器创建）；空闲自动回收；预热是后台任务，
   与模型思考并行（见巧思 3）。实测每预热容器仅 ~26 MiB。
 - **fail-closed**：`PI_SANDBOX` 非法值**启动即拒绝**（曾静默降级为进程内执行 = 事故）。
-- **第二形态 CubeSandbox**（`PI_SANDBOX=cubesandbox`）：microVM 沙箱（E2B 兼容 SDK，宿主需 KVM），
-  会话工作区在 VM 内、结束回传归档；命令用 GNU `timeout` 包装（退出码 124 → `timed_out`，
+- **第二形态 CubeSandbox**（`PI_SANDBOX=cubesandbox`，方案 B）：**每回合新建独立 microVM
+  （71ms 冷启）、用完即销毁**——零常驻、崩溃天然隔离，内存模型 = 并发回合数 × 256Mi
+  而非会话数（E2B 兼容 SDK，宿主需 KVM）；工作区每回合进出 VM、结束回传归档；命令用 GNU `timeout` 包装（退出码 124 → `timed_out`，
   沙箱内收尸零残留）；非零退出码透传（模型能区分"exit 1 失败"和"超时"）；
   工作区 >10MB 装载拒绝并给可操作提示；close 有总超时（默认 90s），三层 VM 泄漏防线。
   生产化审计（7 个真实缺口 + 故障注入探针）见 `docs/cube-sandbox-design-notes.md` /
@@ -623,7 +624,7 @@ stdio 子进程只 spawn 一次，shutdown 时统一回收）。
 - **纪律**：全部 try/except + 日志，run 照常完成（有单测专门验证"轨迹落盘失败时 run 仍 200 且消息正常落库"）。
 - **反面**：**主流程失败必须响亮**——启动配置错（如非法沙箱模式）直接拒绝启动，不做静默降级。
 
-### 4.12 Web 工具的 SSRF 隐患（现役问题，未修复）
+### 4.12 Web 工具的 SSRF 隐患（已解决：移除方案）
 
 - **现象/风险**：`web_fetch`/`web_search` 在**应用进程内**用 httpx 直连目标 URL、
   不做任何地址校验、自动跟随重定向——等于给模型一个内网探测口子（云元数据服务

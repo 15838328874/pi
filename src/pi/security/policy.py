@@ -94,19 +94,29 @@ def check(policy: Policy | None, tool_name: str, args: dict[str, Any], cwd: Path
                 base = cwd.resolve()
                 resolved.relative_to(base)
             except (OSError, ValueError):
-                return PolicyDecision(
-                    allowed=False,
-                    # Actionable, not just "denied": a model that only sees
-                    # "escapes the sandbox" retries the same absolute path in
-                    # variants (observed live: 25 denials, /ws/* then /tmp/*
-                    # then /ws/... again) and burns turns into the timeout.
-                    # Telling it the allowed base and the fix lets it recover.
-                    reason=(
+                # Actionable, not just "denied": a model that only sees
+                # "escapes the sandbox" retries the same absolute path in
+                # variants and burns turns into the timeout. Telling it the
+                # allowed base and the fix lets it recover in one step.
+                #
+                # Common confusion: the sandbox VM's internal /workspace is a
+                # *different* filesystem from the host workspace. A path under
+                # /workspace belongs to the VM, so the recovery is to read it
+                # with a bash command *inside* the sandbox, not the host tools.
+                if raw_path == "/workspace" or raw_path.startswith("/workspace/"):
+                    reason = (
+                        f"{raw_path!r} is a path inside the sandbox VM, not the "
+                        f"host workspace (root: {cwd}). To read or edit it, run "
+                        f"a bash command inside the sandbox (e.g. `cat "
+                        f"{raw_path}`) instead of the host read/write tools."
+                    )
+                else:
+                    reason = (
                         f"path {raw_path!r} escapes the workspace sandbox "
                         f"(workspace root: {cwd}); use a relative path inside "
                         f"the workspace instead"
-                    ),
-                )
+                    )
+                return PolicyDecision(allowed=False, reason=reason)
 
     return PolicyDecision(allowed=True)
 

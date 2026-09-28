@@ -317,9 +317,72 @@ docker run -d --name pi-minio --restart always \
 
 ### 4.4 Milvus（记忆向量库，可选）
 
-`PI_MILVUS_URI` + `PI_EMBEDDING_MODEL` 都配才启用；不配自动降级 MySQL 余弦兜底。
-官方 standalone：`standalone_embed.sh` 或 `docker compose`，端口 19530(gRPC)/2379(etcd)，
-内存 ~3GB。生产要记忆才需要，本环境是降级跑的。
+> **启用条件（代码写死，`src/pi/server/config.py::vector_memory_enabled`）**：
+> 下面**四项必须全部非空**，缺一个就退回 MySQL 词法检索（`lexical_fallback`）：
+
+```python
+all((embedding_url, embedding_api_key, embedding_model, milvus_uri))
+```
+
+| 变量 | 值 |
+|---|---|
+| `PI_MILVUS_URI` | `http://127.0.0.1:19530` |
+| `PI_EMBEDDING_URL` | `https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding` |
+| `PI_EMBEDDING_API_KEY` | 阿里云百炼 key |
+| `PI_EMBEDDING_MODEL` | `text-embedding-v3`（1024 维） |
+
+**嵌入接口是 DashScope 原生格式**（`{"input":{"texts":[...]}}`，不是 OpenAI 的 `{"input":"..."}`）。
+pi-py 只用 **embedding**，**没有 rerank 功能**（`grep -r rerank src/` 无结果），别被误导去配 rerank。
+
+**部署（docker-compose，端口必须避开平台已有服务）：**
+
+| Milvus 默认端口 | 冲突方 | 改用宿主端口 |
+|---|---|---|
+| MinIO `9000/9001` | 平台 `cube-sandbox-minio` | `19100/19101` |
+| metrics `9091` | 平台 egress admin | `9092` |
+| gRPC `19530` | 空闲 | 不变 |
+
+```bash
+# 官方 compose（改端口后）
+curl -sSL -o milvus-standalone-docker-compose.yml \
+  https://github.com/milvus-io/milvus/releases/download/v2.4.15/milvus-standalone-docker-compose.yml
+# 改三处宿主端口：9001->19101、9000->19100、9091->9092（容器内部端口不动）
+
+# 镜像源（daocloud 挡 minio:latest 但放行旧 tag；milvus 走 1panel）
+docker pull quay.io/coreos/etcd:v3.5.5
+docker pull docker.m.daocloud.io/minio/minio:RELEASE.2023-03-20T20-16-18Z
+docker tag  docker.m.daocloud.io/minio/minio:RELEASE.2023-03-20T20-16-18Z minio/minio:RELEASE.2023-03-20T20-16-18Z
+docker pull docker.1panel.live/milvusdb/milvus:v2.4.15
+docker tag  docker.1panel.live/milvusdb/milvus:v2.4.15 milvusdb/milvus:v2.4.15
+
+docker-compose up -d   # 注意是 docker-compose（v1 连字符）；本机无 `docker compose` 子命令
+```
+
+> ⚠️ **两个 compose 相关的坑**：
+> 1. **官方 compose 没有 `restart: always`** —— 三个服务默认重启策略是 `no`，**主机重启后不会自启**，
+>    届时 pi-py 会静默降级回词法检索（不报错）。上线前给 etcd/minio/standalone 各加一行 `restart: always`。
+> 2. **docker-compose v1 补 restart 后 `up -d` 会炸**：报 `KeyError: 'ContainerConfig'`，且会把旧容器
+>    改名成 `<前缀>_milvus-xxx` 后退出。原因是它想 reconcile 旧容器（创建时没 restart 策略）却读不到镜像配置。
+>    正确姿势是**先 `docker rm -f` 掉旧容器，再 `up -d`**（数据在 bind mount 卷里，删容器不丢数据）。
+
+**自检（四步都要过）：**
+
+```bash
+curl -s http://127.0.0.1:9092/healthz                 # 200
+# 建 collection + query 往返
+/opt/pi-venv/bin/python3 -c "from pymilvus import MilvusClient; c=MilvusClient(uri='http://127.0.0.1:19530'); print(c.list_collections())"
+# 配好四项后重启，readyz 应多出 milvus:ok
+curl -s http://127.0.0.1:8300/readyz                   # {"db":"ok","cache":"ok","milvus":"ok"}
+# 跑两回合对话后看指标，出现 vector_hit 即向量检索生效
+curl -s -H "Authorization: Bearer $PI_METRICS_TOKEN" http://127.0.0.1:8300/metrics | grep pi_memory_retrievals_total
+```
+
+> ⚠️ **`embed_failed` 计数在涨、且 `pi_memories` 集合一直不出现** = 嵌入调用失败。
+> 首查 `/etc/pi.env` 里 key 是否真的写进去了（写 env 时注意别把 `{KEY}` 当字面量存进去——
+> 实测踩过：存成 5 个字符的 `{KEY}`，日志报 `embedding endpoint returned HTTP 401`，但同一个 key
+> 手动 curl 是 200，一眼看不出来）。集合只在**第一次嵌入成功**时才创建（维度取自首个向量）。
+
+内存 ~3GB（etcd + minio + milvus 三容器）。生产要语义记忆才需要；不装时自动降级。
 
 ---
 

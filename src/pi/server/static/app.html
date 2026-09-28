@@ -81,6 +81,27 @@
   #usagePanel th:first-child, #usagePanel td:first-child { text-align: left; }
   #usagePanel .muted { color: var(--muted); font-size: 12px; }
 
+  /* ---- files ---- */
+  #filePanel {
+    position: absolute; right: 80px; top: 48px; width: 440px; z-index: 30;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; box-shadow: 0 10px 30px rgba(0,0,0,.15);
+    max-height: 70vh; display: none; flex-direction: column;
+  }
+  #filePanel.on { display: flex; }
+  #filePanel h3 { margin: 0; font-size: 14px; }
+  #filePanel .head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  #filePanel .head .spacer { flex: 1; }
+  #filePanel .head button { font-size: 13px; }
+  .file-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .file-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .sz { color: var(--muted); font-size: 12px; min-width: 56px; text-align: right; }
+  .file-row button { padding: 3px 8px; font-size: 12px; }
+  .file-row button.danger { color: var(--error); border-color: var(--error); }
+  #fileList { overflow-y: auto; }
+  #fileList .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
+  #fileMsg { color: var(--muted); font-size: 12px; margin-top: 8px; min-height: 16px; word-break: break-all; }
+
   .layout { flex: 1; display: flex; min-height: 0; }
   aside {
     width: 250px; flex: none; border-right: 1px solid var(--border);
@@ -224,11 +245,22 @@
     </button>
     <div class="spacer"></div>
     <span id="whoami" style="color:var(--muted)"></span>
+    <button id="openFiles" title="文件上传/下载">📁 文件</button>
     <button id="logout">退出</button>
   </header>
   <div id="usagePanel">
     <h3>本月用量</h3>
     <div id="usageBody"></div>
+  </div>
+  <div id="filePanel">
+    <div class="head">
+      <h3>文件</h3>
+      <span class="spacer"></span>
+      <input type="file" id="fileInput" multiple style="display:none">
+      <button id="uploadBtn">上传</button>
+    </div>
+    <div id="fileList"><div class="empty">加载中…</div></div>
+    <div id="fileMsg"></div>
   </div>
 
   <div class="layout">
@@ -695,6 +727,87 @@ async function refreshUsage() {
 $("openTraj").onclick = () => {
   if (sid) window.open(`/ui/trajectory.html?session=${encodeURIComponent(sid)}`, "_blank");
 };
+
+// ---- 文件上传 / 下载 / 删除 -------------------------------------------------
+function fmtSize(n) {
+  n = Number(n || 0);
+  return n >= 1048576 ? (n / 1048576).toFixed(1) + " MB"
+    : n >= 1024 ? (n / 1024).toFixed(1) + " KB" : n + " B";
+}
+async function sha256Hex(buf) {
+  const h = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+$("openFiles").onclick = () => {
+  const p = $("filePanel");
+  p.classList.toggle("on");
+  if (p.classList.contains("on")) refreshFiles();
+};
+$("uploadBtn").onclick = () => $("fileInput").click();
+$("fileInput").onchange = async (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  for (const f of files) await uploadFile(f);
+};
+async function uploadFile(file) {
+  const msg = $("fileMsg");
+  msg.textContent = `上传 ${file.name} …`;
+  try {
+    const buf = await file.arrayBuffer();
+    const sha = await sha256Hex(buf);
+    const ct = file.type || "application/octet-stream";
+    const up = await apiJson("/v1/files", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, size: file.size, content_type: ct, sha256: sha }),
+    });
+    if (!up.deduplicated && up.upload_url) {
+      const r = await fetch(up.upload_url, { method: "PUT", body: buf });
+      if (!r.ok) throw new Error("直传失败 HTTP " + r.status);
+    }
+    await apiJson("/v1/files/commit", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, object_key: up.object_key, sha256: sha, content_type: ct }),
+    });
+    msg.textContent = `✅ ${file.name}` + (up.deduplicated ? "（已存在，已去重）" : "");
+    await refreshFiles();
+  } catch (err) {
+    msg.textContent = "❌ " + err.message;
+  }
+}
+async function refreshFiles() {
+  const list = $("fileList");
+  try {
+    const data = await apiJson("/v1/files");
+    const files = data.files || [];
+    if (!files.length) { list.innerHTML = '<div class="empty">还没有文件</div>'; return; }
+    list.innerHTML = files.map((f) => `
+      <div class="file-row">
+        <span class="name" title="${esc(f.filename)}">${esc(f.filename)}</span>
+        <span class="sz">${fmtSize(f.size)}</span>
+        <button onclick="downloadFile(${f.id})">下载</button>
+        <button class="danger" onclick="deleteFile(${f.id})">删</button>
+      </div>`).join("");
+  } catch (err) {
+    list.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+  }
+}
+async function downloadFile(id) {
+  try {
+    const d = await apiJson(`/v1/files/${id}/url`);
+    window.open(d.url, "_blank");
+  } catch (err) {
+    showBanner("下载失败：" + err.message);
+  }
+}
+async function deleteFile(id) {
+  if (!confirm("确定删除该文件？")) return;
+  try {
+    await api(`/v1/files/${id}`, { method: "DELETE" });
+    await refreshFiles();
+  } catch (err) {
+    showBanner("删除失败：" + err.message);
+  }
+}
 
 // ---- 全局兜底：任何未捕获的 JS 错误都显示出来，不做静默失败 ---------------
 window.addEventListener("error", (e) => showBanner("页面错误：" + e.message));

@@ -13,6 +13,8 @@
 > | `PROJECT_GUIDE.md` | 叙事与价值 | 为什么这么设计（取舍）、踩过什么坑（故事版）、测试样例与实测数据 |
 > | `ARCHITECTURE.md` | 技术手册 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19） |
 > | `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
+| `docs/`（三件） | CubeSandbox 专项 | 沙箱设计笔记 / 生产部署手册 / 生产就绪审计——专项文档，不重复核心四文档内容 |
+
 
 **目录**
 
@@ -208,8 +210,8 @@ loop：模型说"调 write(path, content)" → policy 检查 → 沙箱执行 �
 
 "换装口"的三个实例：
 - `MemoryRepo.search(user_id, query, k)` —— 词法/向量/混合检索全在这个方法内切换；
-- `CommandRunner` Protocol —— LocalRunner/DockerRunner/未来的 CubeSandbox 都实现同一协议，
-  上层 AgentLoop 完全无感（`PI_SANDBOX=docker` 只改变 runner 的构造）；
+- `CommandRunner` Protocol —— LocalRunner/DockerRunner/CubeSandboxRunner 都实现同一协议，
+  上层 AgentLoop 完全无感（`PI_SANDBOX` 只改变 runner 的构造，microVM 与容器同协议）；
 - `ToolProvider` —— builtin/MCP/Skills 都是"工具来源"，registry 聚合，加新来源不改上层。
 
 **4. 附属系统永不阻塞主流程（fail-soft）。**
@@ -338,7 +340,8 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | 工具 | MCP 工具源（stdio + fail-soft + 生命周期） | `tools/mcp.py` | 标准协议 |
 | 工具 | Skills 技能包（SKILL.md + 索引注入 + 脚本走沙箱） | `tools/skill.py` | 渐进披露 |
 | 工具 | ToolRegistry（聚合/去重/预热缓存） | `tools/registry.py` | 一个抽象管所有来源 |
-| 沙箱 | Docker + 预热池 + cgroup 限额 + 断网 | `tools/sandbox.py` | 52 exec/s 实测 |
+| 沙箱 | Docker（预热池+限额+断网）+ **CubeSandbox microVM**（GNU timeout/退出码透传/10MB 上限） | `tools/sandbox.py` | 52 exec/s 实测 + 真机故障注入探针 |
+| 归档 | 会话工作区 tar.gz + 差异元数据 + MinIO 惰性上传 | `server/archive.py` | 9 turns 实测 |
 | 记忆 | episodic（compactions 表复用摘要） | `server/db.py` | 不重复花钱总结 |
 | 记忆 | semantic（remember/recall 工具 + 自动召回注入） | `tools/memory.py` | 跨会话 |
 | 记忆 | 向量检索（Milvus + 云 embedding，词法兜底） | `server/vectorstore.py` `llm/embedding.py` | 换后端只改一处 |
@@ -413,6 +416,12 @@ for call in calls:
   （比 `docker run` 少一次容器创建）；空闲自动回收；预热是后台任务，
   与模型思考并行（见巧思 3）。实测每预热容器仅 ~26 MiB。
 - **fail-closed**：`PI_SANDBOX` 非法值**启动即拒绝**（曾静默降级为进程内执行 = 事故）。
+- **第二形态 CubeSandbox**（`PI_SANDBOX=cubesandbox`）：microVM 沙箱（E2B 兼容 SDK，宿主需 KVM），
+  会话工作区在 VM 内、结束回传归档；命令用 GNU `timeout` 包装（退出码 124 → `timed_out`，
+  沙箱内收尸零残留）；非零退出码透传（模型能区分"exit 1 失败"和"超时"）；
+  工作区 >10MB 装载拒绝并给可操作提示；close 有总超时（默认 90s），三层 VM 泄漏防线。
+  生产化审计（7 个真实缺口 + 故障注入探针）见 `docs/cube-sandbox-design-notes.md` /
+  `docs/production-readiness.md`。
 
 #### （3）分层记忆：两个时间尺度的记忆
 
@@ -808,6 +817,8 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 | 记忆向量 | 一次召回 embedding 15~28 tokens（qwen3.7-text-embedding） | 计量记录实测 |
 | 轨迹落盘 | 每 run 一行 JSON（含全部事件 + ts），按天滚动 | 本地实测 |
 | 端到端延迟 | 服务端 0.7s 出首个 token（fake）；真实模型由云 API 决定 | 实测 |
+| CubeSandbox 超时 | `sleep 30` timeout=3 → 3.2s 返回 `timed_out=True`，`pgrep -c sleep`=0（零残留） | 真机故障注入探针 |
+| 企业 eval | 真实模型端到端冒烟 29s / 4 工具 / 断言全过；eval 5/5 | docs/production-readiness.md |
 
 **成本提示**：真实模型每次调用花钱（token 计费）。UI 调试期不要用真实模型反复回归——
 布局/流式验证优先用 fake 模型脚本 + Playwright，验收时用真实模型跑一遍即可。
@@ -827,7 +838,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 | 后续 | **RAG 企业知识库** | 铁律：先评测再调检索；v1=解析+切块+混合检索(BM25)+rerank+引用+ACL；与记忆共用 Milvus/embedding |
 | 后续 | 文件上传 + MinIO | 与 RAG 解析层共用 parser；配额+解压炸弹防护 |
 | 后续 | SSO/RBAC | 现在只有 JWT + admin 开关 |
-| 后续 | CubeSandbox microVM | **前置：宿主机 KVM**（云 VM 大概率不支持，先核实） |
+| ~~后续~~ 已落地 | CubeSandbox microVM（`PI_SANDBOX=cubesandbox`，KVM 前置 + 云 runbook 见 docs/） |
 
 ---
 
@@ -840,7 +851,7 @@ src/pi/
 ├── tools/         工具层：9 内置 + subagent + memory + mcp + skill + registry + sandbox
 ├── server/        FastAPI 服务：app（路由）、runner（RunManager）、db（ORM+repo）、
 │                  cache（Redis/内存）、auth、config、ratelimit、trajectory_store、
-│                  vectorstore（Milvus）、static（三个前端页面）
+│                  vectorstore（Milvus）、static（三个前端页面）、archive.py（会话归档）
 ├── security/      policy（策略/路径沙箱）、audit（审计）、redact（脱敏）
 ├── observability/ tracing、metrics（Prometheus）、metering（用量/配额/成本）、prices
 ├── evals/         评估与飞轮：schema/load/runner/scorers/report（P4）
@@ -851,7 +862,8 @@ tests/             254 个单测（连本地 MySQL/Redis）
 integration/       真实栈集成测试（PI_INTEGRATION=1）
 tools/             压测/播种脚本（sandbox_bench、loadtest、seed_testdb）
 deploy/            本地/生产 compose、环境模板、部署文档
-migrations/        Alembic 迁移（0001~0004）
+docs/              CubeSandbox 设计笔记、生产部署手册、生产就绪审计
+migrations/        Alembic 迁移（0001~0006）
 ```
 
 ## 附录D 环境变量速查（关键项，完整清单见 ARCHITECTURE §13）
@@ -873,6 +885,9 @@ migrations/        Alembic 迁移（0001~0004）
 | `PI_JWT_SECRET` | 令牌签名密钥 | 多实例必须一致，轮换=全员登出 |
 | `PI_MAX_CONCURRENT_RUNS` | 全局并发信号量 | 默认 8 |
 | `PI_METRICS_TOKEN` | /metrics 访问令牌 | 错误令牌答 404（不暴露存在性） |
+| `PI_CUBE_API_KEY` | CubeSandbox（E2B 兼容 API）密钥 | `PI_SANDBOX=cubesandbox` 时必配 |
+| `PI_SANDBOX_CLOSE_TIMEOUT_SECONDS` | 沙箱 close/save 总超时 | 默认 90s，超时 turn 先走、清理线程收尾 |
+| `PI_ARCHIVE` / `PI_ARCHIVE_DIR` / `PI_ARCHIVE_S3_*` | 会话归档开关/目录/MinIO 上传 | 默认开启，落 `~/.pi-py/archives` |
 
 ## 附录E 轨迹 JSON 样例（真实落盘的一行）
 

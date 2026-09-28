@@ -10,6 +10,8 @@
 | `PROJECT_GUIDE.md` | 叙事与价值 | 为什么这么设计（取舍）、踩过什么坑（故事版）、测试样例与实测数据 |
 | `ARCHITECTURE.md` | 技术手册 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19） |
 | `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
+| `docs/`（三件） | CubeSandbox 专项 | 沙箱设计笔记 / 生产部署手册 / 生产就绪审计——专项文档，不重复核心四文档内容 |
+
 
 ## 1. 当前能力（已完成、已验证）
 
@@ -34,6 +36,9 @@
 | **轨迹落盘 + 轨迹视图**（jsonl 按天滚动 + 查询端点 + 单文件时序图前端） | `server/trajectory_store.py` `/ui/trajectory.html` | 单测 + 真实浏览器 |
 | **Web 前端**（零构建单文件三件套：用户端 / 轨迹视图 / 管理台） | `server/static/*.html` | Playwright 无头浏览器实测 |
 | **管理 API**（用户管理/配额/禁用/强制下线/审计过滤/stats/usage） | `server/app.py` | 单测 + 冒烟 |
+| **沙箱生产化**（CubeSandbox microVM + GNU timeout + 退出码透传 + 10MB 装载上限 + 三层 VM 泄漏防线） | `tools/sandbox.py` | 真机故障注入探针 + 企业 eval 5/5 |
+| **会话闭环归档**（turn 基线快照 + 结束 tar.gz + 差异元数据 + MinIO 惰性接口） | `server/archive.py` | 9 turns 实测 diff 精确 |
+| **沙箱健康指标**（创建失败/命令超时/close 失败/创建耗时 4 系列） | `observability/metrics.py` | 真实任务实测 |
 | **轨迹结构化落库**（runs 表 + `/v1/trajectory/{run_id}` 回放 + `/v1/admin/trajectory/{run_id}` 跨用户） | `server/db.py` `server/app.py` | 单测 + 实测 |
 | **审计结构化查询**（audit_events 表双写，jsonl 仍是合规底稿） | `server/db.py` `security/audit.py` | 单测 + 实测 |
 | **官方 SDK**（异步客户端：SSE 流式解析、PiError 语义、trust_env=False） | `src/pi/client.py` | 单测 + 真实模型实测 |
@@ -57,6 +62,7 @@
 | 6 | LLM 会对模糊输入自作主张调工具——提示词已约束，闲聊不跑命令 |
 | 7 | 文档会过时代码不会：状态以代码为准；每知识点只在一个文档详述（四个文档各有分工） |
 | 8 | 真实模型花钱：UI 调试别用真实模型反复回归 |
+| 9 | 跨分支 API 变更合流后跑**全套**：两边各跑子集全绿，合流才暴露 ToolContext 断裂（4 例挂） |
 
 ## 3. 未完成事项
 
@@ -88,8 +94,8 @@
 
 - SSO/RBAC（现在只有 JWT + admin 开关，缺 OIDC/SAML/LDAP 和分级权限）。
 - 前端增强：会话重命名、消息重发/编辑、多会话对比。
-- CubeSandbox（腾讯 microVM）——**前置条件：宿主机支持 KVM/嵌套虚拟化，云 VM 大概率不行，
-  先核实再动手**；实现 `CommandRunner` 协议即可接入，Docker runner 保留 fallback。
+- CubeSandbox 已落地（`PI_SANDBOX=cubesandbox`，见 `docs/cube-sandbox-design-notes.md`）；生产部署的
+  KVM/嵌套虚拟化前置与 runbook 见 `docs/production-deployment.md`。
 
 ## 5. 环境速查
 

@@ -13,6 +13,8 @@
 | `PROJECT_GUIDE.md` | 叙事与价值 | 为什么这么设计（取舍）、踩过什么坑（故事版）、测试样例与实测数据 |
 | `ARCHITECTURE.md` | 技术手册 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19） |
 | `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
+| `docs/`（三件） | CubeSandbox 专项 | 沙箱设计笔记 / 生产部署手册 / 生产就绪审计——专项文档，不重复核心四文档内容 |
+
 >
 > 本包已收敛为**纯服务端形态**：本地单人 CLI/TUI、本地 SQLite 会话存储、
 > Windows/WSL 支持均已移除（见 §12）。
@@ -218,9 +220,12 @@ pi-python/
 │       ├── db.py            SQLAlchemy ORM + 仓储（MySQL / PG 通用）
 │       ├── cache.py         缓存/锁后端（内存 / Redis）
 │       ├── auth.py          PBKDF2 哈希 + JWT
-│       └── ratelimit.py     每用户固定窗口限流
+│       ├── ratelimit.py     每用户固定窗口限流
+│       ├── archive.py        会话工作区归档（tar.gz + 差异元数据 + MinIO 惰性上传）
+│       └── client.py         SDK（异步 HTTP 客户端，SSE 流式解析）
 ├── tests/                   254 个测试（连本地 MySQL/Redis，服务替身分层）
-├── migrations/              Alembic 迁移（0001 建表、0002 用户激活字段）
+├── migrations/              Alembic 迁移（0001 建表 ~ 0006 audit_events）
+├── docs/                    CubeSandbox 设计笔记 / 生产部署手册 / 生产就绪审计（专项文档）
 ├── tools/loadtest.py        SSE 压测工具
 ├── tools/seed_testdb.py     给 *_test 库灌可复用的测试数据（幂等，拒绝跑在生产库上）
 ├── tools/sandbox_bench.py   docker 预热池容量压测（直打 sandbox 层，扫并发用户数）
@@ -456,6 +461,17 @@ create→start→销毁"的延迟。设计：
 **语义变化须知**：预热池下同 workspace 的多次调用共享进程态（pip 装的包、env 变量
 会保留），冷路径每次清零。文件不受影响（本来就在挂载卷里）。
 
+### 7.3 `base.py` — 工具契约与 WorkspaceFS（2026-09 沙箱生产化后）
+
+`ToolContext` 收敛为 `cwd / max_output / runner / fs` 四个字段；`provider/policy/audit/
+tracer/session_id/user_id/memory/user_db_id` 由 loop/runner **运行时动态赋值**——
+工具侧一律 `getattr(ctx, "policy", None)` 防御（裸 context 场景如 eval 没有这些属性，
+直接访问会 AttributeError；这是合流修复的教训，见 ROADMAP 教训 9）。
+
+文件工具通过 `WorkspaceFS` 协议读写（`LocalFS` / `SandboxFS` 双实现）：Docker 模式
+LocalFS 直接操作宿主文件；CubeSandbox 模式 SandboxFS 走 VM 内路径。**数据通路与
+policy 声明式路径沙箱构成两层越界防护**（详见 `docs/cube-sandbox-design-notes.md` §3）。
+
 ### 7.4 `registry.py` / `mcp.py` / `skill.py` — 工具来源聚合（MCP + Skills）
 
 `ToolProvider`（`tools() -> list[Tool]`，可抛异常）+ `ToolRegistry` 聚合：
@@ -592,6 +608,11 @@ User-Agent，**不记密码**。三点注意：
 ---
 
 ## 10. 可观测层 `src/pi/observability/`
+
+沙箱健康指标（2026-09 起，§10.4）：`pi_sandbox_create_failures_total` /
+`pi_sandbox_command_timeouts_total` / `pi_sandbox_close_failures_total` /
+`pi_sandbox_create_duration_seconds` 四系列，runner 装配时注入 `runner.metrics`
+（鸭子类型，standalone 无 metrics 时全 no-op，零耦合）。
 
 ### 10.1 `tracing.py` — 三种 tracer 后端
 
@@ -882,6 +903,9 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_SKILLS_DIR` | 空 | 技能根目录（`<skill>/SKILL.md` + `scripts/`）；空=不加载技能 |
 | `PI_METRICS` | 1 | Prometheus 指标开关；0=关（`/metrics` 回 503） |
 | `PI_METRICS_TOKEN` | 空 | `/metrics` 门控 token；空=开放（启动打 warning），错 token 回 404 |
+| `PI_CUBE_API_KEY` | 空 | CubeSandbox（E2B 兼容 API）密钥；`PI_SANDBOX=cubesandbox` 必配 |
+| `PI_SANDBOX_CLOSE_TIMEOUT_SECONDS` | 90 | 沙箱 close/save 总超时；超时 turn 先走、清理线程收尾（VM 必死） |
+| `PI_ARCHIVE` | 1 | 会话归档开关（0=关）；`PI_ARCHIVE_DIR`（默认 ~/.pi-py/archives）、`PI_ARCHIVE_S3_*`（MinIO 惰性上传） |
 
 ---
 

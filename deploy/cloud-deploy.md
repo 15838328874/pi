@@ -169,6 +169,12 @@ curl -s http://127.0.0.1:3000/v1/models -H "Authorization: Bearer sk-<令牌>"
 
 **注意**：
 
+- **存储用 SQLite（有意为之，不是偷懒）**：网关数据不是真相源——用户 token 账在
+  pi-py 的 `usage_records` 表（MySQL），网关日志只是"每家厂商各花了多少"的对账单，
+  丢了可用真相源重建；渠道/令牌十几行数据，几分钟可重录。SQLite 单文件 + docker
+  volume，零运维。两条约定：① 网关 UI 设置里把**日志保存天数**设为 30-90 天，
+  防文件无限增长；② `llm-gateway-data` 卷纳入备份范围。只有当需要**多网关实例 HA**
+  或对网关日志做 SQL/BI 分析时才切 MySQL（`SQL_DSN` 环境变量，需先建独立库并授权）
 - **流式透传**：new-api 默认透传 SSE，pi-py 的流式协议不受影响；网关的用量日志
   建议用采样/摘要模式，别把长流全量入库
 - **双重退避**：pi-py 的 fallback.py 会重试 429/5xx，网关也会切渠道重试——网关侧

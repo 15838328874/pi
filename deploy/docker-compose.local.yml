@@ -5,11 +5,12 @@
 #   如果本机已有 Redis（如 apt 的 redis-server 占着 6379）或已有 Milvus 容器，
 #   只起缺的即可：docker compose -f deploy/docker-compose.local.yml up -d mysql
 #
-# 端口约定（本地测试环境固定）：
-#   MySQL   127.0.0.1:3306   （root/pi_root_local，库 pi_py，用户 pi/pi_py_local）
-#   Redis   127.0.0.1:6379
-#   Milvus  127.0.0.1:19531  （容器内 19530；9092 为 metrics）
-#   应用    http://localhost:8300（pi-py serve，跑在宿主机 python，不进容器）
+# 端口约定（默认值即 local-dev.md 的约定；如需覆盖，在 deploy/.env 里设变量，
+# 该文件不纳入版本控制。本机因 3306/6379 已被同机 CubeSandbox 占用而做了覆盖）：
+#   MySQL   127.0.0.1:${PI_MYSQL_PORT:-3306}   （root/pi_root_local，库 pi_py，用户 pi/pi_py_local）
+#   Redis   127.0.0.1:${PI_REDIS_PORT:-6379}
+#   Milvus  127.0.0.1:${PI_MILVUS_PORT:-19531} （容器内 19530；${PI_MILVUS_METRICS_PORT:-9092} 为 metrics）
+#   应用    http://127.0.0.1:8300（pi-py serve，跑在宿主机 python，不进容器）
 
 services:
   mysql:
@@ -22,7 +23,7 @@ services:
       MYSQL_USER: pi
       MYSQL_PASSWORD: pi_py_local
     ports:
-      - "127.0.0.1:3306:3306"
+      - "127.0.0.1:${PI_MYSQL_PORT:-3306}:3306"
     volumes:
       - mysql-data:/var/lib/mysql
     healthcheck:
@@ -37,7 +38,7 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     ports:
-      - "127.0.0.1:6379:6379"
+      - "127.0.0.1:${PI_REDIS_PORT:-6379}:6379"
     volumes:
       - redis-data:/data
 
@@ -47,12 +48,16 @@ services:
     image: milvusdb/milvus:v2.5.4
     container_name: pi-py-milvus
     restart: unless-stopped
+    # 镜像 Cmd 为空，必须显式给出启动命令，否则 tini 收不到程序直接退出。
+    command: ["milvus", "run", "standalone"]
     environment:
       ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      ETCD_CONFIG_PATH: /milvus/configs/advanced/etcd.yaml
       COMMON_STORAGETYPE: local
     ports:
-      - "127.0.0.1:19531:19530"
-      - "127.0.0.1:9092:9091"
+      - "127.0.0.1:${PI_MILVUS_PORT:-19531}:19530"
+      - "127.0.0.1:${PI_MILVUS_METRICS_PORT:-9092}:9091"
     volumes:
       - milvus-data:/var/lib/milvus
 

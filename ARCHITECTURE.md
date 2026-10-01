@@ -406,14 +406,13 @@ CompactionEvent / TurnEndEvent / ErrorEvent`。
 摘要提示词（`COMPACTION_PROMPT`）强制保留：目标与约束、已做决定及理由、
 文件变更、命令结果、未完成事项。
 
-**压缩结果目前不落库**（值得注意的一处实现现状）：`AgentLoop` 有 `on_compact` 回调
-可用于持久化，但服务端**没有接线**——`RunManager` 只传 `on_message`，`MessageRepo`
-也只有 `append_many` / `list_for_session` / `count_for_session`，没有"重写整个会话"的
-方法。后果：压缩只在当次 run 的内存里生效，库里保留完整原始历史，下一轮重新加载、
-重新压缩。这是**功能正确**的（本轮新消息的 `idx` 由 `count_for_session` 递增，不受
-前缀压缩影响），代价是长会话每轮都重付一次摘要 LLM 调用、且消息表只增不减。
-若要修，入口是给 `MessageRepo` 加一个事务性的 `replace_many`，再在 `runner.py`
-里把 `on_compact` 接上（原 CLI 的 `SessionStore.replace_messages` 就是这么做的）。
+**压缩结果已落库（P3 episodic 记忆）**：`RunManager` 接线了 `on_compact`
+（runner.py:162-170、231），摘要写独立的 `compactions` 表——`save_compaction` 在
+finally 里 fail-soft（runner.py:344-353），**原始消息表只增不减**（非破坏优先，见 §8）。
+`covered_upto_idx` 标明摘要覆盖到第几条；下一轮开始时 `run_turn` 查
+`latest_compaction`，只加载 `[摘要] + [idx 之后的新消息]` 作为历史
+（runner.py:172-187）——**同一段历史只付一次摘要 LLM 费用**。摘要表是派生数据，
+随时可重建；新消息的 `idx` 由 `count_for_session` 递增，与前缀压缩互不影响。
 
 **为什么保留尾部 8 条原文？** 最近上下文是模型当前任务的工作记忆，摘要必有损，
 混合方案（纪要+原文）在成本与连贯性之间取平衡。
@@ -591,11 +590,14 @@ CLI:`pi-py eval rollout --tasks DIR --model X --n 8 --concurrency 16 --sandbox d
 | 方法 | 作用 |
 |---|---|
 | `append_many(session_id, entries)` | 批量追加，`entries` 为 `[{'idx', 'role', 'blocks'}, ...]`；`blocks` 是 `Message.model_dump_json()` 的字符串。一次事务写完——这就是原则 1（run 原子性）的落地点 |
-| `list_for_session(session_id)` | 按 `idx` 升序读回，调用方用 `Message.model_validate_json` 反序列化 |
+| `list_for_session(session_id, after_idx=-1)` | 按 `idx` 升序读回，`after_idx >= 0` 时只取 `idx > after_idx`（摘要复用加载用）；调用方用 `Message.model_validate_json` 反序列化 |
 | `count_for_session(session_id)` | 现有消息数，`RunManager` 用它算新消息的起始 `idx` |
+| `save_compaction(session_id, covered_upto_idx, summary, model)` | 摘要落 `compactions` 表（fail-soft，绝不挂 run） |
+| `latest_compaction(session_id)` | 最近一份摘要；`RunManager` 加载历史时用它拼 `[摘要] + [后续新消息]`，同一段历史只付一次摘要费 |
 
-**没有"重写整个会话"的方法**（原 `SessionStore.replace_messages` 的对应物不存在），
-所以压缩结果无法落库——完整因果与修法见 §6.3。
+消息表**只增不减**——没有"重写整个会话"的方法（原 `SessionStore.replace_messages`
+的对应物刻意不复刻）。压缩落独立 `compactions` 表而非重写历史（非破坏优先），
+完整机制见 §6.3。
 
 `MemoryRepo`（语义记忆，P3b，跨会话长期记忆）：
 
@@ -862,9 +864,16 @@ User-Agent，**不记密码**。三点注意：
 
 ### 12.2 自动加载 `.env`（`pi/__init__.py`）
 
-包导入时按顺序找 `.pi-py.env` / `.env` / `~/.pi-py/.env`，读 `KEY=VALUE` 行注入
+包导入时按顺序找 `.env` / `~/.pi-py/.env`，读 `KEY=VALUE` 行注入
 环境变量（**已存在的环境变量优先**，即显式设置永远赢）。找到第一个存在的文件就停。
 值两侧的引号会被剥掉；空行与 `#` 开头的行忽略。
+
+> **变更留痕（2026-10-01）**：候选曾有三个（`.pi-py.env` / `.env` / `~/.pi-py/.env`）。
+> 项目根的 `.pi-py.env` 与 `.env` 是同一槽位的两个名字，且本仓库两个 compose 文件
+> 都没有 `${}` 变量替换（不存在"compose 抢读 .env"的冲突），防冲突理由不成立，
+> 因此移除 `.pi-py.env`，收敛为两个：**项目内 `.env`（默认）+ 机器级 `~/.pi-py/.env`
+> （跨 checkout 共用密钥，与 jwt.secret/audit 同目录）**。本地若还在用
+> `.pi-py.env`，把文件改名为 `.env` 即可，无需其他迁移。
 
 **这条机制有个容易踩的后果**：仓库根放着生产 `.env` 时，**任何 import pi 的进程
 都会继承它**——包括 `pytest`。测试自己会 monkeypatch `PI_DATABASE_URL`，但历史上
@@ -901,7 +910,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 `.env.test` 只覆盖四项，其余（JWT 密钥、Redis 地址、模型）沿用 `.env`：
 `PI_DATABASE_URL`（换成 `pi_py_test`）、`PI_REDIS_NS=test`（键前缀隔离）、
 `PI_WORKSPACE_ROOT` / `PI_AUDIT_PATH`（各带 `-test` 后缀，不与生产混）。
-它**不会**被 `pi/__init__.py` 自动加载（加载器只认 `.pi-py.env` / `.env` /
+它**不会**被 `pi/__init__.py` 自动加载（加载器只认 `.env` /
 `~/.pi-py/.env`），必须显式 source——这正是想要的：忘了 source 就还在生产配置上，
 而种子脚本的护栏会因此直接拒绝运行。文件含密码，权限 600，已进 `.gitignore`。
 
@@ -1105,8 +1114,10 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 9. **计量失败不回滚对话**：这是刻意设计（原则 4）——记账问题不应让用户的工作丢失。
 10. **不要删 `migrations/` 或 `.dockerignore` 里放行它**：Dockerfile 要把它打进镜像，
     排除掉构建直接失败。
-11. **压缩不落库**：长会话每轮都会重新付一次摘要 LLM 调用，`messages` 表只增不减
-    ——这不是 bug 而是当前实现现状（`on_compact` 没接线），因果与修法见 §6.3。
+11. **压缩摘要落 `compactions` 表、原始消息只增不减**：长会话的历史加载是
+    `[最新摘要] + [摘要之后的新消息]`，同一段历史只付一次摘要 LLM 费；摘要表是
+    派生数据，删了下一轮会重新生成（机制见 §6.3）。曾有一版"压缩不落库、每轮重付
+    摘要费"的实现现状，P3 episodic 记忆落地后已消除。
 12. **`pi/server/__init__.py` 必须保持惰性导出**：它 eager import `create_app` 时，
     任何先碰 `pi.server.db` / `pi.observability.metering` 的脚本都会撞上环：
     `metering → server.db → server/__init__ → server.app → metering`（半成品）→ ImportError。
@@ -1342,15 +1353,16 @@ dev 与 origin/main 是两条**无关历史**的并行线（见项目记忆）�
 
 **已覆盖**（main 有、dev 已补）：Prometheus 指标系统（且超越：llm 实时钩子、降级
 计数器、全路径工具投影）、integration 真实栈测试、L15 日志脱敏（修了，main 只记录）、
-embedding 用量计量、conftest pin 纪律、**run/轨迹落库**（2026-09-27：jsonl 按天滚动 +
-查询端点 + 时序图前端，未上 DB 表——见 ROADMAP §3）、**Web 前端**（零构建三页
+embedding 用量计量、conftest pin 纪律、**run/轨迹落库**（jsonl 按天滚动 + 查询端点 +
+时序图前端；2026-09-28 迁移 0005 再上 runs 表——轨迹双写 jsonl+DB，含管理员 runId
+回放端点）、**Web 前端**（零构建三页
 app/trajectory/admin，已决策不搬 Vue 工程）。
 
 **未覆盖**（按建议处理顺序）：
 
 | # | 缺口 | main 的形态 | 说明 / 建议 |
 |---|---|---|---|
-| 1 | 轨迹结构化落库 | `agent_runs` + `trace_fidelity` 表 | 已做 jsonl 版（落盘+端点+前端）；DB 表形态见 ROADMAP §3 |
+| 1 | 轨迹结构化落库 | `agent_runs` + `trace_fidelity` 表 | dev 侧已闭环：runs 表（迁移 0005，轨迹 jsonl+DB 双写，2026-09-28）+ 会话/run 级/admin 查询端点。与 main 双表形态的最终对齐待 fetch main 核对 |
 | 3 | 迁移合流 | 生产库在 `0007_trace_fidelity` | 两边 0003/0004 **同名不同内容**（session_plan/user_memories vs compactions/memories）。合流必须设计整合迁移，**前提是定生产库未来形态** |
 | 4 | 语义检索的兜底档 | MySQL 暴力余弦兜底 | 索引挂了我们只有词法兜底（可用，语义质量降档更狠）。可选增强 |
 | 5 | 运维资产 | `deploy/pi-py.service`（生产实际走 systemd）+ L1~L15 事故记录 | 搬运即可；dev 文档目前仍以 compose 为主 |
@@ -1371,7 +1383,7 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 | 层 | 内容 | 现状 |
 |---|---|---|
 | **服务层**（对外） | 多租户 agent API、工具（MCP/Skills）、记忆、沙箱、配额/限流/审计 | 完整，且深于 main |
-| **数据层**（对内，战略资产） | 轨迹、评估、RL 飞轮（rollout→reward→export JSONL） | 飞轮已建，但**轨迹不落库**（run 结束即丢）——数据层缺"存储"一环 |
+| **数据层**（对内，战略资产） | 轨迹、评估、RL 飞轮（rollout→reward→export JSONL） | 飞轮已建，**轨迹双写落库**（jsonl 合规底稿 + runs 表结构化镜像，迁移 0005）——"存储"一环已补（本节为 2026-09-27 讨论结论，当时尚未上 DB 表） |
 | **运营层**（对管理员） | metrics、审计查询、用量/配额管理 | metrics 有，审计 audit_events 表可查（jsonl 兜底），轨迹 runs 表 + admin runId 回放端点 |
 
 数据层是本项目最独特的定位：服务系统 + 评估系统 + RL 数据生产系统三位一体。
@@ -1419,7 +1431,7 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 | `GET/POST /v1/sessions/{id}/files`（工作区文件列表/上传） | 无 |
 | `GET/DELETE /v1/memories(/{id})`（记忆 CRUD） | 无（只有 remember/recall 工具，无 HTTP 面） |
 | `GET /v1/admin/audit?event=` | 有但过滤参数不同（user/tool vs user/event） |
-| `GET /v1/admin/traces(/{runId})`（轨迹回放查看器） | **硬缺**——轨迹不落库（§19 ①） |
+| `GET /v1/admin/traces(/{runId})`（轨迹回放查看器） | 有等价端点：`GET /v1/admin/trajectory/{run_id}`（路径名不同，随 runs 表 2026-09-28 落地） |
 | run 请求体 `enable_search`/`builtin_tools`/`files` | 无（RunIn 只有 prompt/model） |
 | SSE 事件 `plan` | 不发射 |
 

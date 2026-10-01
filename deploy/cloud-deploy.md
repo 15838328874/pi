@@ -66,7 +66,8 @@ vi .env    # 填 MYSQL_PASSWORD / REDIS_PASSWORD / PI_JWT_SECRET / OPENAI_API_KE
 
 - `PI_JWT_SECRET` 用 `openssl rand -hex 32` 生成，**换了它所有已发 token 立即失效**，保持稳定；
 - 密码里若有 `@ : / # ? %` 等 URL 特殊字符，需 percent-encode（如 `@` → `%40`）；
-- `PI_MODEL` / `OPENAI_API_KEY` / `OPENAI_BASE_URL` 决定模型走哪，`PI_FALLBACK_CHAIN` 可选。
+- `PI_MODEL` / `OPENAI_API_KEY` / `OPENAI_BASE_URL` 决定模型走哪：默认走内置聚合网关
+  （`OPENAI_BASE_URL` 留空即可，见 §2.5），`PI_FALLBACK_CHAIN` 可选。
 
 ### 2.3 构建并启动
 
@@ -126,6 +127,57 @@ PBKDF2 现在跑在线程池里而不是事件循环上（见 ARCHITECTURE §17 
 注册和登录的每次尝试（成功与各种失败原因）现在都进审计日志，带客户端 IP 和 User-Agent，
 这是事后封号和追责的唯一依据。**但只有 `PI_FORWARDED_ALLOW_IPS` 设对了，IP 才是真的**
 （见下表与 §17 第 16 条）——走 Caddy 时不设，日志里所有请求都是同一个容器 IP。
+
+### 2.5 LLM 聚合网关（new-api）
+
+**为什么需要**：单一厂商账号的 QPS/并发上限远低于多人规模的需求（1000 人峰值约
+150-200 在飞请求 + 20 QPS，见 ARCHITECTURE §5 规划账）。`llm-gateway`（new-api 容器）
+是模型流量的统一前门：pi-py 只看到**一个** OpenAI 兼容端点，网关按渠道把流量分给
+阿里云/DeepSeek/SiliconFlow 等多家，某渠道 QPS 打满或故障时自动切下一家。
+
+**首次配置**（一次性，全部在网关 Web UI 完成）：
+
+```bash
+# 1) 管理 UI 只绑了 127.0.0.1:3000，经 SSH 隧道访问（绝不把 3000 暴露公网）：
+ssh -L 3000:127.0.0.1:3000 root@<ECS公网IP>
+# 浏览器打开 http://127.0.0.1:3000，用默认管理员登录并改密码
+#   （new-api 默认 root / 123456，首次登录必须改）
+
+# 2) 渠道（Channel）：每家厂商一个渠道
+#    阿里云百炼： base_url=https://dashscope.aliyuncs.com/compatible-mode/v1
+#    DeepSeek：   base_url=https://api.deepseek.com/v1
+#    SiliconFlow/智谱等按各自文档；每个渠道填 key、勾选支持的模型、设优先级
+
+# 3) 模型映射：把 pi-py 用的模型名映射到对应渠道
+#    qwen3.8-max → 阿里云渠道；deepseek-chat → DeepSeek 渠道；……
+
+# 4) 令牌（Token）：新建一个 sk-xxx 令牌，写进 .env 的 OPENAI_API_KEY
+#    embedding 若也走网关（建议），同样在网关配好 embedding 渠道，
+#    PI_EMBEDDING_URL 填 http://llm-gateway:3000/v1
+```
+
+**验证与演练**：
+
+```bash
+# 1) 网关冒烟（在 ECS 上直接打）
+curl -s http://127.0.0.1:3000/v1/models -H "Authorization: Bearer sk-<令牌>"
+
+# 2) 跑一轮真实对话（§2.4 第 5 步），确认流式正常
+# 3) 断渠道演练：网关 UI 禁用阿里云渠道 → 再跑一轮 →
+#    应自动切到下一优先级渠道，用户无感；结束后重新启用
+```
+
+**注意**：
+
+- **流式透传**：new-api 默认透传 SSE，pi-py 的流式协议不受影响；网关的用量日志
+  建议用采样/摘要模式，别把长流全量入库
+- **双重退避**：pi-py 的 fallback.py 会重试 429/5xx，网关也会切渠道重试——网关侧
+  渠道重试次数设 1 次即可，重试策略以 pi-py 侧为准，避免延迟叠加放大
+- **模型名必须映射**：`PI_FALLBACK_CHAIN` 里的每个模型名都要在网关映射表里有条目，
+  否则请求直接 404（网关报错明确，好排查）
+- **兜底**：网关容器挂 = 模型不可用（app 不崩溃，run 报错）。可靠性要求更高时，
+  可后续给 `PI_FALLBACK_CHAIN` 加"每入口独立 base_url/key"支持直连厂商兜底
+  （`llm/registry.py` 小改，暂未实现）
 
 ## 3. 4 vCPU / 16 GiB 调优
 

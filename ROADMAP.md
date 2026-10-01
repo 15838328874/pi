@@ -1,6 +1,6 @@
 # pi-py 状态与路线图（ROADMAP）
 
-> 项目现状、未完成事项、后续阶段开发计划的唯一入口。更新日期：2026-09-29。
+> 项目现状、未完成事项、后续阶段开发计划的唯一入口。更新日期：2026-10-01。
 >
 > **文档地图**（四个文档各管一段，知识点不重复）：
 >
@@ -10,7 +10,7 @@
 | `PROJECT_GUIDE.md` | 叙事与价值 | 为什么这么设计（取舍）、踩过什么坑（故事版）、测试样例与实测数据 |
 | `ARCHITECTURE.md` | 技术手册 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19） |
 | `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
-| `docs/`（三件） | CubeSandbox 专项 | 沙箱设计笔记 / 生产部署手册 / 生产就绪审计——专项文档，不重复核心四文档内容 |
+| `docs/`（专项文档） | 专项文档 | 沙箱四件（设计笔记/文件管线设计/生产部署/就绪审计）+ run 持久化改造设计存档（未实施）——不重复核心四文档内容 |
 
 
 ## 1. 当前能力（已完成、已验证）
@@ -73,7 +73,7 @@
 |---|---|---|
 | 管理员会话浏览器 | 管理员查看任意用户会话/轨迹（需一批 admin_* 端点 + 管理台页面） | 中 |
 | eval 补全 | flywheel 自动抽取任务、regress、badcase 自动归因 | 中 |
-| checkpoint 接 server | 超时/失败后从 checkpoint 恢复（loop 侧已就绪：checkpoint + completed_tools 幂等重放账本，`run(resume_from=...)` 可直接续跑；server 未接线） | 低 |
+| run 持久化生产级改造 | write-ahead + 逐轮落库 + checkpoint 接 server + runs 状态机 + resume 端点 + 多实例锁心跳（TTL 120s 续期）。loop 侧已就绪（checkpoint + completed_tools 幂等重放账本），设计与取舍记录已归档 [`docs/run-durability-design.md`](docs/run-durability-design.md)，**暂缓实施**（改动面大，9 步清单见设计文档） | 中 |
 
 ## 4. 后续阶段开发
 

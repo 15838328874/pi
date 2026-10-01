@@ -138,23 +138,39 @@ PBKDF2 现在跑在线程池里而不是事件循环上（见 ARCHITECTURE §17 
 **首次配置**（一次性，全部在网关 Web UI 完成）：
 
 ```bash
-# 1) 管理 UI 只绑了 127.0.0.1:3000，经 SSH 隧道访问（绝不把 3000 暴露公网）：
+# 0) 管理 UI 只绑了 127.0.0.1:3000，经 SSH 隧道访问（绝不把 3000 暴露公网）：
 ssh -L 3000:127.0.0.1:3000 root@<ECS公网IP>
-# 浏览器打开 http://127.0.0.1:3000，用默认管理员登录并改密码
-#   （new-api 默认 root / 123456，首次登录必须改）
-
-# 2) 渠道（Channel）：每家厂商一个渠道
-#    阿里云百炼： base_url=https://dashscope.aliyuncs.com/compatible-mode/v1
-#    DeepSeek：   base_url=https://api.deepseek.com/v1
-#    SiliconFlow/智谱等按各自文档；每个渠道填 key、勾选支持的模型、设优先级
-
-# 3) 模型映射：把 pi-py 用的模型名映射到对应渠道
-#    qwen3.8-max → 阿里云渠道；deepseek-chat → DeepSeek 渠道；……
-
-# 4) 令牌（Token）：新建一个 sk-xxx 令牌，写进 .env 的 OPENAI_API_KEY
-#    embedding 若也走网关（建议），同样在网关配好 embedding 渠道，
-#    PI_EMBEDDING_URL 填 http://llm-gateway:3000/v1
+# 浏览器打开 http://127.0.0.1:3000，默认管理员 root / 123456 登录，
+# 立刻到「个人设置」改密码。顺手在「设置 → 运营设置」把日志保存天数设为 30-90 天。
 ```
+
+**① 添加渠道（每家厂商一个）**：「渠道 → 新建渠道」，类型选 **OpenAI**，分组留
+**default**，字段如下：
+
+| 字段 | 阿里云百炼（示例） | DeepSeek（示例） | 说明 |
+|---|---|---|---|
+| 名称 | 阿里云-主力 | DeepSeek-备用 | 自定，好认即可 |
+| 类型 | OpenAI | OpenAI | 两家都是 OpenAI 兼容协议 |
+| 模型 | `qwen-max,qwen-plus,text-embedding-v3` | `deepseek-chat,deepseek-reasoner` | **渠道实际支持的模型**（厂商真实模型名），逗号分隔；不建议填 `*` |
+| 模型重定向 | `qwen3.8-max:qwen-max` | `deepseek-chat:deepseek-chat` | `pi-py 请求名:渠道真实名`，逗号分隔多条。pi-py 发 `qwen3.8-max`，网关改发给厂商 `qwen-max` |
+| 密钥 | 百炼 API-KEY（sk-...） | DeepSeek API key | 每家各自的 key |
+| base_url | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `https://api.deepseek.com/v1` | 渠道的「代理」/base_url 字段（不同版本 UI 位置略异） |
+| 优先级 | 10 | 5 | **数字越大越先走**——主力厂商设高，QPS 打满/故障时自动落下一家 |
+
+前置条件：阿里云需在**百炼控制台开通**要用的模型（否则渠道配好也报"模型不可用"）；
+DeepSeek 是**预付费**，未充值直接余额不足。
+
+**② 令牌（pi-py 的入口凭据）**：「令牌 → 新建令牌」：
+
+- 名称如 `pi-py-prod`；分组留 **default**（必须与渠道分组一致，否则请求不可达）；
+- **额度填 -1（不限）**；过期时间设长或永不过期（换令牌要重启 app 生效）；
+- 模型范围留空（不限）；
+- 生成的 `sk-xxx` 写进 `.env` 的 `OPENAI_API_KEY`。
+
+**③ embedding 渠道（建议走网关）**：embedding 同样是 OpenAI 类型渠道——阿里云
+模型 `text-embedding-v3`（百炼控制台开通），`.env` 里
+`PI_EMBEDDING_URL=http://llm-gateway:3000/v1` + `PI_EMBEDDING_API_KEY=sk-<令牌>`，
+`PI_EMBEDDING_MODEL` 填 pi-py 侧名字并经重定向映射。
 
 **验证与演练**：
 
@@ -166,6 +182,16 @@ curl -s http://127.0.0.1:3000/v1/models -H "Authorization: Bearer sk-<令牌>"
 # 3) 断渠道演练：网关 UI 禁用阿里云渠道 → 再跑一轮 →
 #    应自动切到下一优先级渠道，用户无感；结束后重新启用
 ```
+
+**常见坑**：
+
+- **404"模型不存在"**：pi-py 请求的模型名既不在渠道「模型」列表、也没有「模型
+  重定向」条目——把 `PI_FALLBACK_CHAIN` 里的每个名字都映射好再跑
+- **请求全部失败**：令牌和渠道的分组不一致（一边 default 一边自定义）——统一用
+  default 分组最省事
+- **倍率没配**：不影响功能，只影响网关用量报表的金额数字——想按厂商成本归集就
+  顺手把各家倍率填上
+- **优先级都相同**：多厂商流量分配不可控——主力厂商优先级设高（如 10 vs 5）
 
 **注意**：
 

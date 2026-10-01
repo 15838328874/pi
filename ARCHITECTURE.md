@@ -1428,7 +1428,7 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 |---|---|
 | 注册/登录/会话/run(SSE)/消息/usage | 有 |
 | `DELETE /v1/me`（注销账号） | 无 |
-| `GET/POST /v1/sessions/{id}/files`（工作区文件列表/上传） | 无 |
+| `GET/POST /v1/sessions/{id}/files`（工作区文件列表/上传） | 有但形态不同：用户级 `/v1/files`（POST 预签名直传 + commit + 列表/URL/DELETE，MinIO 直连不占带宽），非会话级工作区列表 |
 | `GET/DELETE /v1/memories(/{id})`（记忆 CRUD） | 无（只有 remember/recall 工具，无 HTTP 面） |
 | `GET /v1/admin/audit?event=` | 有但过滤参数不同（user/tool vs user/event） |
 | `GET /v1/admin/traces(/{runId})`（轨迹回放查看器） | 有等价端点：`GET /v1/admin/trajectory/{run_id}`（路径名不同，随 runs 表 2026-09-28 落地） |
@@ -1440,12 +1440,13 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 
 三条路线：
 
-- **A. 完整移植 main 的 web/**：先补后端（轨迹落库 + traces 端点、memories CRUD、
-  files 端点、deregister、run 扩展参数、audit 过滤对齐），再把 web/ 搬进 dev 并
+- **A. 完整移植 main 的 web/**：先补后端（memories CRUD、会话级 files 端点、
+  deregister、run 扩展参数、audit 过滤对齐；轨迹落库与 traces 等价端点
+  2026-09-28 已补，不在清单里），再把 web/ 搬进 dev 并
   **静态托管进 pi-py**（一个服务同时出 API + UI，自托管产品的标准形态）。代价
   最大，得到完整产品面。**推荐**。
-- **B. 为 dev 现有 API 建轻量控制台**（聊天 + 用户/配额/审计/metrics）：不做轨迹
-  落库也能上，但和 main 的 29k 行不兼容，等于另起炉灶。
+- **B. 为 dev 现有 API 建轻量控制台**（聊天 + 用户/配额/审计/metrics）：不补文件/
+  记忆 HTTP 面也能上，但和 main 的 29k 行不兼容，等于另起炉灶。
 - **C. 先搬基础面板**（聊天/账号/admin），轨迹/文件/记忆页后续接上：折中。
 
 落地顺序（若选 A）：后端补齐 → 前端移植 → 静态托管（FastAPI StaticFiles 挂构建

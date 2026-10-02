@@ -969,23 +969,39 @@ async function uploadFile(file) {
     msg.textContent = "❌ " + err.message;
   }
 }
-// 会话产物（模型写出来的文件）——直接读会话的 workspace 目录，零依赖。
+// 文件面板 = 两个来源合并：
+//   🤖 会话产物（workspace，实时）→ 直接读会话目录
+//   📤 上传文件（MinIO 文件管线，持久）→ 预签名 URL
 async function refreshFiles() {
   const list = $("fileList");
   if (!sid) { list.innerHTML = '<div class="empty">先选一个会话</div>'; return; }
   try {
-    const data = await apiJson(`/v1/sessions/${encodeURIComponent(sid)}/files`);
-    const files = data.files || [];
-    if (!files.length) {
-      list.innerHTML = '<div class="empty">本会话还没有产出文件（模型 write/bash 生成的文件会出现在这里）</div>';
-      return;
-    }
-    list.innerHTML = files.map((f) => `
-      <div class="file-row">
-        <span class="name" title="${esc(f.path)}">${esc(f.path)}</span>
+    let artifacts = [], pipeline = [];
+    try { artifacts = (await apiJson(`/v1/sessions/${encodeURIComponent(sid)}/files`)).files || []; }
+    catch (_) { /* 产物接口失败不阻塞管线 */ }
+    try { pipeline = (await apiJson("/v1/files")).files || []; }
+    catch (_) { /* MinIO 未配置时管线为空 */ }
+
+    const rows = [];
+    for (const f of artifacts) {
+      rows.push(`<div class="file-row">
+        <span class="name" title="${esc(f.path)}">🤖 ${esc(f.path)}</span>
         <span class="sz">${fmtSize(f.size)}</span>
         <button onclick="downloadArtifact(${JSON.stringify(f.path)})">下载</button>
-      </div>`).join("") + (data.truncated ? '<div class="empty">仅显示最新的 500 个</div>' : "");
+      </div>`);
+    }
+    for (const f of pipeline) {
+      rows.push(`<div class="file-row">
+        <span class="name" title="${esc(f.filename)}">📤 ${esc(f.filename)}</span>
+        <span class="sz">${fmtSize(f.size)}</span>
+        <button onclick="downloadFile(${f.id})">下载</button>
+      </div>`);
+    }
+    if (!rows.length) {
+      list.innerHTML = '<div class="empty">还没有文件（🤖 模型产出 · 📤 上传）</div>';
+      return;
+    }
+    list.innerHTML = rows.join("");
   } catch (err) {
     list.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
   }

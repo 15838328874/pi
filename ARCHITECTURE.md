@@ -760,7 +760,7 @@ User-Agent，**不记密码**。三点注意：
 | 端点 | 鉴权 | 作用 |
 |---|---|---|
 | `GET /healthz` | 无 | 存活探针（Docker HEALTHCHECK 用） |
-| `GET /readyz` | 无 | 就绪探针：检查 DB 和缓存，任一异常 503 |
+| `GET /readyz` | 无 | 就绪探针：检查 DB/缓存 + **沙箱后端硬检查**（cubesandbox=控制面 `/health` + 数据面 `*.PI_CUBE_DOMAIN` DNS 解析，缺一不可；docker=连 docker.sock，不起子进程；local=无外部依赖直接 ok）。沙箱不可用翻 503（Milvus 仍只记 `degraded` 不翻 503，见 §13 `PI_MILVUS_URI` 行） |
 | `POST /v1/auth/register` | 无（刻意免鉴权） | 注册（`PI_ALLOW_REGISTER=0` 时 403），一律普通用户；重名 409 |
 | `POST /v1/auth/login` | 无 | 验密 → 发 JWT |
 | `POST /v1/auth/logout` | 用户 | 把当前 token 的 jti 拉黑至过期 |
@@ -884,13 +884,20 @@ User-Agent，**不记密码**。三点注意：
 （只是命名空间被随机化成 `test-xxxx`，不与 `prod:*` 冲突，但确实在污染生产实例），
 `PI_TRACER=jsonl` 也会让测试往 `~/.pi-py/` 写 trace 文件。
 
-因此 `tests/conftest.py` 在 **import pi 之前**把这些变量钉死：
+因此 `tests/conftest.py` 在 **import pi 之前**钉死变量（"已存在的环境变量优先"让
+`.env` 里的对应项失效）：
 
 ```python
-os.environ["PI_REDIS_URL"] = ""   # → MemoryBackend，绝不连真 Redis
+# DB/Redis 是"推导"不是"钉死"（2026-10-02 起）：从 .env.local 的
+# PI_DATABASE_URL / PI_REDIS_URL 换出 pi_py_test 库 / Redis db1——端口单一来源、
+# 测试自动跟随（PI_TEST_DB_URL / PI_TEST_REDIS_URL 可显式覆盖）。曾自带一份默认
+# 端口，与 .env.local 上移后的端口错位：清表连到别的库且不报错，用例随机失败。
+os.environ["PI_DATABASE_URL"] = TEST_DB_URL     # 见上，推导结果
+os.environ["PI_REDIS_URL"] = TEST_REDIS_URL     # 同上
 os.environ["PI_SANDBOX"]   = ""   # → LocalRunner，绝不起真容器
 os.environ["PI_POLICY"]    = ""
 os.environ["PI_TRACER"]    = "noop"
+# 其余 PI_EMBEDDING_* / PI_MILVUS_URI / PI_MCP_SERVERS / PI_SKILLS_DIR 全空
 ```
 
 因为"已存在的环境变量优先"，这几行赋值就让 `.env` 里的对应项失效。
@@ -977,6 +984,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_METRICS` | 1 | Prometheus 指标开关；0=关（`/metrics` 回 503） |
 | `PI_METRICS_TOKEN` | 空 | `/metrics` 门控 token；空=开放（启动打 warning），错 token 回 404 |
 | `PI_CUBE_API_KEY` | 空 | CubeSandbox（E2B 兼容 API）密钥；`PI_SANDBOX=cubesandbox` 必配 |
+| `PI_CUBE_API_URL` / `PI_CUBE_DOMAIN` | `http://127.0.0.1:3000` / `cube.app` | CubeSandbox 控制面地址 / 数据面域名；`/readyz` 硬检查探的就是它们——数据面 DNS 解析失败 = 503（见 §11.3） |
 | `PI_SANDBOX_CLOSE_TIMEOUT_SECONDS` | 90 | 沙箱 close/save 总超时；超时 turn 先走、清理线程收尾（VM 必死） |
 | `PI_SANDBOX_POOL_SIZE` | 4 | 常驻 VM 池上限，超出 LRU 淘汰 |
 | `PI_SANDBOX_POOL_TTL` / `PI_SANDBOX_POOL_TTL_TIGHT` | 900 / 300 | 空闲 VM 回收阈值（内存宽裕 / 紧张两档） |
@@ -1077,8 +1085,9 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 - 一律用 `FakeProvider` + 临时目录/一次性 SQLite 文件，绝不依赖真实模型或外部服务；
 - 异步测试用 `asyncio.run(main())` 包裹（未引入 pytest-asyncio 依赖）；
 - `conftest.py` 除了把 `src/` 加进 `sys.path`，还在 import pi **之前**钉死
-  `PI_REDIS_URL` / `PI_SANDBOX` / `PI_POLICY` / `PI_TRACER`，防止仓库根的生产 `.env`
-  被自动加载后把测试引到真 Redis / 真 docker 上（原理见 §12.2）；
+  `PI_SANDBOX` / `PI_POLICY` / `PI_TRACER` 等，防止仓库根的生产 `.env`
+  被自动加载后把测试引到真 docker / 写盘（原理见 §12.2）；DB/Redis 连接则从
+  `.env.local` **推导**（换 `pi_py_test` 库 / Redis db1，端口单一来源）；
 - `aiosqlite` 只是**测试依赖**（`[dev]` extra），生产路径不含 SQLite。
 
 ---

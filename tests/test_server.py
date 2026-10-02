@@ -15,6 +15,32 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from pi.server.app import create_app
 from pi.server.config import ServerSettings
+from pi.llm.base import LLMProvider, TextDelta
+
+
+class _BoomMidStreamProvider(LLMProvider):
+    """Yields one text delta, then raises: crash right after write-ahead flushed."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.model = "demo"
+
+    async def stream(self, system, messages, tools):
+        yield TextDelta(text="hi")
+        raise RuntimeError("boom")
+
+
+class _BoomBeforeStreamProvider(LLMProvider):
+    """Raises before yielding anything: the user message must still be persisted."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.model = "demo"
+
+    async def stream(self, system, messages, tools):
+        raise RuntimeError("boom")
 
 
 @pytest.fixture()
@@ -189,6 +215,108 @@ class TestRuns:
         msgs = server.get(f"/v1/sessions/{sid}/messages", headers=h).json()["messages"]
         assert len(msgs) >= 2  # user + assistant
         assert msgs[0]["role"] == "user"
+
+    def test_write_ahead_user_message_survives_mid_stream_crash(self, server, monkeypatch):
+        """run-durability step 1: the user prompt must be in the DB even when the
+        run crashes mid-stream (the core guarantee of write-ahead)."""
+        import pi.server.runner as runner_mod
+
+        monkeypatch.setattr(
+            runner_mod,
+            "resolve_chain",
+            lambda model, on_fallback=None: _BoomMidStreamProvider(),
+        )
+        _register(server, "alice", "password123")
+        token = _login(server, "alice", "password123")
+        h = {"Authorization": f"Bearer {token}"}
+        sid = server.post("/v1/sessions", json={"model": "fake/demo"}, headers=h).json()["id"]
+
+        events = []
+        with server.stream(
+            "POST", f"/v1/sessions/{sid}/runs", json={"prompt": "hello"}, headers=h
+        ) as resp:
+            assert resp.status_code == 200
+            for line in resp.iter_lines():
+                if line.startswith("event: "):
+                    events.append(line.removeprefix("event: "))
+
+        assert "error" in events
+        msgs = server.get(f"/v1/sessions/{sid}/messages", headers=h).json()["messages"]
+        assert [m["role"] for m in msgs] == ["user"]
+
+    def test_write_ahead_survives_crash_before_any_output(self, server, monkeypatch):
+        """Even when nothing ever streams, the user prompt is still persisted."""
+        import pi.server.runner as runner_mod
+
+        monkeypatch.setattr(
+            runner_mod,
+            "resolve_chain",
+            lambda model, on_fallback=None: _BoomBeforeStreamProvider(),
+        )
+        _register(server, "alice", "password123")
+        token = _login(server, "alice", "password123")
+        h = {"Authorization": f"Bearer {token}"}
+        sid = server.post("/v1/sessions", json={"model": "fake/demo"}, headers=h).json()["id"]
+
+        with server.stream(
+            "POST", f"/v1/sessions/{sid}/runs", json={"prompt": "hello"}, headers=h
+        ) as resp:
+            list(resp.iter_lines())
+
+        msgs = server.get(f"/v1/sessions/{sid}/messages", headers=h).json()["messages"]
+        assert [m["role"] for m in msgs] == ["user"]
+
+    def test_idx_continuous_after_failed_run(self, server, monkeypatch):
+        """A crashed run's write-ahead must not leave a gap or duplicate idx for
+        the next run (idx 0 = crashed prompt, then 1, 2 for the healthy run)."""
+        import asyncio
+
+        import aiomysql
+        import pi.server.runner as runner_mod
+        from sqlalchemy.engine import make_url
+
+        calls = {"n": 0}
+
+        def factory(model, on_fallback=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return _BoomMidStreamProvider()
+            from pi.llm.fake import FakeProvider
+
+            return FakeProvider(model="demo")
+
+        monkeypatch.setattr(runner_mod, "resolve_chain", factory)
+        _register(server, "alice", "password123")
+        token = _login(server, "alice", "password123")
+        h = {"Authorization": f"Bearer {token}"}
+        sid = server.post("/v1/sessions", json={"model": "fake/demo"}, headers=h).json()["id"]
+
+        for prompt in ("boom me", "healthy"):
+            with server.stream(
+                "POST", f"/v1/sessions/{sid}/runs", json={"prompt": prompt}, headers=h
+            ) as resp:
+                list(resp.iter_lines())
+
+        async def fetch_rows():
+            u = make_url(TEST_DB_URL)  # 端口单一来源，随 .env.local 走
+            conn = await aiomysql.connect(
+                host=u.host, port=u.port, user=u.username, password=u.password, db=u.database
+            )
+            try:
+                cur = await conn.cursor()
+                await cur.execute(
+                    "SELECT idx, role FROM messages WHERE session_id=%s ORDER BY idx", (sid,)
+                )
+                return await cur.fetchall()
+            finally:
+                conn.close()
+
+        rows = asyncio.run(fetch_rows())
+        assert [(r[0], r[1]) for r in rows] == [
+            (0, "user"),   # crashed run: write-ahead prompt
+            (1, "user"),   # healthy run: write-ahead prompt
+            (2, "assistant"),
+        ]
 
     def test_run_unknown_session_404(self, server):
         _register(server, "alice", "password123")

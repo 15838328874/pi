@@ -51,7 +51,49 @@ def build_parser() -> argparse.ArgumentParser:
     ev_rl.add_argument("--no-filter", action="store_true", help="skip rejection sampling")
     ev_rl.add_argument("--no-partial-credit", action="store_true", help="binary 0/1 rewards")
 
+    _add_rag_subparsers(sub)
+
     return parser
+
+
+def _add_rag_subparsers(sub) -> None:
+    """pi-py rag {ingest,rebuild-index,eval,search} (对接文档 §4.7).
+
+    Heavy imports stay inside pi.rag.cli (loaded on dispatch), so argparse builds
+    fast and a missing pymilvus/sqlalchemy only bites when rag is actually used.
+    """
+    rag = sub.add_parser("rag", help="enterprise document RAG (ingest / index / eval / search)")
+    rag.add_argument("--db", default=None, help="database URL (default: $PI_DATABASE_URL)")
+    rag.add_argument("-v", "--verbose", action="store_true", help="print the resolved backends")
+    rag_sub = rag.add_subparsers(dest="rag_command")
+
+    ing = rag_sub.add_parser("ingest", help="parse + chunk + embed + index documents")
+    ing.add_argument("--path", required=True, help="a file, or a directory to walk recursively")
+    ing.add_argument("--user", required=True, type=int, help="integer user id that owns the docs (ACL)")
+    ing.add_argument("--doc-id", default="", help="stable doc_key for a SINGLE file (default: abs path)")
+
+    rb = rag_sub.add_parser("rebuild-index", help="re-derive the Milvus projection from SQL truth")
+    rb.add_argument("--user", required=True, type=int, help="integer user id to rebuild")
+
+    ev = rag_sub.add_parser("eval", help="Recall@k / MRR over a golden set (shipped retriever)")
+    ev.add_argument("--golden", required=True, help="golden set JSON (evals/tasks/rag/*.json)")
+    ev.add_argument("--config-name", default="shipped", help="label for the report")
+    ev.add_argument("--out", default="", help="write the markdown report here (file or dir)")
+    ev.add_argument("--rebind", action="store_true",
+                    help="re-anchor gold keys to current chunking via answer_excerpts")
+    ev.add_argument("--min-hit5", default="0.0",
+                    help="exit non-zero if hit@5 (PRIMARY metric, any-of) is below "
+                         "this floor. Prefer this over --min-recall5: hit@k asks "
+                         "'was the answer found', recall@k additionally asks 'were "
+                         "ALL relevant chunks found' and is capped by gold size")
+    ev.add_argument("--min-recall5", default="0.0",
+                    help="exit non-zero if recall@5 is below this floor (CI gate; "
+                         "secondary all-of coverage metric)")
+
+    se = rag_sub.add_parser("search", help="one cited retrieval (proves the path end to end)")
+    se.add_argument("--query", required=True, help="the question")
+    se.add_argument("--user", required=True, type=int, help="integer user id (ACL)")
+    se.add_argument("--k", type=int, default=0, help="max passages (default: config final_k)")
 
 
 def cmd_migrate(args: argparse.Namespace) -> int:
@@ -117,6 +159,17 @@ def main(argv: list[str] | None = None) -> int:
         from pi.evals.cli import cmd_eval
 
         return cmd_eval(args)
+    if args.command == "rag":
+        import os
+
+        from pi.rag.cli import cmd_rag
+
+        # An explicit --db wins over .env: `pi` was imported at module top (so
+        # .env is already in os.environ), and this assignment overwrites it. The
+        # rag CLI reads PI_DATABASE_URL when it assembles the runtime below.
+        if getattr(args, "db", None):
+            os.environ["PI_DATABASE_URL"] = args.db
+        return cmd_rag(args)
 
     parser.print_help()
     return 0

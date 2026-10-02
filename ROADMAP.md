@@ -1,6 +1,6 @@
 # pi-py 状态与路线图（ROADMAP）
 
-> 项目现状、未完成事项、后续阶段开发计划的唯一入口。更新日期：2026-09-29。
+> 项目现状、未完成事项、后续阶段开发计划的唯一入口。更新日期：2026-10-01。
 >
 > **文档地图**（四个文档各管一段，知识点不重复）：
 >
@@ -10,7 +10,7 @@
 | `PROJECT_GUIDE.md` | 叙事与价值 | 为什么这么设计（取舍）、踩过什么坑（故事版）、测试样例与实测数据 |
 | `ARCHITECTURE.md` | 技术手册 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19） |
 | `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
-| `docs/`（三件） | CubeSandbox 专项 | 沙箱设计笔记 / 生产部署手册 / 生产就绪审计——专项文档，不重复核心四文档内容 |
+| `docs/`（专项文档） | 专项文档 | 沙箱四件（设计笔记/文件管线设计/生产部署/就绪审计）+ run 持久化与交互式 run 设计存档（未实施）——不重复核心四文档内容 |
 
 
 ## 1. 当前能力（已完成、已验证）
@@ -45,6 +45,7 @@
 | **轨迹结构化落库**（runs 表 + `/v1/trajectory/{run_id}` 回放 + `/v1/admin/trajectory/{run_id}` 跨用户） | `server/db.py` `server/app.py` | 单测 + 实测 |
 | **审计结构化查询**（audit_events 表双写，jsonl 仍是合规底稿） | `server/db.py` `security/audit.py` | 单测 + 实测 |
 | **官方 SDK**（异步客户端：SSE 流式解析、PiError 语义、trust_env=False） | `src/pi/client.py` | 单测 + 真实模型实测 |
+| **企业 RAG 知识库**（零耦合内核 + 解析/语义切块 + 向量×BM25→RRF→rerank 三级降级 + 引用溯源 + user 级 ACL + `rag_search` 工具 + `pi-py rag` CLI） | `src/pi/rag/` `src/pi/tools/rag.py` `src/pi/rag/integration.py` | 236 RAG 单测 + 真栈 integration（真实云 embedding+rerank） |
 
 **环境（2026-09-27 起统一，不再有 demo 环境）**：
 - 基础设施三件套：**MySQL 8 + Redis + Milvus**（本地 Docker/native，生产云端托管），测试与生产同构。
@@ -73,11 +74,45 @@
 |---|---|---|
 | 管理员会话浏览器 | 管理员查看任意用户会话/轨迹（需一批 admin_* 端点 + 管理台页面） | 中 |
 | eval 补全 | flywheel 自动抽取任务、regress、badcase 自动归因 | 中 |
-| checkpoint 接 server | 超时/失败后从 checkpoint 恢复（loop 侧已就绪：checkpoint + completed_tools 幂等重放账本，`run(resume_from=...)` 可直接续跑；server 未接线） | 低 |
+| run 持久化生产级改造 | write-ahead + 逐轮落库 + checkpoint 接 server + runs 状态机 + resume 端点 + 多实例锁心跳（TTL 120s 续期）。loop 侧已就绪（checkpoint + completed_tools 幂等重放账本），设计与取舍记录已归档 [`docs/run-durability-design.md`](docs/run-durability-design.md)，**暂缓实施**（改动面大，9 步清单见设计文档） | 中 |
+| 交互式 run（中途提问确认 + 计划目录产品化） | 模型中途发 questions 事件挂起、用户经 answer 端点回复后从断点续跑（对齐 Claude Code 式协作体验）；plan 文件渲染计划卡。**依赖** run 持久化改造（checkpoint/resume 是前置，挂起=暂停的 run）。设计见 [`docs/run-durability-design.md`](docs/run-durability-design.md) §11，暂缓实施 | 低 |
 
 ## 4. 后续阶段开发
 
-### 4.1 RAG（企业知识库）——设计浓缩
+### 4.1 RAG（企业知识库）—— ✅ 已交付（2026-10-01）
+
+> 需求来源 [`RAG外派对接文档.md`](../RAG外派对接文档.md)。铁律「**先建评测，再调检索**」全程遵守。
+> 内核 `src/pi/rag/` **零依赖 `pi.*`**（可整目录抽走独立用）；与宿主的耦合只有两个文件：
+> `adapters.py`（kernel Protocol ↔ pi 客户端）与 `integration.py`（ToolProvider + runtime 发布）。
+> 因此 `pi/tools/__init__.py`、`pi/tools/base.py`、`pi/server/runner.py` **一行未改**。
+
+**交付记录**
+
+| 里程碑 | 内容 | 验证 |
+|---|---|---|
+| M0 | 内核骨架 + 6 个 Protocol + config + defaults + 评测 harness | 单测 |
+| M1 | 解析层（7 后端 + 质量门）+ contextual 切块 + 跨章节合并 | 真实语料验收 |
+| M2 | ingest 管道 + rebuild-index + **生产真后端**（MySQL 真相源 / Milvus 可重建投影） | 真栈 integration |
+| M3 | 检索：向量 + BM25 → RRF(k=60) → rerank；四级降级 hybrid→bm25→sql_like，每级发噪音不静默 | recall@5 0.833 / mrr 0.900，+rerank 拉到 1.000 |
+| M4 | 真栈 A/B 归因（390 chunk / 60 golden / 13 档） | BM25 唯一覆盖 0/60 → 推翻了「BM25 必要」假设；**cross-encoder rerank 才是决定性增益** |
+| M5 | pi 对接：`adapters.py` + `RagTool` + `rag/cli.py` + server 接线（`PI_RAG_ENABLED`、rerank 独立 model tag 计量） | 236 RAG 单测 + 真栈 integration 2 passed |
+
+**对接形态（与"设计浓缩"不同之处）**：`rag_search` 不是塞进 `all_tools()`，而是作为**独立
+`ToolProvider`**（`pi.rag.integration.RagToolProvider`）注册——`ToolRegistry` 会合并去重所有
+provider，工具照样走 policy / audit / tracing / 配额，但宿主工具层保持零改动，
+上游合并本分支时工具集无冲突。runtime 由 `integration.install()` 建好后发布到进程单例，
+`RagTool` 直接取用，因此 `ToolContext` 也不需要新增字段。
+
+**关键家规（血泪）**：① 通道对称性——embed / 索引 / **rerank** 三阶段文本都必须带 `title_path`，
+否则重排看到的信息少于产生候选的阶段，会用更少信息推翻更好的候选（M4 edge_case 回归根因）；
+② retriever 与 ingest 必须共享同一个 lexical index 实例；③ **换 embedding 模型必须先重建 Milvus 投影**，
+否则静默空间漂移（`tools/rebuild_eval_index.py --check/--apply` 自检索余弦判据）。
+
+**未做/后续**：`rag ingest` 目前取本地路径（`--path`）；对接文档 §4.7 要求的 `--file-id`
+（经 `FileRepo.by_id` + `ObjectStore.get_bytes` 从对象存储取原料）尚未实现——文件管线 P0/P1/P2
+已在本分支落地，接上是下一步。多模态/GraphRAG 属 v2。
+
+**原设计浓缩（保留备查）**
 
 - **顺序铁律：先建评测，再调检索**（golden set + RAGAS 类指标），否则切块/embedding/rerank
   全是盲调。

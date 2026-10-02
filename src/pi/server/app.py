@@ -26,6 +26,7 @@ from pi.llm import DEFAULT_MODEL
 from pi.observability.metering import UsageTracker
 from pi.observability.metrics import Metrics
 from pi.observability.tracing import get_tracer
+from pi.rag.integration import RagToolProvider, health as rag_health, install, shutdown_rag
 from pi.server.auth import create_token, decode_token, hash_password, verify_password
 from pi.server.cache import get_backend
 from pi.server.config import ServerSettings
@@ -167,6 +168,14 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     # Tool sources: builtin always; MCP / skills when configured. Warmup happens
     # in lifespan (create_app is sync, and MCP connects spawn child processes).
     providers: list[ToolProvider] = [BuiltinToolProvider()]
+    # Enterprise RAG contributes rag_search as its own provider. ToolRegistry
+    # merges + dedupes providers into the single list AgentLoop sees, so the
+    # tool still passes the policy gate / audit log / tracing / quota path like
+    # any builtin - and PI_RAG_ENABLED=0 contributes nothing at all (no enabled
+    # flag threaded through the tool list). All RAG wiring lives in
+    # pi.rag.integration; pi/tools/__init__.py is deliberately untouched.
+    if settings.rag_enabled:
+        providers.append(RagToolProvider())
     if settings.mcp_servers:
         providers.append(McpToolProvider(settings.mcp_servers))
     if settings.skills_dir:
@@ -182,6 +191,21 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         )
     limiter = RateLimiter(settings.rate_limit_runs_per_min, backend=cache)
     usage_tracker = UsageTracker(db.engine, default_quota=settings.default_quota_tokens)
+    # Enterprise document RAG (pi.rag). Assembled here so the runtime shares the
+    # server's engine and metering instead of opening a second pool; every
+    # backend inside is lazy (Milvus on first use, httpx per call), so
+    # create_app stays fast and testable without infra.
+    rag_runtime = None
+    if settings.rag_enabled:
+        rag_runtime = install(
+            db=db,
+            users=users,
+            usage_tracker=usage_tracker,
+            metrics=metrics,
+            allow_memory_vector=settings.rag_memory_vector,
+        )
+    else:
+        log.info("rag disabled (PI_RAG_ENABLED=0); rag_search will report unavailable")
     # Audit dual-write: jsonl stays the compliance copy, audit_events the
     # structured query mirror (admin console filters). Mirror is best-effort.
     audit_repo = AuditRepo(db)
@@ -227,6 +251,12 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 await vector_store.close()
             except Exception:  # noqa: BLE001 - teardown must not block shutdown
                 log.debug("vector store close failed", exc_info=True)
+        if rag_runtime is not None:
+            # Close AND unpublish the runtime (never just .close()). A closed-but
+            # -still-published runtime would make a later get_runtime() hand back
+            # a disposed engine instead of rebuilding one. Unconditional-safe:
+            # the hook is a no-op when RAG never booted.
+            await shutdown_rag()
         await shutdown_docker_pool()  # destroy warm sandbox containers
         # 会话级沙箱池：关闭前销毁全部常驻 VM，避免孤儿（平台 TTL 兜底）。
         try:
@@ -238,6 +268,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     app.state.settings = settings
     app.state.db = db
     app.state.vector_store = vector_store
+    app.state.rag = rag_runtime
     app.state.metrics = metrics
 
     @app.middleware("http")
@@ -354,6 +385,13 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 checks["milvus"] = "ok" if await vector_store.ping() else "degraded"
             except Exception as exc:  # noqa: BLE001
                 checks["milvus"] = f"degraded: {exc}"
+        if rag_runtime is not None:
+            # Informational, exactly like the memory pipeline's milvus probe
+            # above - but a different index: RAG owns its own collection, so a
+            # healthy memory vector store says nothing about document retrieval.
+            # The value set is closed to {"ok", "degraded"} because the check
+            # below treats anything else as not-ready (pi.rag.integration.health).
+            checks["rag"] = await rag_health(rag_runtime)
         healthy = all(v in ("ok", "degraded") for v in checks.values())
         status = 200 if healthy else 503
         return JSONResponse({"status": "ready" if healthy else "not-ready", "checks": checks}, status_code=status)

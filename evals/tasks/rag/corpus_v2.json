@@ -1,0 +1,2523 @@
+{
+  "name": "rag-corpus-v2",
+  "cases": [
+    {
+      "id": "rag-001",
+      "query": "根据美国运动医学学院2009年更新的成人减重与防止体重反弹立场声明，为预防体重增加，每周中等强度体力活动应维持在多少分钟？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "每周维持150-250分钟的中等强度体力活动可以有效地预防增重",
+      "notes": "leak_span=8 tok_overlap=0.82",
+      "answer_excerpts": [
+        "每周维持150-250分钟的中等强度体力活动可以有效地预防增重"
+      ]
+    },
+    {
+      "id": "rag-003",
+      "query": "根据《成人减重和防止体重反弹的体力活动干预策略》2009年文献，美国心肺血液研究所建议的减重比例是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#1"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "美国心肺血液研究所建议(101)，减重比例为10％。",
+      "notes": "leak_span=19 tok_overlap=0.86",
+      "answer_excerpts": [
+        "美国心肺血液研究所建议(101)，减重比例为10％。"
+      ]
+    },
+    {
+      "id": "rag-004",
+      "query": "在《成人减重和防止体重反弹的体力活动干预策略》关于体力活动强度的划分中，中等强度活动对应的METs区间是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#1"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "3.0-5.9 METs 中等强度活动",
+      "notes": "leak_span=19 tok_overlap=0.75",
+      "answer_excerpts": [
+        "3.0-5.9 METs 中等强度活动"
+      ]
+    },
+    {
+      "id": "rag-005",
+      "query": "根据美国运动医学学会发布的成人减重和防止体重反弹体力活动干预策略，为防止体重增加3%，多数成年人每周应达到多少体力活动量？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#2"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "对多数成年人来讲，每周150-250分钟的体力活动",
+      "notes": "leak_span=11 tok_overlap=0.82",
+      "answer_excerpts": [
+        "对多数成年人来讲，每周150-250分钟的体力活动"
+      ]
+    },
+    {
+      "id": "rag-006",
+      "query": "根据国家体重控制注册中心的数据，成功维持减重效果的人士能量消耗相当于每周步行多少英里？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#2"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "其能量消耗相当于每周步行28英里",
+      "notes": "leak_span=13 tok_overlap=0.90",
+      "answer_excerpts": [
+        "其能量消耗相当于每周步行28英里"
+      ]
+    },
+    {
+      "id": "rag-007",
+      "query": "根据《成人减重和防止体重反弹的体力活动干预策略》中的研究证据陈述，体力活动预防减重后体重反弹的证据等级是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#4"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "体力活动能防止减重后的体重反弹（证据等级B）",
+      "notes": "leak_span=19 tok_overlap=0.86",
+      "answer_excerpts": [
+        "体力活动能防止减重后的体重反弹（证据等级B）"
+      ]
+    },
+    {
+      "id": "rag-008",
+      "query": "根据《成人减重和防止体重反弹的体力活动干预策略》综述中的研究证据陈述，生活方式体力活动对体重控制的作用和证据等级是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#5"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "生活方式体力活动有助于体重控制（证据等级B）",
+      "notes": "leak_span=19 tok_overlap=0.82",
+      "answer_excerpts": [
+        "生活方式体力活动有助于体重控制（证据等级B）"
+      ]
+    },
+    {
+      "id": "rag-009",
+      "query": "在《成人减重和防止体重反弹的体力活动干预策略》综述提到的Manini等(93)研究中，问卷对体力活动做了多少种不同的时间估计？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#5"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "该问卷对体力活动进行21种不同的时间估计",
+      "notes": "leak_span=19 tok_overlap=0.84",
+      "answer_excerpts": [
+        "该问卷对体力活动进行21种不同的时间估计"
+      ]
+    },
+    {
+      "id": "rag-010",
+      "query": "根据《成人减重和防止体重反弹的体力活动干预策略》（2009年ACSM），抗阻锻炼能否促进有效减重3%？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#8"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "抗阻锻炼似乎不能促进有效地减重3％",
+      "notes": "leak_span=19 tok_overlap=0.86",
+      "answer_excerpts": [
+        "抗阻锻炼似乎不能促进有效地减重3％"
+      ]
+    },
+    {
+      "id": "rag-011",
+      "query": "根据美国运动医学会2009年发布的成人减重和防止体重反弹体力活动干预策略，成年人为了预防体重增加并降低慢性病危险因素，每周至少应进行多久中等强度体力活动？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#9"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "成年人每周应参与至少150分钟的中等强度体力活动",
+      "notes": "leak_span=11 tok_overlap=0.77",
+      "answer_excerpts": [
+        "成年人每周应参与至少150分钟的中等强度体力活动"
+      ]
+    },
+    {
+      "id": "rag-012",
+      "query": "在《成人减重和防止体重反弹的体力活动干预策略》中，引用编号为(62)、通过6年观察静态生活习惯和看电视时间与肥胖及2型糖尿病关系的研究叫什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-activity-strategy#9"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "Nurse＇s Health Study(62)",
+      "notes": "leak_span=19 tok_overlap=0.77",
+      "answer_excerpts": [
+        "Nurse＇s Health Study(62)"
+      ]
+    },
+    {
+      "id": "rag-013",
+      "query": "根据《成人糖尿病食养指南（2023年版）》目录，食养原则中有关主食选择的建议条目是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#0",
+        "med-diabetes-diet-2023#8"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "主食定量，优选全谷物和低血糖生成指数食物",
+      "notes": "leak_span=9 tok_overlap=0.63",
+      "answer_excerpts": [
+        "主食定量，优选全谷物和低血糖生成指数食物"
+      ]
+    },
+    {
+      "id": "rag-014",
+      "query": "在《成人糖尿病食养指南（2023年版）》目录里，附录4对应的名称是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#0",
+        "med-diabetes-diet-2023#106"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "附录 4 成人糖尿病食养方举例",
+      "notes": "leak_span=9 tok_overlap=0.62",
+      "answer_excerpts": [
+        "附录 4 成人糖尿病食养方举例"
+      ]
+    },
+    {
+      "id": "rag-015",
+      "query": "根据糖尿病超重肥胖患者的减重建议，推荐以每月减少多少体重的速度进行？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#8"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "建议超重肥胖患者按照每个月减少 1～2kg",
+      "notes": "leak_span=6 tok_overlap=0.64",
+      "answer_excerpts": [
+        "建议超重肥胖患者按照每个月减少 1～2kg"
+      ]
+    },
+    {
+      "id": "rag-016",
+      "query": "根据春季食谱3的中餐安排，砂锅小排骨这道菜里猪排骨用了多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#34",
+        "med-diabetes-diet-2023#35"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "砂锅小排骨（香菇 50g，猪排骨 40g）",
+      "notes": "leak_span=0 tok_overlap=0.51",
+      "answer_excerpts": [
+        "砂锅小排骨（香菇 50g，猪排骨 40g）"
+      ]
+    },
+    {
+      "id": "rag-018",
+      "query": "在列出冬季食谱1至3的这份食谱中，冬季食谱2中餐的菌菇汤除枸杞子外还用了哪些配料？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#50",
+        "med-diabetes-diet-2023#51"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "白玉菇 5g，虫草花 3g，金针菇5g",
+      "notes": "leak_span=0 tok_overlap=0.44",
+      "answer_excerpts": [
+        "白玉菇 5g，虫草花 3g，金针菇5g"
+      ]
+    },
+    {
+      "id": "rag-020",
+      "query": "在这份食谱的秋季食谱1里，晚餐的虾仁芦笋虫草花除生姜外各食材分别用多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#58",
+        "med-diabetes-diet-2023#59"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "虾仁 60g，芦笋 75g，虫草花10g",
+      "notes": "leak_span=7 tok_overlap=0.50",
+      "answer_excerpts": [
+        "虾仁 60g，芦笋 75g，虫草花10g"
+      ]
+    },
+    {
+      "id": "rag-022",
+      "query": "在夏季食谱3的晚餐里，香菇蒸大排这道菜所用的猪大排是多少克？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#68",
+        "med-diabetes-diet-2023#69"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "香菇蒸大排（香菇15g，猪大排 100g）",
+      "notes": "leak_span=0 tok_overlap=0.51",
+      "answer_excerpts": [
+        "香菇蒸大排（香菇15g，猪大排 100g）"
+      ]
+    },
+    {
+      "id": "rag-024",
+      "query": "在春季食谱1的中餐里，红烧黄鸭叫这道菜使用的黄辣丁是多少克？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#76",
+        "med-diabetes-diet-2023#77"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "红烧黄鸭叫（柿子椒15g，紫苏*10g，老姜*10g，黄辣丁 70g）",
+      "notes": "leak_span=0 tok_overlap=0.51",
+      "answer_excerpts": [
+        "红烧黄鸭叫（柿子椒15g，紫苏*10g，老姜*10g，黄辣丁 70g）"
+      ]
+    },
+    {
+      "id": "rag-025",
+      "query": "春季食谱2晚餐的薏仁藕香汤中，除了莲藕还用了哪味药材？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#76",
+        "med-diabetes-diet-2023#77"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "薏仁藕香汤（薏苡仁*15g，莲藕 50g）",
+      "notes": "leak_span=0 tok_overlap=0.53",
+      "answer_excerpts": [
+        "薏仁藕香汤（薏苡仁*15g，莲藕 50g）"
+      ]
+    },
+    {
+      "id": "rag-026",
+      "query": "根据这份“冬季食谱 3”，全天烹调油和盐的总用量分别安排为多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#85",
+        "med-diabetes-diet-2023#99"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "油、盐 全天总用量：植物油 22g，盐 5g",
+      "notes": "leak_span=6 tok_overlap=0.39",
+      "answer_excerpts": [
+        "油、盐 全天总用量：植物油 22g，盐 5g"
+      ]
+    },
+    {
+      "id": "rag-028",
+      "query": "在冬季食谱1中，中餐粉蒸肉搭配的主食是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#90",
+        "med-diabetes-diet-2023#91",
+        "med-diabetes-diet-2023#92",
+        "med-diabetes-diet-2023#93"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "杂粮饭（大米50g，荞麦50g）",
+      "notes": "leak_span=0 tok_overlap=0.51",
+      "answer_excerpts": [
+        "杂粮饭（大米50g，荞麦50g）"
+      ]
+    },
+    {
+      "id": "rag-029",
+      "query": "冬季食谱2的晚餐蚂蚁上树这道菜里，粉丝和瘦肉分别用了多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#92",
+        "med-diabetes-diet-2023#93"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "蚂蚁上树（泡发粉丝 40g，猪瘦肉 50g）",
+      "notes": "leak_span=0 tok_overlap=0.55",
+      "answer_excerpts": [
+        "蚂蚁上树（泡发粉丝 40g，猪瘦肉 50g）"
+      ]
+    },
+    {
+      "id": "rag-031",
+      "query": "在秋季食谱2的中餐里，深井烧鹅这道菜使用的鹅肉分量是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#102",
+        "med-diabetes-diet-2023#103"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "深井烧鹅（鹅肉100g）",
+      "notes": "leak_span=0 tok_overlap=0.49",
+      "answer_excerpts": [
+        "深井烧鹅（鹅肉100g）"
+      ]
+    },
+    {
+      "id": "rag-032",
+      "query": "根据《中国2型糖尿病防治指南（2017年版）》附录5的注释，空腹血糖受损和糖耐量减低被统称为什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-diabetes-diet-2023#110"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "空腹血糖受损和糖耐量减低统称为糖调节受损",
+      "notes": "leak_span=19 tok_overlap=0.77",
+      "answer_excerpts": [
+        "空腹血糖受损和糖耐量减低统称为糖调节受损"
+      ]
+    },
+    {
+      "id": "rag-033",
+      "query": "在《国家基层肥胖症综合管理技术指南（2025）》首页信息中，通信作者贾伟平提供的电子邮箱地址是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-grassroots-2025#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "wpjia@sjtu.edu.cn",
+      "notes": "leak_span=17 tok_overlap=0.60",
+      "answer_excerpts": [
+        "wpjia@sjtu.edu.cn"
+      ]
+    },
+    {
+      "id": "rag-034",
+      "query": "根据该片段中肥胖症诊断评估部分，腰围除了用于识别中心型肥胖，还是定义哪种综合征的关键标准之一？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-grassroots-2025#3"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "定义代谢综合征的关键标准之一",
+      "notes": "leak_span=10 tok_overlap=0.64",
+      "answer_excerpts": [
+        "定义代谢综合征的关键标准之一"
+      ]
+    },
+    {
+      "id": "rag-035",
+      "query": "根据该片段对生物电阻抗分析法（BIA）的描述，为什么它的测定值只能作为参考？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-grassroots-2025#3"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "测量的精度不高，测定值仅能作为参考",
+      "notes": "leak_span=0 tok_overlap=0.58",
+      "answer_excerpts": [
+        "测量的精度不高，测定值仅能作为参考"
+      ]
+    },
+    {
+      "id": "rag-036",
+      "query": "在这份按值和食物名称排列且包含水果类与蔬菜类的食物分类表中，并列列出的食物类别有哪些？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-grassroots-2025#12"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "豆类及其制品 |  | 水果类 |  | 蔬菜类",
+      "notes": "leak_span=0 tok_overlap=0.25",
+      "answer_excerpts": [
+        "豆类及其制品 |  | 水果类 |  | 蔬菜类"
+      ]
+    },
+    {
+      "id": "rag-037",
+      "query": "在这份包含豆类及其制品、水果类和蔬菜类的食物分类表头中，前四个列字段依次是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-grassroots-2025#12"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "值 | 食物名称 | 值 | 食物名称",
+      "notes": "leak_span=6 tok_overlap=0.33",
+      "answer_excerpts": [
+        "值 | 食物名称 | 值 | 食物名称"
+      ]
+    },
+    {
+      "id": "rag-038",
+      "query": "在这条1100~1200千卡菜谱原料记录里，与热量区间相邻的重量字段是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-grassroots-2025#15"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "毛重 | 1 100~1 200 kcal",
+      "notes": "leak_span=0 tok_overlap=0.15",
+      "answer_excerpts": [
+        "毛重 | 1 100~1 200 kcal"
+      ]
+    },
+    {
+      "id": "rag-039",
+      "query": "在这条1100~1200千卡菜谱原料记录里，位于“原料”左侧的英文缩写是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-grassroots-2025#15"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "cal 原料 | 毛重 | 1 100~1 200",
+      "notes": "leak_span=0 tok_overlap=0.14",
+      "answer_excerpts": [
+        "cal 原料 | 毛重 | 1 100~1 200"
+      ]
+    },
+    {
+      "id": "rag-040",
+      "query": "根据《中华内科杂志》2025年发布的成年一般人群超重肥胖运动干预方案，有氧运动建议选择哪些活动形式？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-grassroots-2025#18"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "快走、骑车、游泳、广场舞等",
+      "notes": "leak_span=16 tok_overlap=0.62",
+      "answer_excerpts": [
+        "快走、骑车、游泳、广场舞等"
+      ]
+    },
+    {
+      "id": "rag-041",
+      "query": "在附录4成年一般人群超重肥胖运动干预方案末尾的编号[24]文献中，《糖尿病患者体重管理专家共识（2024版）》的年份、卷期和页码是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-grassroots-2025#18"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "2024, 16(9): 959‑971",
+      "notes": "leak_span=16 tok_overlap=0.68",
+      "answer_excerpts": [
+        "2024, 16(9): 959‑971"
+      ]
+    },
+    {
+      "id": "rag-042",
+      "query": "根据《中国成人失眠诊断与治疗指南（2023版）》摘要，新版指南在治疗推荐方面新加入了哪类具有中国特色的医学疗法？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "新增了失眠的中国民族医药治疗推荐意见",
+      "notes": "leak_span=15 tok_overlap=0.63",
+      "answer_excerpts": [
+        "新增了失眠的中国民族医药治疗推荐意见"
+      ]
+    },
+    {
+      "id": "rag-043",
+      "query": "在《中国成人失眠诊断与治疗指南（2023版）》的通信作者信息里，王玉平用于联系的电子邮箱地址是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "wangyuping01@sina.cn",
+      "notes": "leak_span=15 tok_overlap=0.56",
+      "answer_excerpts": [
+        "wangyuping01@sina.cn"
+      ]
+    },
+    {
+      "id": "rag-044",
+      "query": "根据表2慢性失眠诊断标准的C项，环境不当被描述为什么样的环境？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#5",
+        "med-insomnia-2023#6"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "环境并非安全、黑暗、安静和舒适",
+      "notes": "leak_span=7 tok_overlap=0.67",
+      "answer_excerpts": [
+        "环境并非安全、黑暗、安静和舒适"
+      ]
+    },
+    {
+      "id": "rag-045",
+      "query": "根据这份标题路径为空、正文由控制字符和竖线组成的企业知识库片段，其正文的完整字符序列是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#16"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "\u0006 \u0005 \u0005 \u0004 \u0004 \u0004 \u0005 | \u0006 \u0003 \u0006 \b \u0004",
+      "notes": "leak_span=0 tok_overlap=0.00",
+      "answer_excerpts": [
+        "\u0006 \u0005 \u0005 \u0004 \u0004 \u0004 \u0005 | \u0006 \u0003 \u0006 \b \u0004"
+      ]
+    },
+    {
+      "id": "rag-046",
+      "query": "在这份标题路径为空的企业知识库片段正文中，竖线符号及其右侧紧跟的控制字符序列是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#16"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "| \u0006 \u0003 \u0006 \b \u0004",
+      "notes": "leak_span=0 tok_overlap=0.00",
+      "answer_excerpts": [
+        "| \u0006 \u0003 \u0006 \b \u0004"
+      ]
+    },
+    {
+      "id": "rag-047",
+      "query": "在编号[25]的失眠障碍心理治疗参考文献中，作者字段是怎么写的？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#37"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "Riemann D, Benz F, Dressle RJ, et al.",
+      "notes": "leak_span=0 tok_overlap=0.02",
+      "answer_excerpts": [
+        "Riemann D, Benz F, Dressle RJ, et al."
+      ]
+    },
+    {
+      "id": "rag-048",
+      "query": "在OCEBM证据等级网址相关的文献条目中，卷期“8(8)”以及文章编号是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#36",
+        "med-insomnia-2023#37"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "8(8): e71065",
+      "notes": "leak_span=0 tok_overlap=0.04",
+      "answer_excerpts": [
+        "8(8): e71065"
+      ]
+    },
+    {
+      "id": "rag-049",
+      "query": "在赵光利、徐浩、杨晗等2023年发表于《中华神经医学杂志》的综述中，非侵入性脑刺激主要被探讨用于哪种疾病的治疗？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#52"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "非侵入性脑刺激应用于失眠治疗",
+      "notes": "leak_span=8 tok_overlap=0.58",
+      "answer_excerpts": [
+        "非侵入性脑刺激应用于失眠治疗"
+      ]
+    },
+    {
+      "id": "rag-050",
+      "query": "在Harmat L等人2008年关于音乐改善学生睡眠的研究中，该文献在J Adv Nurs期刊的卷期页码是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#52"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "J Adv Nurs, 2008, 62(3): 327‐335.",
+      "notes": "leak_span=10 tok_overlap=0.19",
+      "answer_excerpts": [
+        "J Adv Nurs, 2008, 62(3): 327‐335."
+      ]
+    },
+    {
+      "id": "rag-051",
+      "query": "在针灸治疗卒中后失眠的26项随机对照试验系统综述中，发表于Chin J Neurol的文献年份、卷期和页码是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#67",
+        "med-insomnia-2023#68"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "2020, 53(8): 564‐574",
+      "notes": "leak_span=13 tok_overlap=0.04",
+      "answer_excerpts": [
+        "2020, 53(8): 564‐574"
+      ]
+    },
+    {
+      "id": "rag-052",
+      "query": "在参考文献[232]关于苯二氮䓬类对慢阻肺患者失眠影响的meta分析中，DOI号是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-insomnia-2023#68"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "10.2147/COPD.S98082",
+      "notes": "leak_span=0 tok_overlap=0.05",
+      "answer_excerpts": [
+        "10.2147/COPD.S98082"
+      ]
+    },
+    {
+      "id": "rag-053",
+      "query": "按照2024年基层版中国血脂管理指南，调脂治疗的首要干预目标建议选择哪个指标？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "推荐LDL-C作为血脂干预的首要靶点",
+      "notes": "leak_span=8 tok_overlap=0.60",
+      "answer_excerpts": [
+        "推荐LDL-C作为血脂干预的首要靶点"
+      ]
+    },
+    {
+      "id": "rag-054",
+      "query": "《中国全科医学》2024年第27卷第20期刊载的《中国血脂管理指南（基层版2024年）》标注的DOI编号是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#0",
+        "med-lipid-2024#1"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "DOI：10.12114/j.issn.1007-9572.2024.0005",
+      "notes": "leak_span=12 tok_overlap=0.70",
+      "answer_excerpts": [
+        "DOI：10.12114/j.issn.1007-9572.2024.0005"
+      ]
+    },
+    {
+      "id": "rag-055",
+      "query": "在正文仅有一行血脂项目缩写表头的片段里，TG后面一项写的是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#2"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "TG | 非HDL-C",
+      "notes": "leak_span=0 tok_overlap=0.02",
+      "answer_excerpts": [
+        "TG | 非HDL-C"
+      ]
+    },
+    {
+      "id": "rag-056",
+      "query": "在仅包含分类和血脂缩写表头的该片段中，LDL-C右侧紧邻的字段是哪个？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#2"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "LDL-C | HDL-C",
+      "notes": "leak_span=0 tok_overlap=0.09",
+      "answer_excerpts": [
+        "LDL-C | HDL-C"
+      ]
+    },
+    {
+      "id": "rag-057",
+      "query": "在引用［8-10］的超高危分层条目里，同时要求的数值条件和较基线降低幅度是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#7",
+        "med-lipid-2024#9"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "<1.4且较基线降低幅度>50%",
+      "notes": "leak_span=7 tok_overlap=0.32",
+      "answer_excerpts": [
+        "<1.4且较基线降低幅度>50%"
+      ]
+    },
+    {
+      "id": "rag-058",
+      "query": "在引用［8-10］的超高危条目中，如果只问较基线降低幅度，原文给出的阈值是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#7",
+        "med-lipid-2024#9"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "较基线降低幅度>50%",
+      "notes": "leak_span=7 tok_overlap=0.33",
+      "answer_excerpts": [
+        "较基线降低幅度>50%"
+      ]
+    },
+    {
+      "id": "rag-059",
+      "query": "根据普通人群血脂筛查建议，未满40岁的成年人应多久做一次包含TC、LDL-C、HDL-C和TG的血脂检测？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#9"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "<40岁成年人每2~5年进行1次血脂检测",
+      "notes": "leak_span=14 tok_overlap=0.63",
+      "answer_excerpts": [
+        "<40岁成年人每2~5年进行1次血脂检测"
+      ]
+    },
+    {
+      "id": "rag-060",
+      "query": "在降脂靶点目标值表2中，标注引用编号［8-10］的ASCVD超高危患者，LDL-C推荐目标值和较基线下降幅度是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#9"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "超高危 <1.4且较基线降低幅度>50%［8-10］",
+      "notes": "leak_span=10 tok_overlap=0.67",
+      "answer_excerpts": [
+        "超高危 <1.4且较基线降低幅度>50%［8-10］"
+      ]
+    },
+    {
+      "id": "rag-061",
+      "query": "在企业知识库中，展示降胆固醇治疗强度与具体用药剂量对应关系的表头行是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#13"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "降胆固醇强度 | 药物及其剂量",
+      "notes": "leak_span=0 tok_overlap=0.20",
+      "answer_excerpts": [
+        "降胆固醇强度 | 药物及其剂量"
+      ]
+    },
+    {
+      "id": "rag-062",
+      "query": "若要精确定位包含“降胆固醇强度”这一术语并同时关联药物剂量信息的表头，应命中哪一行原文？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#13"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "降胆固醇强度 | 药物及其剂量",
+      "notes": "leak_span=6 tok_overlap=0.22",
+      "answer_excerpts": [
+        "降胆固醇强度 | 药物及其剂量"
+      ]
+    },
+    {
+      "id": "rag-063",
+      "query": "在提到肌溶解风险并提示避免大剂量他汀的这段内容中，严重高甘油三酯血症的TG阈值是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#15",
+        "med-lipid-2024#16"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "严重高甘油三酯血症（TG≥5.6 mmol/L）",
+      "notes": "leak_span=9 tok_overlap=0.55",
+      "answer_excerpts": [
+        "严重高甘油三酯血症（TG≥5.6 mmol/L）"
+      ]
+    },
+    {
+      "id": "rag-064",
+      "query": "在涉及严重肝肾疾病、妊娠女性等人群的他汀治疗段落里，LDL-C达标后建议如何处理？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#16"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "应用他汀类药物使LDL-C达标后应继续长期应用",
+      "notes": "leak_span=8 tok_overlap=0.45",
+      "answer_excerpts": [
+        "应用他汀类药物使LDL-C达标后应继续长期应用"
+      ]
+    },
+    {
+      "id": "rag-065",
+      "query": "在联合应用策略a这一条目中，该行同时列出了哪几个栏目？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#20"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "联合应用策略a | 适用情况 | 安全性关注点",
+      "notes": "leak_span=7 tok_overlap=0.26",
+      "answer_excerpts": [
+        "联合应用策略a | 适用情况 | 安全性关注点"
+      ]
+    },
+    {
+      "id": "rag-066",
+      "query": "在联合应用策略a中，与适用情况并列出现、用于提示安全相关问题的栏目是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-lipid-2024#20"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "适用情况 | 安全性关注点",
+      "notes": "leak_span=7 tok_overlap=0.35",
+      "answer_excerpts": [
+        "适用情况 | 安全性关注点"
+      ]
+    },
+    {
+      "id": "rag-067",
+      "query": "根据该超重和肥胖症诊疗指南，在制定减重治疗方案时，为了获得最佳治疗效果，应充分考虑患者的哪个因素？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-2024#23"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "应充分考虑患者心理预期",
+      "notes": "leak_span=11 tok_overlap=0.81",
+      "answer_excerpts": [
+        "应充分考虑患者心理预期"
+      ]
+    },
+    {
+      "id": "rag-068",
+      "query": "根据该指南，展示超重和肥胖症诊疗路径的图编号是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-2024#23"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "图1 超重和肥胖症诊疗路径",
+      "notes": "leak_span=10 tok_overlap=0.60",
+      "answer_excerpts": [
+        "图1 超重和肥胖症诊疗路径"
+      ]
+    },
+    {
+      "id": "rag-069",
+      "query": "在以中国人为主的超重或肥胖人群研究中，去除安慰剂效应后，司美格鲁肽2.4mg治疗44周能达到多少减重幅度？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-2024#35"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "在 44 周时的减重幅度可达 8.5%",
+      "notes": "leak_span=15 tok_overlap=0.89",
+      "answer_excerpts": [
+        "在 44 周时的减重幅度可达 8.5%"
+      ]
+    },
+    {
+      "id": "rag-070",
+      "query": "在司美格鲁肽2.4mg用于HFpEF合并肥胖成人疗效研究中，KCCQ-CSS改善情况与安慰剂组相比结果怎样？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-2024#35"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "改善情况均显著高于安慰剂组",
+      "notes": "leak_span=8 tok_overlap=0.75",
+      "answer_excerpts": [
+        "改善情况均显著高于安慰剂组"
+      ]
+    },
+    {
+      "id": "rag-071",
+      "query": "在参考文献[94]关于肥胖孕妇体重增加安全性的队列研究中，Johansson K 等人涉及的肥胖分级是哪几类？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-2024#63"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "class 1, 2, and 3 obesity",
+      "notes": "leak_span=11 tok_overlap=0.04",
+      "answer_excerpts": [
+        "class 1, 2, and 3 obesity"
+      ]
+    },
+    {
+      "id": "rag-072",
+      "query": "在参考文献[88]中，Yang R 等人发表于 Lancet Reg Health West Pac 的中国多囊卵巢综合征患病率变化研究，其条目里的年份、卷和文章号是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-2024#63"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "2022,25:100494",
+      "notes": "leak_span=27 tok_overlap=0.09",
+      "answer_excerpts": [
+        "2022,25:100494"
+      ]
+    },
+    {
+      "id": "rag-073",
+      "query": "在2022年《中华儿科杂志》第60卷第6期发表的、由中华医学会儿科学分会相关学组制定的儿童肥胖相关文献，其题目是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-2024#75"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "中国儿童肥胖诊断评估与管理专家共识",
+      "notes": "leak_span=10 tok_overlap=0.46",
+      "answer_excerpts": [
+        "中国儿童肥胖诊断评估与管理专家共识"
+      ]
+    },
+    {
+      "id": "rag-074",
+      "query": "在参考文献[193]中，中国医师协会外科医师分会肥胖和糖尿病外科医师委员会发布的2019版指南刊登在哪本期刊上？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-2024#75"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "中华肥胖与代谢病电子杂志",
+      "notes": "leak_span=25 tok_overlap=0.59",
+      "answer_excerpts": [
+        "中华肥胖与代谢病电子杂志"
+      ]
+    },
+    {
+      "id": "rag-075",
+      "query": "在《中国居民肥胖防治专家共识》摘要中，肥胖及相关慢性病被认为已经成为什么范围的重大公共卫生问题？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "肥胖及相关慢性病已成为中国及全球重大公共卫生问题",
+      "notes": "leak_span=12 tok_overlap=0.74",
+      "answer_excerpts": [
+        "肥胖及相关慢性病已成为中国及全球重大公共卫生问题"
+      ]
+    },
+    {
+      "id": "rag-076",
+      "query": "若要定位《中国居民肥胖防治专家共识》这篇发表在《中国预防医学杂志》2022年第23卷第5期的专家共识，其DOI编号是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "10.16506/j.1009-6639.2022.05.001",
+      "notes": "leak_span=12 tok_overlap=0.62",
+      "answer_excerpts": [
+        "10.16506/j.1009-6639.2022.05.001"
+      ]
+    },
+    {
+      "id": "rag-077",
+      "query": "在超重/肥胖主要筛查指标2.1.1身体质量指数部分，BMI被用来间接评估人体的什么成分？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#5"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "用来间接评估人体的脂肪成分",
+      "notes": "leak_span=9 tok_overlap=0.79",
+      "answer_excerpts": [
+        "用来间接评估人体的脂肪成分"
+      ]
+    },
+    {
+      "id": "rag-078",
+      "query": "在超重/肥胖主要筛查指标2.1.1身体质量指数部分，身体质量指数的英文全称和缩写是如何标注的？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#5"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "(bodymassindex,BMI)",
+      "notes": "leak_span=6 tok_overlap=0.55",
+      "answer_excerpts": [
+        "(bodymassindex,BMI)"
+      ]
+    },
+    {
+      "id": "rag-079",
+      "query": "根据“2.1.4 双能X线吸收法”部分，DXA在哪两个方面被认为具有良好重复性及准确性？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#7"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "体脂及去脂体质量方面具有良好重复性及准确性",
+      "notes": "leak_span=11 tok_overlap=0.77",
+      "answer_excerpts": [
+        "体脂及去脂体质量方面具有良好重复性及准确性"
+      ]
+    },
+    {
+      "id": "rag-080",
+      "query": "根据“2.1.5 生物电阻抗分析法”，BIA会测量身体哪两个部位之间的电流情况？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#7"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "测量从手腕到脚腕的电流情况",
+      "notes": "leak_span=14 tok_overlap=0.67",
+      "answer_excerpts": [
+        "测量从手腕到脚腕的电流情况"
+      ]
+    },
+    {
+      "id": "rag-081",
+      "query": "根据2022年《中国预防医学杂志》“精准营养与肥胖治疗”部分，我国今后需要加强精准营养在哪一领域的应用研究？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#20"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "营养在肥胖治疗中的应用研究",
+      "notes": "leak_span=9 tok_overlap=0.80",
+      "answer_excerpts": [
+        "营养在肥胖治疗中的应用研究"
+      ]
+    },
+    {
+      "id": "rag-082",
+      "query": "在2022年《中国预防医学杂志》关于肥胖防控政策体系及全社会实施参与的内容中，展示政策及干预措施体系框架的是哪幅图？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#20"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "图8 指导建立肥胖防控政策及干预措施体系的框架模型",
+      "notes": "leak_span=12 tok_overlap=0.77",
+      "answer_excerpts": [
+        "图8 指导建立肥胖防控政策及干预措施体系的框架模型"
+      ]
+    },
+    {
+      "id": "rag-083",
+      "query": "在 Cole TJ、Bellizzi MC、Flegal KM 等人关于建立全球儿童超重和肥胖标准定义的参考文献中，BMJ 文章的年份、卷期和页码是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#30"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "BMJ,2000,320(7244):1240-1243",
+      "notes": "leak_span=8 tok_overlap=0.01",
+      "answer_excerpts": [
+        "BMJ,2000,320(7244):1240-1243"
+      ]
+    },
+    {
+      "id": "rag-084",
+      "query": "在这段参考文献里，编号 [30] Hawkes 等人关于食品政策预防肥胖的条目中，Lancet 的年份、卷号和期号是如何标注的？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#30"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "Lancet,2015,385 (9985):",
+      "notes": "leak_span=12 tok_overlap=0.03",
+      "answer_excerpts": [
+        "Lancet,2015,385 (9985):"
+      ]
+    },
+    {
+      "id": "rag-085",
+      "query": "在参考文献[51]中，中国营养学会2021年发布的膳食相关科学报告叫什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#32"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "中国居民膳食指南科学研究报告",
+      "notes": "leak_span=6 tok_overlap=0.47",
+      "answer_excerpts": [
+        "中国居民膳食指南科学研究报告"
+      ]
+    },
+    {
+      "id": "rag-086",
+      "query": "在开头标注为《中华内分泌代谢杂志》专家共识的这段文献末尾，稿件修回日期是哪一天？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-consensus#32"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "修回日期: 2022-04-01",
+      "notes": "leak_span=9 tok_overlap=0.46",
+      "answer_excerpts": [
+        "修回日期: 2022-04-01"
+      ]
+    },
+    {
+      "id": "rag-087",
+      "query": "根据国家卫生健康委办公厅发布的《成人肥胖食养指南（2024年版）》目录，关于纠正不良饮食行为和科学进餐的内容排在第几项、起始页码是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "（三）纠正不良饮食行为，科学进餐 7",
+      "notes": "leak_span=10 tok_overlap=0.59",
+      "answer_excerpts": [
+        "（三）纠正不良饮食行为，科学进餐 7"
+      ]
+    },
+    {
+      "id": "rag-088",
+      "query": "在《成人肥胖食养指南（2024年版）》目录中，如果要查找成人肥胖判定标准，应该查看哪个附录以及对应页码？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "附录 5 成人肥胖判定标准 66",
+      "notes": "leak_span=8 tok_overlap=0.49",
+      "answer_excerpts": [
+        "附录 5 成人肥胖判定标准 66"
+      ]
+    },
+    {
+      "id": "rag-089",
+      "query": "在总能量约1400kcal的秋季食谱2中，碳水化合物和脂肪分别占总能量的比例是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#35",
+        "med-obesity-diet-2024#36"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "碳水化合物59%，脂肪24%",
+      "notes": "leak_span=8 tok_overlap=0.60",
+      "answer_excerpts": [
+        "碳水化合物59%，脂肪24%"
+      ]
+    },
+    {
+      "id": "rag-090",
+      "query": "在总能量约1600kcal的秋季食谱3里，晚餐昆布豆腐汤中干昆布和北豆腐分别用多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#35",
+        "med-obesity-diet-2024#36"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "昆布【干】*10g、北豆腐50g",
+      "notes": "leak_span=8 tok_overlap=0.65",
+      "answer_excerpts": [
+        "昆布【干】*10g、北豆腐50g"
+      ]
+    },
+    {
+      "id": "rag-091",
+      "query": "在总能量约1600kcal的夏季食谱3中，中餐后的加餐提供了哪两种水果？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#45"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "柚子（100g） 木瓜*（100g）",
+      "notes": "leak_span=8 tok_overlap=0.59",
+      "answer_excerpts": [
+        "柚子（100g） 木瓜*（100g）"
+      ]
+    },
+    {
+      "id": "rag-092",
+      "query": "在总能量约1200kcal的秋季食谱1里，早餐中哪道羹汤使用了干桂圆？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#45",
+        "med-obesity-diet-2024#46"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "红枣桂圆羹（大枣【干】*25g，桂圆【干】*25g）",
+      "notes": "leak_span=8 tok_overlap=0.57",
+      "answer_excerpts": [
+        "红枣桂圆羹（大枣【干】*25g，桂圆【干】*25g）"
+      ]
+    },
+    {
+      "id": "rag-093",
+      "query": "根据华北地区肥胖患者食养系列食谱，为遵循食养原则，该食谱在保留本地饮食文化的同时增加了哪类食物的摄入？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#54"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "增加了蔬菜及水产品的摄入",
+      "notes": "leak_span=6 tok_overlap=0.68",
+      "answer_excerpts": [
+        "增加了蔬菜及水产品的摄入"
+      ]
+    },
+    {
+      "id": "rag-094",
+      "query": "在总能量约1200kcal的秋季食谱1中，蛋白质、碳水化合物和脂肪分别占能量的多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#71",
+        "med-obesity-diet-2024#72",
+        "med-obesity-diet-2024#81",
+        "med-obesity-diet-2024#82",
+        "med-obesity-diet-2024#86"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "蛋白质20%，碳水化合物56%，脂肪24%",
+      "notes": "leak_span=8 tok_overlap=0.67",
+      "answer_excerpts": [
+        "蛋白质20%，碳水化合物56%，脂肪24%"
+      ]
+    },
+    {
+      "id": "rag-095",
+      "query": "在总能量约1400kcal的秋季食谱2里，晚餐的竹荪三鲜汤包含哪些配料，各自用量是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#71",
+        "med-obesity-diet-2024#72"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "竹荪【干】5g，杏鲍菇20g，猪瘦肉15g",
+      "notes": "leak_span=8 tok_overlap=0.54",
+      "answer_excerpts": [
+        "竹荪【干】5g，杏鲍菇20g，猪瘦肉15g"
+      ]
+    },
+    {
+      "id": "rag-096",
+      "query": "在总能量约1600kcal的春季食谱3的营养注释中，脂肪供能占比是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#37",
+        "med-obesity-diet-2024#38",
+        "med-obesity-diet-2024#79",
+        "med-obesity-diet-2024#80"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "碳水化合物54%，脂肪27%",
+      "notes": "leak_span=8 tok_overlap=0.62",
+      "answer_excerpts": [
+        "碳水化合物54%，脂肪27%"
+      ]
+    },
+    {
+      "id": "rag-099",
+      "query": "在成人肥胖患者食养系列食谱的华南地区部分，想查看四季食谱示例应看哪个表？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#98"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "华南地区四季食谱示例见表 3.7。",
+      "notes": "leak_span=8 tok_overlap=0.66",
+      "answer_excerpts": [
+        "华南地区四季食谱示例见表 3.7。"
+      ]
+    },
+    {
+      "id": "rag-100",
+      "query": "根据这份提供约1600kcal能量、晚餐含上汤茼蒿的食谱，羊肉煲仔饭里的大米和羊肉分别用了多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#107",
+        "med-obesity-diet-2024#108"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "羊肉煲仔饭（大米65g，羊肉25g）",
+      "notes": "leak_span=8 tok_overlap=0.54",
+      "answer_excerpts": [
+        "羊肉煲仔饭（大米65g，羊肉25g）"
+      ]
+    },
+    {
+      "id": "rag-101",
+      "query": "在这份提供约1600kcal能量且使用白茅根瘦肉汤的食谱注释里，带星号的白茅根被归为什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#107",
+        "med-obesity-diet-2024#108"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "*为食谱中用到的食药物质，如白茅根。",
+      "notes": "leak_span=8 tok_overlap=0.43",
+      "answer_excerpts": [
+        "*为食谱中用到的食药物质，如白茅根。"
+      ]
+    },
+    {
+      "id": "rag-102",
+      "query": "根据《健康成年人身体活动能量消耗参考值》(T/CSSS 002—2023)中的强度分类，中等强度身体活动对应的MET区间是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#115",
+        "med-obesity-diet-2024#116"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "中等强度 3.0MET～5.9MET；",
+      "notes": "leak_span=35 tok_overlap=0.71",
+      "answer_excerpts": [
+        "中等强度 3.0MET～5.9MET；"
+      ]
+    },
+    {
+      "id": "rag-103",
+      "query": "根据《健康成年人身体活动能量消耗参考值》(T/CSSS 002—2023)，矿山工作中推重车这项职业性活动的MET值和强度等级是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-obesity-diet-2024#116"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "矿山工作：推重车 8.4 高",
+      "notes": "leak_span=35 tok_overlap=0.71",
+      "answer_excerpts": [
+        "矿山工作：推重车 8.4 高"
+      ]
+    },
+    {
+      "id": "rag-104",
+      "query": "根据PCOS相关指南片段中高雄激素的治疗部分，治疗的主要目标是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-pcos#3"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "缓解高雄激素症状是治疗的主要目的。",
+      "notes": "leak_span=7 tok_overlap=0.57",
+      "answer_excerpts": [
+        "缓解高雄激素症状是治疗的主要目的。"
+      ]
+    },
+    {
+      "id": "rag-105",
+      "query": "在PCOS不孕患者接受促进生育治疗前的孕前咨询中，除肥胖外还要尽量纠正哪种未控制的危险因素？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-pcos#3"
+      ],
+      "category": "adversarial",
+      "tags": [
+        "adversarial"
+      ],
+      "ground_truth": "引起生育失败的危险因素，如肥胖、未控制的糖耐",
+      "notes": "leak_span=6 tok_overlap=0.67",
+      "answer_excerpts": [
+        "引起生育失败的危险因素，如肥胖、未控制的糖耐"
+      ]
+    },
+    {
+      "id": "rag-106",
+      "query": "在收稿日期标注为20170717的这段资料中，中医辨证分型治疗强调以哪两者结合？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-pcos#7"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "以辨病与辨证结合的中医",
+      "notes": "leak_span=8 tok_overlap=0.48",
+      "answer_excerpts": [
+        "以辨病与辨证结合的中医"
+      ]
+    },
+    {
+      "id": "rag-107",
+      "query": "在收稿日期标注为20170717的这段资料末尾，负责本文编辑的人是谁？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-pcos#7"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "（本文编辑：沈平虎）",
+      "notes": "leak_span=8 tok_overlap=0.35",
+      "answer_excerpts": [
+        "（本文编辑：沈平虎）"
+      ]
+    },
+    {
+      "id": "rag-108",
+      "query": "按照2021年《超重或肥胖人群体重管理流程的专家共识》，院内院外需要被规范建设的是哪类团队？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "本共识规范了院内院外体重管理团队建设",
+      "notes": "leak_span=18 tok_overlap=0.74",
+      "answer_excerpts": [
+        "本共识规范了院内院外体重管理团队建设"
+      ]
+    },
+    {
+      "id": "rag-109",
+      "query": "若要检索或引用《超重或肥胖人群体重管理流程的专家共识（2021）》这篇文章，其DOI编号是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "10.3760/cma.j.cn115624-20210630-00368",
+      "notes": "leak_span=19 tok_overlap=0.64",
+      "answer_excerpts": [
+        "10.3760/cma.j.cn115624-20210630-00368"
+      ]
+    },
+    {
+      "id": "rag-110",
+      "query": "根据这段关于二甲双胍、纳曲酮缓释剂等减重药物疗效的说明，哪一方面仍需要更多循证依据支持？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#5"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "其作用机制还需要更多的循证依据支持",
+      "notes": "leak_span=11 tok_overlap=0.65",
+      "answer_excerpts": [
+        "其作用机制还需要更多的循证依据支持"
+      ]
+    },
+    {
+      "id": "rag-111",
+      "query": "在这段减重手术建议中，作为条目出现的BMI具体数值是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#5"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "BMI≥32.5kg/m",
+      "notes": "leak_span=6 tok_overlap=0.40",
+      "answer_excerpts": [
+        "BMI≥32.5kg/m"
+      ]
+    },
+    {
+      "id": "rag-112",
+      "query": "根据2021年《中华健康管理学杂志》关于减重后维持的建议，达到减重目标后为患者制定的方案应包含哪些内容？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#6"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "体重维持方案，包括饮食和运动",
+      "notes": "leak_span=9 tok_overlap=0.70",
+      "answer_excerpts": [
+        "体重维持方案，包括饮食和运动"
+      ]
+    },
+    {
+      "id": "rag-113",
+      "query": "在2021年《中华健康管理学杂志》体重管理相关文章的参考文献中，编号[2]引用的国家卫生健康委报告名称是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#6"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "国家卫生健康委.中国居民营养与慢性病状况报告",
+      "notes": "leak_span=9 tok_overlap=0.60",
+      "answer_excerpts": [
+        "国家卫生健康委.中国居民营养与慢性病状况报告"
+      ]
+    },
+    {
+      "id": "rag-114",
+      "query": "在列有李兴杰、梁雄飞等人的这份名单里，王磊所属医院是哪家？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#7"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "浙江大学医学院附属第一医院",
+      "notes": "leak_span=0 tok_overlap=0.43",
+      "answer_excerpts": [
+        "浙江大学医学院附属第一医院"
+      ]
+    },
+    {
+      "id": "rag-115",
+      "query": "根据片段中的参考文献[8]，Durrer Schutz D等人那篇欧洲成人肥胖初级保健管理相关文献的DOI号是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#7"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "DOI:10.1159/000496183.",
+      "notes": "leak_span=15 tok_overlap=0.16",
+      "answer_excerpts": [
+        "DOI:10.1159/000496183."
+      ]
+    },
+    {
+      "id": "rag-116",
+      "query": "根据《中华健康管理学杂志》关于一稿两投和一稿两用问题处理的声明，编辑部与作者意见发生分歧时由谁进行最后仲裁？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#9"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "由上级主管部门或有关权威机构进行最后仲裁",
+      "notes": "leak_span=18 tok_overlap=0.92",
+      "answer_excerpts": [
+        "由上级主管部门或有关权威机构进行最后仲裁"
+      ]
+    },
+    {
+      "id": "rag-117",
+      "query": "在《中华健康管理学杂志》关于一稿两投和一稿两用问题处理的声明页面中，引用的 Front Psychol 2020 年论文的 DOI 是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-flow-2021#8",
+        "med-weight-flow-2021#9"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "DOI:10.3389/fpsyg.2020.00397",
+      "notes": "leak_span=18 tok_overlap=0.79",
+      "answer_excerpts": [
+        "DOI:10.3389/fpsyg.2020.00397"
+      ]
+    },
+    {
+      "id": "rag-118",
+      "query": "根据《居民体重管理核心知识（2024年版）释义》，维持健康体重对疾病风险有什么作用？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-knowledge-2024#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "保持健康体重能减少相关疾病的患病风险",
+      "notes": "leak_span=15 tok_overlap=0.73",
+      "answer_excerpts": [
+        "保持健康体重能减少相关疾病的患病风险"
+      ]
+    },
+    {
+      "id": "rag-119",
+      "query": "在《居民体重管理核心知识（2024年版）释义》中，BMI这个常用标准主要用于衡量什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-knowledge-2024#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "体重指数（BMI）是衡量人体胖瘦程度的一个常用标准",
+      "notes": "leak_span=15 tok_overlap=0.74",
+      "answer_excerpts": [
+        "体重指数（BMI）是衡量人体胖瘦程度的一个常用标准"
+      ]
+    },
+    {
+      "id": "rag-120",
+      "query": "根据这段体重管理建议，体重过轻者在逐步增加能量摄入前，首先应做什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-knowledge-2024#2"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "对于体重过轻者，首先应排除疾病原因",
+      "notes": "leak_span=6 tok_overlap=0.71",
+      "answer_excerpts": [
+        "对于体重过轻者，首先应排除疾病原因"
+      ]
+    },
+    {
+      "id": "rag-121",
+      "query": "根据这段体重管理建议，编号为六的条目标题完整表述是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-knowledge-2024#2"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "六、良好睡眠，积极心态",
+      "notes": "leak_span=0 tok_overlap=0.39",
+      "answer_excerpts": [
+        "六、良好睡眠，积极心态"
+      ]
+    },
+    {
+      "id": "rag-122",
+      "query": "根据这段关于减重目标的体重管理建议，一般人群每周体重减少不宜超过多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-knowledge-2024#3"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "每周体重减少不超过 0.5 公斤的速度",
+      "notes": "leak_span=7 tok_overlap=0.61",
+      "answer_excerpts": [
+        "每周体重减少不超过 0.5 公斤的速度"
+      ]
+    },
+    {
+      "id": "rag-123",
+      "query": "在这段体重管理建议的“八、共同行动，全家健康”部分，家庭饮食和运动习惯尤其被强调会影响哪类人群的体重管理？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-knowledge-2024#3"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "家庭成员尤其儿童青少年",
+      "notes": "leak_span=11 tok_overlap=0.58",
+      "answer_excerpts": [
+        "家庭成员尤其儿童青少年"
+      ]
+    },
+    {
+      "id": "rag-124",
+      "query": "根据《体重管理指导原则（2024年版）》，该文件是为了贯彻落实哪个活动实施方案而制定的？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "《“体重管理年”活动实施方案》",
+      "notes": "leak_span=9 tok_overlap=0.71",
+      "answer_excerpts": [
+        "《“体重管理年”活动实施方案》"
+      ]
+    },
+    {
+      "id": "rag-125",
+      "query": "在《体重管理指导原则（2024年版）》中，我国6到17岁儿童青少年的超重率和肥胖率分别被列为什么数值？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "6~17 岁儿童青少年超重率和肥胖率分别为 11.1%和 7.9%",
+      "notes": "leak_span=9 tok_overlap=0.78",
+      "answer_excerpts": [
+        "6~17 岁儿童青少年超重率和肥胖率分别为 11.1%和 7.9%"
+      ]
+    },
+    {
+      "id": "rag-126",
+      "query": "在超重肥胖医学评估的生活方式风险评估中，睡眠质量维度需要评估哪些具体内容？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#2"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "评估入睡时间、睡眠时长及节律等。",
+      "notes": "leak_span=8 tok_overlap=0.59",
+      "answer_excerpts": [
+        "评估入睡时间、睡眠时长及节律等。"
+      ]
+    },
+    {
+      "id": "rag-127",
+      "query": "在超重肥胖医学评估的条目编号中，（二）对应的是哪一项评估？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#2"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "（二）生活方式风险评估。",
+      "notes": "leak_span=0 tok_overlap=0.36",
+      "answer_excerpts": [
+        "（二）生活方式风险评估。"
+      ]
+    },
+    {
+      "id": "rag-128",
+      "query": "根据针对BMI≥32.5kg/m2的中、重度肥胖者减重目标建议，阶段性减重目标按现体重的哪些比例划分？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#4"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "按减轻现体重的 5%、10%、15%划分阶段性减重目标",
+      "notes": "leak_span=13 tok_overlap=0.73",
+      "answer_excerpts": [
+        "按减轻现体重的 5%、10%、15%划分阶段性减重目标"
+      ]
+    },
+    {
+      "id": "rag-129",
+      "query": "在限制能量饮食建议的能量需要量注释中，参考的2023版文件名称是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#4"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "参考《中国居民膳食营养素参考摄入量（2023版）》",
+      "notes": "leak_span=6 tok_overlap=0.58",
+      "answer_excerpts": [
+        "参考《中国居民膳食营养素参考摄入量（2023版）》"
+      ]
+    },
+    {
+      "id": "rag-130",
+      "query": "在健康体重的管理与维持部分，文件认为最关键的做法是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#8"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "吃动平衡是管理与维持健康体重的关键",
+      "notes": "leak_span=10 tok_overlap=0.52",
+      "answer_excerpts": [
+        "吃动平衡是管理与维持健康体重的关键"
+      ]
+    },
+    {
+      "id": "rag-131",
+      "query": "根据全流程体重管理要求，5G等新技术要帮助完成哪些远程环节？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#8"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "实现远程采集、监测、评估、管理",
+      "notes": "leak_span=7 tok_overlap=0.59",
+      "answer_excerpts": [
+        "实现远程采集、监测、评估、管理"
+      ]
+    },
+    {
+      "id": "rag-132",
+      "query": "在这份体重管理内容中，产后体重管理第（3）条建议如何安排运动强度？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#12"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "运动强度可从低至中等逐渐增加。",
+      "notes": "leak_span=6 tok_overlap=0.48",
+      "answer_excerpts": [
+        "运动强度可从低至中等逐渐增加。"
+      ]
+    },
+    {
+      "id": "rag-133",
+      "query": "在这份体重管理内容中，编号（四）对应的人群类别及年龄范围是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#12"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "（四）老年人群（65 岁及以上）",
+      "notes": "leak_span=0 tok_overlap=0.42",
+      "answer_excerpts": [
+        "（四）老年人群（65 岁及以上）"
+      ]
+    },
+    {
+      "id": "rag-134",
+      "query": "根据《7岁以下儿童生长标准》（WS/T 423—2022）附表3，7岁以下儿童年龄别BMI在+1 SD到+2 SD之间时，营养状况应如何评价？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#14"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "+1 SD≤ • <+2 SD 超重",
+      "notes": "leak_span=25 tok_overlap=0.72",
+      "answer_excerpts": [
+        "+1 SD≤ • <+2 SD 超重"
+      ]
+    },
+    {
+      "id": "rag-135",
+      "query": "在《7岁以下儿童生长标准》附表3评价年龄别BMI营养状况时，引用的标准编号是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#14",
+        "med-weight-principle-2024#16",
+        "med-weight-principle-2024#18"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "WS/T 423—2022",
+      "notes": "leak_span=10 tok_overlap=0.68",
+      "answer_excerpts": [
+        "WS/T 423—2022"
+      ]
+    },
+    {
+      "id": "rag-136",
+      "query": "根据《7岁以下儿童生长标准》（WS/T 423—2022）中年龄别BMI的判定，儿童年龄别BMI达到或超过+2 SD但低于+3 SD时属于哪种情况？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#16",
+        "med-weight-principle-2024#18"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "+2 SD≤年龄别 BMI <+3 SD 为肥胖",
+      "notes": "leak_span=25 tok_overlap=0.51",
+      "answer_excerpts": [
+        "+2 SD≤年龄别 BMI <+3 SD 为肥胖"
+      ]
+    },
+    {
+      "id": "rag-137",
+      "query": "在《7岁以下儿童生长标准》的引用信息中，这份标准对应的编号是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#14",
+        "med-weight-principle-2024#16",
+        "med-weight-principle-2024#18"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "《7 岁以下儿童生长标准》（WS/T 423—2022）",
+      "notes": "leak_span=10 tok_overlap=0.41",
+      "answer_excerpts": [
+        "《7 岁以下儿童生长标准》（WS/T 423—2022）"
+      ]
+    },
+    {
+      "id": "rag-138",
+      "query": "根据《7岁以下儿童生长标准》（WS/T 423—2022），给未满2岁的儿童计算BMI时，应使用体重和哪个身体测量指标？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#16",
+        "med-weight-principle-2024#18"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "2 岁以下适用于以体重和身长计算的 BMI",
+      "notes": "leak_span=25 tok_overlap=0.53",
+      "answer_excerpts": [
+        "2 岁以下适用于以体重和身长计算的 BMI"
+      ]
+    },
+    {
+      "id": "rag-139",
+      "query": "在《7岁以下儿童生长标准》（WS/T 423—2022）列出的3岁6月那一行数值中，位于15.2和18.0之间的数是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#18"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "15.2 16.5 18.0",
+      "notes": "leak_span=25 tok_overlap=0.51",
+      "answer_excerpts": [
+        "15.2 16.5 18.0"
+      ]
+    },
+    {
+      "id": "rag-140",
+      "query": "根据附表11中6~18岁儿童青少年身体活动强度分级，中等强度身体活动对应的儿童METy范围是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-principle-2024#26"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "中强度身体活动 3.00~5.99",
+      "notes": "leak_span=14 tok_overlap=0.68",
+      "answer_excerpts": [
+        "中强度身体活动 3.00~5.99"
+      ]
+    },
+    {
+      "id": "rag-141",
+      "query": "根据《超重或肥胖人群体重管理专家共识及团体标准》，生活方式风险评估会评估哪些与心血管代谢风险相关的因素？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "腰围、膳食营养、体力活动和心肺适能",
+      "notes": "leak_span=15 tok_overlap=0.85",
+      "answer_excerpts": [
+        "腰围、膳食营养、体力活动和心肺适能"
+      ]
+    },
+    {
+      "id": "rag-142",
+      "query": "在《超重或肥胖人群体重管理专家共识及团体标准》的术语和定义部分，心肺适能对应的英文编号术语是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "5.cardiorespiratory fitness",
+      "notes": "leak_span=15 tok_overlap=0.72",
+      "answer_excerpts": [
+        "5.cardiorespiratory fitness"
+      ]
+    },
+    {
+      "id": "rag-143",
+      "query": "按照中华健康管理学杂志2018年6月第12卷第3期成人超重或肥胖体重判定标准，BMI处于哪个区间会被判定为超重？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#2"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "24.0kg/m≤BMI<28.0kg/m",
+      "notes": "leak_span=9 tok_overlap=0.73",
+      "answer_excerpts": [
+        "24.0kg/m≤BMI<28.0kg/m"
+      ]
+    },
+    {
+      "id": "rag-144",
+      "query": "在针对超重或肥胖人群的体重管理方案中，治疗建议主要是依据什么来分别给出的？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#2",
+        "med-weight-standard#3"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "治疗建议：不同的超重或肥胖分期，相应的",
+      "notes": "leak_span=6 tok_overlap=0.45",
+      "answer_excerpts": [
+        "治疗建议：不同的超重或肥胖分期，相应的"
+      ]
+    },
+    {
+      "id": "rag-145",
+      "query": "在针对超重或肥胖人群的体重管理方案治疗建议里，正常体重建议旁标注的编号是多少？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#3"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "治疗建议如下 [10] ：（）正常体重，保持良好的饮食和",
+      "notes": "leak_span=6 tok_overlap=0.49",
+      "answer_excerpts": [
+        "治疗建议如下 [10] ：（）正常体重，保持良好的饮食和"
+      ]
+    },
+    {
+      "id": "rag-146",
+      "query": "根据《超重或肥胖人群体重管理专家共识及团体标准》，减重者出现健康指标异常时，应何时复诊？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#5"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "健康指标出现异常等情况，随时复诊。",
+      "notes": "leak_span=22 tok_overlap=0.85",
+      "answer_excerpts": [
+        "健康指标出现异常等情况，随时复诊。"
+      ]
+    },
+    {
+      "id": "rag-147",
+      "query": "在《超重或肥胖人群体重管理专家共识及团体标准》起草委员会名单中，哈尔滨医科大学附属第二医院内分泌科对应哪位专家？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#5"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "李 强 哈尔滨医科大学附属第二医院内分泌科",
+      "notes": "leak_span=27 tok_overlap=0.86",
+      "answer_excerpts": [
+        "李 强 哈尔滨医科大学附属第二医院内分泌科"
+      ]
+    },
+    {
+      "id": "rag-148",
+      "query": "在中华健康管理学杂志2018年6月第12卷第3期的饮食频率问卷中，若要了解麦当劳、肯德基、德克士等洋快餐的食用频率，问卷使用的题干是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#8"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "您多久吃一次洋快餐（麦当劳、肯德基、德克士等）？",
+      "notes": "leak_span=12 tok_overlap=0.65",
+      "answer_excerpts": [
+        "您多久吃一次洋快餐（麦当劳、肯德基、德克士等）？"
+      ]
+    },
+    {
+      "id": "rag-149",
+      "query": "在中华健康管理学杂志2018年6月第12卷第3期饮食频率问卷第15题中，针对鸡鸭等家禽肉类摄入频率的提问是什么？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#8"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "您多久吃一次鸡鸭等家禽肉类？",
+      "notes": "leak_span=9 tok_overlap=0.64",
+      "answer_excerpts": [
+        "您多久吃一次鸡鸭等家禽肉类？"
+      ]
+    },
+    {
+      "id": "rag-150",
+      "query": "按照附件4的3分钟台阶试验操作规范，受试者开始动作后测试人员应如何处理计时？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#9"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "受试者一旦开始动作，就开始计时。",
+      "notes": "leak_span=8 tok_overlap=0.70",
+      "answer_excerpts": [
+        "受试者一旦开始动作，就开始计时。"
+      ]
+    },
+    {
+      "id": "rag-151",
+      "query": "根据附件3非运动心肺适能评估的计算公式，最大摄氧量指标及其单位在公式开头是如何书写的？",
+      "user_id": 992002,
+      "gold_chunk_keys": [
+        "med-weight-standard#9"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "VO2max[ml/ kg·min ]=50.513+ 1.589×",
+      "notes": "leak_span=9 tok_overlap=0.67",
+      "answer_excerpts": [
+        "VO2max[ml/ kg·min ]=50.513+ 1.589×"
+      ]
+    }
+  ]
+}

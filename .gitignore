@@ -19,3 +19,8 @@ build/
 audit*.jsonl
 traces*.jsonl
 pi-real.env
+# RAG eval scratch output (reports/ and the golden-set JSONs under
+# evals/tasks/rag/ are tracked; these are per-run and regenerable)
+evals/*.log
+evals/junit_*.xml
+evals/**/*.orig.json

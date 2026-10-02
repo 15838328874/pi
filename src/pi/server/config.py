@@ -62,6 +62,16 @@ class ServerSettings:
     embedding_api_key: str = ""
     embedding_model: str = ""
     milvus_uri: str = ""
+    # Enterprise document RAG (pi.rag). Default ON: the kernel is fail-safe, so
+    # a server with no embedding/Milvus config still boots - retrieval just
+    # degrades to BM25 and logs a warning. PI_RAG_ENABLED=0 drops rag_search
+    # from the tool list entirely (the model never sees a tool it cannot use).
+    # Reads PI_RAG_* (and PI_EMBEDDING_*/PI_MILVUS_URI) via RagConfig.from_env().
+    rag_enabled: bool = True
+    # In-process vector fallback for RAG. Kept OFF for the server (same reason
+    # as vector memory): under multiple workers an in-memory index looks
+    # healthy while returning nothing, since each worker has its own.
+    rag_memory_vector: bool = False
     # MCP servers (JSON array string) and the skills root dir; empty = feature off.
     mcp_servers: list[dict] = field(default_factory=list)
     skills_dir: str = ""
@@ -138,6 +148,10 @@ class ServerSettings:
             embedding_api_key=os.environ.get("PI_EMBEDDING_API_KEY", ""),
             embedding_model=os.environ.get("PI_EMBEDDING_MODEL", ""),
             milvus_uri=os.environ.get("PI_MILVUS_URI", ""),
+            rag_enabled=os.environ.get("PI_RAG_ENABLED", "1").strip().lower()
+            not in ("0", "false", "no"),
+            rag_memory_vector=os.environ.get("PI_RAG_MEMORY_VECTOR", "").strip().lower()
+            in ("1", "true", "yes"),
             mcp_servers=_parse_mcp_servers(os.environ.get("PI_MCP_SERVERS", "")),
             skills_dir=os.environ.get("PI_SKILLS_DIR", ""),
             metrics_enabled=os.environ.get("PI_METRICS", "1") == "1",

@@ -406,14 +406,13 @@ CompactionEvent / TurnEndEvent / ErrorEvent`。
 摘要提示词（`COMPACTION_PROMPT`）强制保留：目标与约束、已做决定及理由、
 文件变更、命令结果、未完成事项。
 
-**压缩结果目前不落库**（值得注意的一处实现现状）：`AgentLoop` 有 `on_compact` 回调
-可用于持久化，但服务端**没有接线**——`RunManager` 只传 `on_message`，`MessageRepo`
-也只有 `append_many` / `list_for_session` / `count_for_session`，没有"重写整个会话"的
-方法。后果：压缩只在当次 run 的内存里生效，库里保留完整原始历史，下一轮重新加载、
-重新压缩。这是**功能正确**的（本轮新消息的 `idx` 由 `count_for_session` 递增，不受
-前缀压缩影响），代价是长会话每轮都重付一次摘要 LLM 调用、且消息表只增不减。
-若要修，入口是给 `MessageRepo` 加一个事务性的 `replace_many`，再在 `runner.py`
-里把 `on_compact` 接上（原 CLI 的 `SessionStore.replace_messages` 就是这么做的）。
+**压缩结果已落库（P3 episodic 记忆）**：`RunManager` 接线了 `on_compact`
+（runner.py:162-170、231），摘要写独立的 `compactions` 表——`save_compaction` 在
+finally 里 fail-soft（runner.py:344-353），**原始消息表只增不减**（非破坏优先，见 §8）。
+`covered_upto_idx` 标明摘要覆盖到第几条；下一轮开始时 `run_turn` 查
+`latest_compaction`，只加载 `[摘要] + [idx 之后的新消息]` 作为历史
+（runner.py:172-187）——**同一段历史只付一次摘要 LLM 费用**。摘要表是派生数据，
+随时可重建；新消息的 `idx` 由 `count_for_session` 递增，与前缀压缩互不影响。
 
 **为什么保留尾部 8 条原文？** 最近上下文是模型当前任务的工作记忆，摘要必有损，
 混合方案（纪要+原文）在成本与连贯性之间取平衡。
@@ -591,11 +590,14 @@ CLI:`pi-py eval rollout --tasks DIR --model X --n 8 --concurrency 16 --sandbox d
 | 方法 | 作用 |
 |---|---|
 | `append_many(session_id, entries)` | 批量追加，`entries` 为 `[{'idx', 'role', 'blocks'}, ...]`；`blocks` 是 `Message.model_dump_json()` 的字符串。一次事务写完——这就是原则 1（run 原子性）的落地点 |
-| `list_for_session(session_id)` | 按 `idx` 升序读回，调用方用 `Message.model_validate_json` 反序列化 |
+| `list_for_session(session_id, after_idx=-1)` | 按 `idx` 升序读回，`after_idx >= 0` 时只取 `idx > after_idx`（摘要复用加载用）；调用方用 `Message.model_validate_json` 反序列化 |
 | `count_for_session(session_id)` | 现有消息数，`RunManager` 用它算新消息的起始 `idx` |
+| `save_compaction(session_id, covered_upto_idx, summary, model)` | 摘要落 `compactions` 表（fail-soft，绝不挂 run） |
+| `latest_compaction(session_id)` | 最近一份摘要；`RunManager` 加载历史时用它拼 `[摘要] + [后续新消息]`，同一段历史只付一次摘要费 |
 
-**没有"重写整个会话"的方法**（原 `SessionStore.replace_messages` 的对应物不存在），
-所以压缩结果无法落库——完整因果与修法见 §6.3。
+消息表**只增不减**——没有"重写整个会话"的方法（原 `SessionStore.replace_messages`
+的对应物刻意不复刻）。压缩落独立 `compactions` 表而非重写历史（非破坏优先），
+完整机制见 §6.3。
 
 `MemoryRepo`（语义记忆，P3b，跨会话长期记忆）：
 
@@ -862,9 +864,16 @@ User-Agent，**不记密码**。三点注意：
 
 ### 12.2 自动加载 `.env`（`pi/__init__.py`）
 
-包导入时按顺序找 `.pi-py.env` / `.env` / `~/.pi-py/.env`，读 `KEY=VALUE` 行注入
+包导入时按顺序找 `.env` / `~/.pi-py/.env`，读 `KEY=VALUE` 行注入
 环境变量（**已存在的环境变量优先**，即显式设置永远赢）。找到第一个存在的文件就停。
 值两侧的引号会被剥掉；空行与 `#` 开头的行忽略。
+
+> **变更留痕（2026-10-01）**：候选曾有三个（`.pi-py.env` / `.env` / `~/.pi-py/.env`）。
+> 项目根的 `.pi-py.env` 与 `.env` 是同一槽位的两个名字，且本仓库两个 compose 文件
+> 都没有 `${}` 变量替换（不存在"compose 抢读 .env"的冲突），防冲突理由不成立，
+> 因此移除 `.pi-py.env`，收敛为两个：**项目内 `.env`（默认）+ 机器级 `~/.pi-py/.env`
+> （跨 checkout 共用密钥，与 jwt.secret/audit 同目录）**。本地若还在用
+> `.pi-py.env`，把文件改名为 `.env` 即可，无需其他迁移。
 
 **这条机制有个容易踩的后果**：仓库根放着生产 `.env` 时，**任何 import pi 的进程
 都会继承它**——包括 `pytest`。测试自己会 monkeypatch `PI_DATABASE_URL`，但历史上
@@ -901,7 +910,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 `.env.test` 只覆盖四项，其余（JWT 密钥、Redis 地址、模型）沿用 `.env`：
 `PI_DATABASE_URL`（换成 `pi_py_test`）、`PI_REDIS_NS=test`（键前缀隔离）、
 `PI_WORKSPACE_ROOT` / `PI_AUDIT_PATH`（各带 `-test` 后缀，不与生产混）。
-它**不会**被 `pi/__init__.py` 自动加载（加载器只认 `.pi-py.env` / `.env` /
+它**不会**被 `pi/__init__.py` 自动加载（加载器只认 `.env` /
 `~/.pi-py/.env`），必须显式 source——这正是想要的：忘了 source 就还在生产配置上，
 而种子脚本的护栏会因此直接拒绝运行。文件含密码，权限 600，已进 `.gitignore`。
 
@@ -1105,8 +1114,10 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 9. **计量失败不回滚对话**：这是刻意设计（原则 4）——记账问题不应让用户的工作丢失。
 10. **不要删 `migrations/` 或 `.dockerignore` 里放行它**：Dockerfile 要把它打进镜像，
     排除掉构建直接失败。
-11. **压缩不落库**：长会话每轮都会重新付一次摘要 LLM 调用，`messages` 表只增不减
-    ——这不是 bug 而是当前实现现状（`on_compact` 没接线），因果与修法见 §6.3。
+11. **压缩摘要落 `compactions` 表、原始消息只增不减**：长会话的历史加载是
+    `[最新摘要] + [摘要之后的新消息]`，同一段历史只付一次摘要 LLM 费；摘要表是
+    派生数据，删了下一轮会重新生成（机制见 §6.3）。曾有一版"压缩不落库、每轮重付
+    摘要费"的实现现状，P3 episodic 记忆落地后已消除。
 12. **`pi/server/__init__.py` 必须保持惰性导出**：它 eager import `create_app` 时，
     任何先碰 `pi.server.db` / `pi.observability.metering` 的脚本都会撞上环：
     `metering → server.db → server/__init__ → server.app → metering`（半成品）→ ImportError。
@@ -1342,15 +1353,16 @@ dev 与 origin/main 是两条**无关历史**的并行线（见项目记忆）�
 
 **已覆盖**（main 有、dev 已补）：Prometheus 指标系统（且超越：llm 实时钩子、降级
 计数器、全路径工具投影）、integration 真实栈测试、L15 日志脱敏（修了，main 只记录）、
-embedding 用量计量、conftest pin 纪律、**run/轨迹落库**（2026-09-27：jsonl 按天滚动 +
-查询端点 + 时序图前端，未上 DB 表——见 ROADMAP §3）、**Web 前端**（零构建三页
+embedding 用量计量、conftest pin 纪律、**run/轨迹落库**（jsonl 按天滚动 + 查询端点 +
+时序图前端；2026-09-28 迁移 0005 再上 runs 表——轨迹双写 jsonl+DB，含管理员 runId
+回放端点）、**Web 前端**（零构建三页
 app/trajectory/admin，已决策不搬 Vue 工程）。
 
 **未覆盖**（按建议处理顺序）：
 
 | # | 缺口 | main 的形态 | 说明 / 建议 |
 |---|---|---|---|
-| 1 | 轨迹结构化落库 | `agent_runs` + `trace_fidelity` 表 | 已做 jsonl 版（落盘+端点+前端）；DB 表形态见 ROADMAP §3 |
+| 1 | 轨迹结构化落库 | `agent_runs` + `trace_fidelity` 表 | dev 侧已闭环：runs 表（迁移 0005，轨迹 jsonl+DB 双写，2026-09-28）+ 会话/run 级/admin 查询端点。与 main 双表形态的最终对齐待 fetch main 核对 |
 | 3 | 迁移合流 | 生产库在 `0007_trace_fidelity` | 两边 0003/0004 **同名不同内容**（session_plan/user_memories vs compactions/memories）。合流必须设计整合迁移，**前提是定生产库未来形态** |
 | 4 | 语义检索的兜底档 | MySQL 暴力余弦兜底 | 索引挂了我们只有词法兜底（可用，语义质量降档更狠）。可选增强 |
 | 5 | 运维资产 | `deploy/pi-py.service`（生产实际走 systemd）+ L1~L15 事故记录 | 搬运即可；dev 文档目前仍以 compose 为主 |
@@ -1371,7 +1383,7 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 | 层 | 内容 | 现状 |
 |---|---|---|
 | **服务层**（对外） | 多租户 agent API、工具（MCP/Skills）、记忆、沙箱、配额/限流/审计 | 完整，且深于 main |
-| **数据层**（对内，战略资产） | 轨迹、评估、RL 飞轮（rollout→reward→export JSONL） | 飞轮已建，但**轨迹不落库**（run 结束即丢）——数据层缺"存储"一环 |
+| **数据层**（对内，战略资产） | 轨迹、评估、RL 飞轮（rollout→reward→export JSONL） | 飞轮已建，**轨迹双写落库**（jsonl 合规底稿 + runs 表结构化镜像，迁移 0005）——"存储"一环已补（本节为 2026-09-27 讨论结论，当时尚未上 DB 表） |
 | **运营层**（对管理员） | metrics、审计查询、用量/配额管理 | metrics 有，审计 audit_events 表可查（jsonl 兜底），轨迹 runs 表 + admin runId 回放端点 |
 
 数据层是本项目最独特的定位：服务系统 + 评估系统 + RL 数据生产系统三位一体。
@@ -1416,28 +1428,320 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 |---|---|
 | 注册/登录/会话/run(SSE)/消息/usage | 有 |
 | `DELETE /v1/me`（注销账号） | 无 |
-| `GET/POST /v1/sessions/{id}/files`（工作区文件列表/上传） | 无 |
+| `GET/POST /v1/sessions/{id}/files`（工作区文件列表/上传） | 有但形态不同：用户级 `/v1/files`（POST 预签名直传 + commit + 列表/URL/DELETE，MinIO 直连不占带宽），非会话级工作区列表 |
 | `GET/DELETE /v1/memories(/{id})`（记忆 CRUD） | 无（只有 remember/recall 工具，无 HTTP 面） |
 | `GET /v1/admin/audit?event=` | 有但过滤参数不同（user/tool vs user/event） |
-| `GET /v1/admin/traces(/{runId})`（轨迹回放查看器） | **硬缺**——轨迹不落库（§19 ①） |
+| `GET /v1/admin/traces(/{runId})`（轨迹回放查看器） | 有等价端点：`GET /v1/admin/trajectory/{run_id}`（路径名不同，随 runs 表 2026-09-28 落地） |
 | run 请求体 `enable_search`/`builtin_tools`/`files` | 无（RunIn 只有 prompt/model） |
 | SSE 事件 `plan` | 不发射 |
 
 所以"做前端"实际上把 §20.4 的"持久化闭环 → 契约 → 控制台"打包提前——这是好事，
 前端逼着后端补齐，而不是反过来。
 
-三条路线：
+三条路线（2026-09-27 讨论时推荐 A；**实际决策走 B，且已落地**）：
 
-- **A. 完整移植 main 的 web/**：先补后端（轨迹落库 + traces 端点、memories CRUD、
-  files 端点、deregister、run 扩展参数、audit 过滤对齐），再把 web/ 搬进 dev 并
+- **A. 完整移植 main 的 web/**：先补后端（memories CRUD、会话级 files 端点、
+  deregister、run 扩展参数、audit 过滤对齐；轨迹落库与 traces 等价端点
+  2026-09-28 已补，不在清单里），再把 web/ 搬进 dev 并
   **静态托管进 pi-py**（一个服务同时出 API + UI，自托管产品的标准形态）。代价
-  最大，得到完整产品面。**推荐**。
-- **B. 为 dev 现有 API 建轻量控制台**（聊天 + 用户/配额/审计/metrics）：不做轨迹
-  落库也能上，但和 main 的 29k 行不兼容，等于另起炉灶。
+  最大，得到完整产品面。**已否决**——§19 已覆盖清单记录"已决策不搬 Vue 工程"：
+  29k 行 Vue 是另一种维护负担，零构建三页与 dev 的后端节奏更匹配。
+- **B. 为 dev 现有 API 建轻量控制台**（聊天 + 用户/配额/审计/metrics）：
+  **已落地（2026-09）**——零构建三页挂 `/ui`（app.py:809-820，no-cache）：
+  `app.html`（聊天：SSE 流式、模型选择器、思考过程折叠、markdown 渲染、文件
+  上传面板、注册开关）、`admin.html`（管理台：stats/usage/audit/用户管理）、
+  `trajectory.html`（轨迹时序图，三模式查看器）。实际范围超出 B 原定义——
+  C 的"轨迹页"也一并做了；main 的面板形态（文件/记忆页）在 B 路线下不需要。
 - **C. 先搬基础面板**（聊天/账号/admin），轨迹/文件/记忆页后续接上：折中。
+  实际被 B 吸收。
 
-落地顺序（若选 A）：后端补齐 → 前端移植 → 静态托管（FastAPI StaticFiles 挂构建
-产物）→ 真实验证（浏览器走通聊天 SSE + admin 面板）。
+落地路径（历史记录）：当时写的"若选 A：后端补齐 → 前端移植 → 静态托管 → 真实验证"
+未执行。实际按 B 走的是**前端先行逼后端补齐**：三页前端驱动了 run 轨迹查询端点、
+runs 表（迁移 0005）、`/v1/files` 预签名管线等陆续落地。
+
+---
+
+## 21. RAG 企业知识库 `src/pi/rag/`
+
+> 需求来源：`RAG外派对接文档.md`（接口契约 + 交付清单 + 验收标准）。
+> 状态：M0–M5 全部完成，真栈验证通过。本章是技术细节的唯一详述处；
+> 进度与路线图见 `ROADMAP.md`，实测数据见 `.workbuddy/artifacts/`。
+
+### 21.1 定位：一个可整体抽走的内核 + 三个薄壳
+
+RAG 的设计目标不是"给 pi-py 加个知识库功能"，而是**工业级、可独立复用**：
+`pi/rag/` 内核**零依赖 `pi.*`**（不 import `pi.tools` / `pi.server` / `pi.agent` / `fastapi`），
+整个目录可以拷进任何别的项目直接用。内核只通过 **6 个 Protocol** 与外界交互，
+具体后端全部依赖注入：
+
+| Protocol | 职责 | 生产实现 | 离线默认件 |
+|---|---|---|---|
+| `Embedder` | 文本→向量 | `HttpEmbedder`（OpenAI 兼容 / DashScope） | `FakeEmbedder` |
+| `ChunkStore` | SQL 真相源（文档/切块 CRUD） | `MysqlChunkStore` | `SqliteChunkStore` |
+| `RagVectorStore` | 向量投影 | `MilvusRagVectorStore` | `InMemoryVectorStore` |
+| `LexicalIndex` | BM25 词法检索 | `MemoryBM25Index` | 同左（进程内） |
+| `Reranker` | cross-encoder 重排 | `HttpReranker` | `None`（跳过重排） |
+| `UsageHooks` | 计量 + 可观测接缝 | `ServerUsageHooks` | `NoopHooks` |
+
+**唯一允许 import `pi.*` 的内核文件是 `adapters.py`**——它把 pi 已有的
+`EmbeddingClient` / `Database` engine / 计量 hook 适配成上述 Protocol。这条边界不是口头约定，
+是**用 AST 检查真实 Import 节点钉死的**（`tests/test_rag_integration_m5.py` 用 `walk_packages`
+扫整个 `pi.rag` 包，白名单只有 `pi.rag.adapters`；另有子进程断言"import `pi.tools` 不得
+连带加载 pymilvus/adapters"，证明懒接缝真生效）。docstring 里合法提及禁词不会误报，
+因为查的是 AST 的 Import 节点而非文本。
+
+内核外的"三个薄壳"（都在 `pi.*` 侧，不在内核里）：
+
+1. **`adapters.py`**（内核内，唯一耦合点）：`build_runtime()` 装配出一个 `RagRuntime`
+   （store + vec + emb + lexical + reranker + retriever 的容器）。
+2. **`pi/tools/rag.py` 的 `RagTool`**（name=`rag_search`）：实现 Tool 接口，
+   自动享受 policy / 审计 / 配额（见 §7.1）。
+3. **`pi/rag/cli.py`**：`pi-py rag {ingest, rebuild-index, eval, search}` 子命令。
+
+### 21.2 真相源家规：SQL 是真相，Milvus 是可丢弃投影
+
+`rag_docs` + `rag_chunks`（migration `0008_rag.py`）是**唯一真相源**；
+Milvus collection `pi_rag_chunks` 只是**投影**——PK = `chunk_id`，可以整表 `drop()` 再从 SQL
+重建（`pi-py rag rebuild-index`）。Milvus 里**不存 text**（SQL 才有），只存向量 + 过滤字段。
+
+这条家规的推论：
+- `RagVectorStore.drop()` 是合法的运维/测试原语，不是危险操作。
+- 向量索引挂了不影响正确性，只降检索质量（见 §21.4 降级链）。
+- **re-ingest 是 delete-then-insert，`chunk_id` 会移动**——所以 retriever 与 ingest
+  **必须共享同一个 lexical index 实例**，否则 BM25 里留着旧 id，hydrate 会捞出**错误的块**
+  （静默错答案，比报错更坏）。这是踩过的坑。
+
+### 21.3 数据流
+
+**Ingest（灌库）**：
+```
+pi-py rag ingest --path <文件或目录>
+  → parser.parse_file()      7 后端路由（md/txt/html/csv/tsv/xlsx/docx + pdf）
+                             质量门：扫描版 PDF / 图片 → needs_heavy_parser（v1 不 OCR）
+  → chunker                  语义切块（max_chars=800，overlap=120）+ contextual retrieval
+                             embed_text = "文档标题 > 章节 > 小节\n\n" + text
+  → embedder.embed()         批量向量化（真计费）
+  → store.add_chunks()       写 SQL 真相（插入后按 (user_id,doc_key,seq) 查回真实 id，
+                             不假设自增连续——MySQL lock_mode=2 interleaved 下并发会错配）
+  → vector_store.upsert()    写 Milvus 投影
+  → lexical.invalidate()     失效该用户的 BM25 缓存（下次检索重建）
+```
+ingest 报告四态：`READY` / `INDEX!`（SQL 成功但向量缺失=活的降级）/ `HEAVY`（需 OCR）/ `FAILED`。
+
+**Retrieve（检索）**：见 §21.4。
+
+### 21.4 检索机制：向量 + BM25 → RRF → rerank，四级降级不静默
+
+```
+query
+  ├─ 向量通道：embed → Milvus int filter(user_id) 裸字面量 → top vector_k
+  ├─ 词法通道：MemoryBM25Index.search(user_id, query) → top bm25_k
+  ▼
+RRF 融合（k=60，Cormack et al.）：Σ w_i/(k+rank_i)，向量 w=1.0，词法 w=lexical_weight
+  tie-break 按 chunk_id 升序
+  ▼
+rerank（可选，HttpReranker cross-encoder）：对 top rerank_candidates 从头重打分
+  ▼
+final_k 命中 + 引用（doc / section / page）
+```
+
+**四级降级链**，每级都发 `on_retrieval` 噪音（**不静默**），outcome 词表与
+`server/db.py` 对齐（8 个有界枚举值，不违反 Prometheus 基数纪律）：
+```
+hybrid（向量+BM25 都活）
+  → vector_only（BM25 挂了）
+  → bm25_fallback（向量挂了，纯词法）
+  → sql_fallback（索引全挂，SQL LIKE 暴力兜底）
+  → empty
+```
+rerank 失败是**附属系统失败不挂主流程**：保留 RRF 顺序、报 `rerank_failed`、
+绝不因为重排端点死了就返回空（降级不能丢数据）。
+
+**ACL**：v1 只做 user 级——Milvus int filter `user_id == ?` + SQL `WHERE user_id = ?`。
+`RagTool` 有硬门：`ctx` 里 `user_db_id is None` → 直接 error **且不触达索引**
+（未授权搜索会跨租户泄漏，"返回空"不是安全证据）。跨用户 0 泄漏有专门测试，
+断言的是"走了过滤路径"而非只断言"没返回别人的数据"。
+
+### 21.5 通道对称性（M4 血泪家规）
+
+**所有消费 chunk 文本的阶段，看到的文本必须对称，都带 title_path**：
+
+| 阶段 | 方法 | 内容 |
+|---|---|---|
+| 向量 embed | `Chunk.text_to_embed()` | contextual prefix（title_path）+ body |
+| BM25 索引 | `Chunk.text_to_index()` | title_path + body |
+| rerank 打分 | `RetrievedChunk.text_to_score()` | title_path + body |
+
+第三个是 M4 收尾时才发现被漏掉的 bug：`HttpReranker` 原本只把裸 `c.text`（body）
+喂给 cross-encoder，**丢了 title_path**——三通道里只有 rerank 看到的信息最少，
+比产生它候选列表的两个通道还少。后果：答案**活在标题里**的 query（"LangSmith 在哪个
+章节路径下"、"3.2 小节哪种异常"）cross-encoder 无从判断，退回 body 字面相似度，
+把**同文档相邻块**顶上来。这在 A/B 里表现为 edge_case 切片 5 条 LOST（3 条从
+rr=1.000 被打到 0.20–0.50）。修复后 edge_case 全线反超基线（见 §21.6）。
+
+**家规**：任何"重排/重打分"阶段看到的信息**不得少于**产生其候选的阶段，
+否则它会用更少的信息推翻更好的候选。
+
+### 21.6 M4 A/B 评测结论（真栈，非 mock）—— **v1 单语料，已被 §21.6.1 部分推翻**
+
+> ⚠️ **本节全部数字来自 v1 一个语料，不要单独引用。** 其中"BM25 唯一覆盖 0"与
+> "降权单调改善"两条**已在第二语料 v2 上被证伪**（BM25 唯一覆盖 5/142，降权单调恶化）。
+> 跨两语料都成立的只有：REFUTED 的融合侧旋钮（score gate / RRF k）、
+> 以及 **cross-encoder 是真修复**。看结论请直接跳 §21.6.1。
+
+评测先行铁律：M0 就建了 golden set（60 case，LLM 生成 + `answer_excerpts` 抗切块漂移）
++ Recall@k / MRR / 命中率 + A/B harness。M4 在真栈（真模型 + 本地 MySQL + 本地 Milvus，
+390 chunk）上跑了 13 档配置，结论：
+
+- **BM25 唯一覆盖 0/60**；gold 平均 rank **向量 1.53 vs 词法 2.63** → RRF rank-平均
+  必然让 `hybrid_rrf60`(recall@5 0.950) **劣于** `vector_only`(0.983)。这是**预期行为，不是 bug**：
+  RRF 只消费 rank，第二意见更弱时 rank-平均把 gold 拖到两者之间。
+- **剂量响应单调**（因果确认）：`lexical_weight` 1.0→0.5→0.25→0.0 = recall@5 0.950→0.967→0.967→0.983。
+- **REFUTED 的 4 个假设**：BM25 分值门（recall@5 变化恰好 0.000，因为 RRF 看不到 magnitude）、
+  更严门 0.35（更差 0.933）、avgdl 畸变（prose penalty 仅 1.83x，限定 prose 反而更差）、
+  RRF k（k=10/60/200 浮动仅 0.017）。**唯一有效的融合侧旋钮是 `lexical_weight`；真修复是 cross-encoder。**
+- **cross-encoder 是真修复**：`hybrid_rrf60+rerank` 修掉 title_path bug 后，
+  总体 recall@1 **0.742→0.908**、MRR **0.853→0.942**，edge_case 全线反超基线，
+  case diff LOST 5→2、net +6→+11。
+- **产出旋钮** `lexical_weight`（默认保持 1.0 论文中性值，改动必须有 A/B 证据；
+  合理值是语料相关的）+ `PI_RAG_LEXICAL_WEIGHT`。
+- **适用范围警告**：这是**一个** 390 chunk 里 351 是同质 CSV 行的语料。"BM25 无用"会过拟合；
+  **可外推的结论是关于融合规则的**（无权重 RRF 把更弱通道当平等意见），这与语料无关。
+
+### 21.6.1 corpus_v2 复核：v1 的"BM25 无用"结论被推翻
+
+第二个语料 = 13 份中文医学指南 PDF（527 chunk，**全部 prose**，无 CSV 干扰块；
+pdfplumber 不出 heading 层 → **title_path 全空**，§21.5 的对称性在本语料无从发挥）。
+golden 151 case，rebind 后 142 scored。报告 `evals/reports/ab_20260929_023604.md`（全量）
+与 `ab_20260929_112152.md`（排除 `lexical_leak` 的 81 case 子集）。
+
+| | v1（390 chunk，351 同质 CSV） | v2 全量（527 chunk，纯 prose） | v2 排除 leak（81 case） |
+|---|---|---|---|
+| BM25 唯一覆盖 | **0** / 60 | **5** / 142 | **5** / 81 |
+| gold 平均 rank（vector / lexical） | 1.53 / **2.63**（词法更弱） | 2.83 / **2.06**（词法更强） | 3.47 / **2.50**（词法更强） |
+| recall@5：vector_only → hybrid | 0.983 → **0.950**（融合有害） | 0.762 → **0.806** | 0.663 → **0.721** |
+| per-case diff（hybrid vs vector） | net **-4**（8 win / 12 lost） | net +9（32/23） | net +4 |
+| per-case diff（rerank vs vector） | net **+11**（13 win / 2 lost） | net **+49**（56/7） | net **+30**（34/4） |
+| `hybrid+rerank` recall@1 / recall@5 | 0.908 / 0.975 | **0.771** / **0.929** | 0.722 / 0.895 |
+
+**两个门槛都满足**：
+- 门槛 (a)（赢 per-case diff，不只是均值）：v2 全量 **+49**（56 win / 7 lost）、排除 leak 子集
+  **+30**（34 win / 4 lost）。均值不是靠 8 胜 8 负凑出来的。
+- 门槛 (b)（第二异构语料复核）：**v1 过拟合确诊**。"BM25 无用"是 v1 的 CSV artifact，
+  不是普适规律。
+
+**为什么 v1 的结论反了**：v1 语料里 351/390 是同质 CSV 行，向量通道在这种数据上近乎完美
+（gold rank 1.53），BM25 是纯噪音源，融合只会把 gold 从第 1 名拖下来。v2 是长篇连续散文，
+向量通道自己就不够准（gold rank 2.83），BM25 反而是更强的第二意见（2.06）——
+融合从"拖后腿"变成"真帮忙"。
+
+**关于 `lexical_leak`**：v2 有 42%（63/151）的 question 从 gold chunk 抄了长 verbatim span，
+BM25 在这类 case 上属于"白赢"，不能作为词法通道价值的证据。因此跑了排除子集——
+结论方向完全一致（BM25 唯一覆盖仍是 5，融合仍赢，rerank 仍 net +30），
+说明 v2 的融合收益**不是抄原文抄出来的**。
+
+**因此 `lexical_weight` 的正确值是语料相关的，默认保持 1.0（Cormack 中性值）不动**：
+剂量响应在两个语料上**方向相反**，这是"该不该信第二意见由语料决定"的最强因果证据——
+
+| `lexical_weight`（recall@5） | 1.0（shipped） | 0.5 | 0.25 | 0.0（=vector_only） | 方向 |
+|---|---|---|---|---|---|
+| v1 | 0.950 | 0.967 | 0.967 | **0.983** | 降权单调**改善**（BM25 是噪音） |
+| v2 全量 | **0.806** | 0.803 | 0.799 | 0.762 | 降权单调**恶化**（BM25 有用） |
+
+任何单语料上的"最优权重"都不该被 promote 成生产默认。v2 排除 leak 的子集上该 sweep
+**非单调**（0.5→0.716、0.25→0.722、0.0→0.663），报告已标注"不要把这个 sweep 读成因果"
+（子集只剩 81 case，noise 量级与 sweep 幅度可比）。
+
+**生产结论（跨两语料一致，可 promote）**：`hybrid_rrf60 + cross-encoder rerank`
+是唯一在两个语料上都赢的配置——v2 上把 recall@1 从 0.457 拉到 0.722、MRR 0.623→0.931，
+v1 上 recall@1 0.742→0.908。**真修复永远是 cross-encoder，不是调融合权重。**
+融合侧旋钮（score gate、RRF k）在两个语料上都 REFUTED：gate 变化恰好 0.000
+（RRF 只消费 rank，看不到 magnitude），k=10/60/200 spread 仅 0.026–0.033。
+
+**残留（已归因完毕，见 `evals/reports/badcase_v2_lost4_diagnosis.md`）**：v2 排除子集上曾有
+4 条 LOST（`rag-038/045/094/096`，全 happy_path）。逐一挖完正文+分数后 **0 条是检索或 rerank
+bug**，不影响门槛判定（4 vs 34，而 GAINED 有 34）——此前「怀疑相邻块正文相似导致 cross-encoder
+分不清」的推测被测量证伪（全语料相邻重复块仅 0.6%）。四条根因：
+
+- `rag-045`（连 `rag-046`）＝ golden set 缺陷：gold 块是 25 字符的 PDF 控制符垃圾
+  （printable ratio 0.52），出题人在给「控制符序列」出题；rerank 把它压下去是对的。
+- `rag-038` ＝ 语料缺陷：同一张 PDF 表格被 pdfplumber 抽成两种排版（`#15` 竖线碎片 38 字符 /
+  `#16` 阅读序完整块 1958 字符），`_expand_any_of_gold` 因 verbatim 的竖线形态不匹配没把 `#16` 收进 gold。
+- `rag-094` ＝ 语料缺陷：title_path 全空（527/527），cross-encoder 看不到「哪个食谱」，模板句
+  把候选压到 1.5e-05 的分数差（`mine_badcases.py` 已改近 1.0 分数全精度打印，别再用 `.4f` 误判饱和）。
+- `rag-096` ＝ 生成器缺陷：`_expand_any_of_gold` 把「冬季食谱1」（错误 section）的块误扩成 gold。
+
+这四条还暴露了一个评测家规级的坑：**`_expand_any_of_gold` 在结构重复文档里会膨胀**
+（`rag-017` = 54 个 gold key，占该文档 111 块近一半），配合 `recall_at_k` 的 **all-of** 语义
+（`|gold found| / |gold|`，`test_recall_at_k_hand_computed` 用手算值钉死），**历史实际评分集**
+（rebind 后 142 case / 排除 leak 81 case）的完美检索 recall@5 上限只有 **0.9708 / 0.9662**
+（单 case 上限 0.093 = 5/54）。**家规：任何「perfect-retrieval ≠ 1.0」的评测数字，先查 gold
+膨胀，再怀疑检索。** ⚠️ 口径陷阱：`ab_rag` 评分前会跑 `rebind_golden`，所以「文件里的 case 数」
+≠「参与评分的 case 数」——拿未 rebind 的 151-case 文件离线算，会得到错误的 0.9545。
+
+**已解决（2026-10-01）**，三条改动；**只有第 2 条改变了评测行为**：
+
+1. **主指标改 any-of**：`hit@k` 升为 PRIMARY——RAG 的业务问题就是「答案找到了没」，一个含答案的
+   chunk 即够；all-of `recall@k` 降为 SECONDARY 覆盖度指标。`EvalReport.metrics` 顺序、
+   per-category/per-tag 表、`ab_rag.py` 的选优与 verdict 全部以 hit@5 为先；CLI 新增
+   `--min-hit5`（主门禁），`--min-recall5` 保留为覆盖度门禁。历史 A/B 的**结论**不受影响——
+   `case_diff` 一直用 `rr`（本身即 any-of 语义），所以「rerank 是决定性增益」从来不是 all-of 的产物。
+2. **防复发 guard（唯一的行为变更）**：`MAX_ANY_OF_GOLD = max(KS) = 5` 同时装在
+   `build_golden_set._expand_any_of_gold`（超限即**移除**该 case，meta 记 `template_repeat_dropped`）
+   与 `harness.rebind_golden`（超限即 drop 并列入 rebind 报告）。**效果**：历史评分集中那 6 个
+   gold 10–54 的 case（`rag-002/021/023/030/097/098`）不再参与评分 → 评分集 142 → **136**，
+   完美检索 recall@5 **0.9708 → 1.0000**。真栈 A/B 复测（`ab_20261001_173721.md`）：`recall@5`
+   **0.895 → 0.932**（leak 排除，81 → 77 case），而 `hit@1/hit@5/mrr` 几乎不动
+   （0.914/0.963/0.931 → 0.909/0.961/0.928）——正是「消除 all-of 的结构性低估、不动 any-of」
+   的预期指纹。
+3. **清 golden set（文件清理，对指标零影响）**：`tools/prune_golden_set.py` 丢弃 9 个 gold>5 的
+   模板重复 case（**151 → 142**，max gold 54 → 5）。这 9 个在 rebind 后本来就不参与评分（3 个
+   `rag-017/019/027` 早已被判 cross-doc `ambiguous` 而 drop，6 个被第 2 条的 guard drop），所以
+   **指标完全不变**。它的价值是让 golden 文件本身干净，并让「不跑 rebind 的离线分析」不再算出
+   误导性的 0.9545。
+
+另注：`corpus_v2.json` 142 case 中仍有 6 个（`rag-033/093/099/111/115/143`）每次 `rebind` 都会被判
+**cross-doc ambiguous** 而 drop（excerpt 在不止一个文档出现）→ 实际评分集恒为 **136**。这是
+chunking 相关属性、不是 case 缺陷，故**不做 prune**（rebind 会可见地报告它们，不是静默丢弃）。
+
+rag-094/096 的**跨 section 误扩**（`#86`=冬季食谱3、`#37/#38`=冬季食谱1）**刻意不删**：它们的
+gold 仍含**真** section 的块，any-of 主指标下「命中任一真 gold 即为 hit」永远正确；它们只稀释
+已降级的 all-of recall，且手删也活不过 `rebind_golden()`（excerpt 确实在那些块里）。
+
+工具 `tools/ab_rag.py`（`--reuse` 省 4 分钟、`--only` 复测单档省 5 分钟）、
+`tools/mine_badcases.py`（bad case 端到端挖掘：query + gold 全文 + 各 config top-k 带 score +
+"GT 是否真在 gold chunk 里"的空格归一化双检，专抓 PDF artifact 型 gold 缺陷）。
+
+### 21.7 server 接线（M5）
+
+照 `ctx.memory` 的**同一个接缝**注入，不新造机制：
+- `ServerSettings.rag_enabled`（`PI_RAG_ENABLED`，默认开=能力 fail-safe）：关掉则
+  `BuiltinToolProvider(rag_enabled=False)` 让模型**根本看不到** `rag_search`
+  （看得到却总报错比没有更坏）。
+- `app.py` 装配 `RagRuntime` + `ServerUsageHooks`：rerank 走**独立 model tag**
+  `rerank/<model>`（否则月度按模型分解会说谎）；`metrics.retrieval(outcome=f"rag_{outcome}")`。
+- `RunManager(rag=runtime)` → `agent.ctx.rag = runtime`（`ToolContext.rag` 字段照 `memory` 先例声明）。
+- lifespan 关闭 runtime；`app.state.rag` 暴露给端点。
+- **server 生产 embedding 用 `HttpEmbedder`（style=openai）而非复用 `pi.llm.embedding.EmbeddingClient`**：
+  后者说 DashScope 原生线格式，本项目端点是 `/compatible-mode`（OpenAI 兼容），用错=每次 400。
+- **`allow_memory_vector`：CLI 可 True（单进程自洽），server 必须 False**
+  （多 worker 下进程内索引看着健康却啥都不返回，比诚实降级更坏）。
+
+### 21.8 配置
+
+内核 `RagConfig.from_env()` 读全部 `PI_RAG_*`（§13 有完整表）。要点：
+- **embedding 复用 server 级 `PI_EMBEDDING_*`**（同一端点也服务语义记忆），
+  `PI_RAG_EMBEDDING_*` 可按部署覆盖。
+- **Milvus 复用 `PI_MILVUS_URI`**，`PI_RAG_MILVUS_URI` 可覆盖；两者都空 →
+  standalone 用 `InMemoryVectorStore`，server 则禁用向量通道。
+- `rrf_k` / `rerank_enabled` / `rerank_candidates` / `sql_fallback_k` **没有环境变量**，
+  走 `RetrievalConfig` 代码默认（改动属于调参，须过 A/B，不暴露成运维旋钮）。
+
+### 21.9 CLI 偏差记录
+
+任务书 §4.9 描述的 `--file-id`（走 `tools/files.py` / `FileRepo` / `ctx.files`）在**本分支不存在**，
+`ToolContext` 也没有 `fs` / `ensure_runner`。故走 §4.7 的 `--path`（文件或目录递归），
+已在 `cli.py` docstring 记录此偏差与理由——**以代码为准，不以任务书为准**。
 
 ---
 

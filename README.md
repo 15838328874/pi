@@ -57,7 +57,7 @@ pip install -e ".[dev]"          # test suite only: pytest + aiosqlite
 
 ## Configure
 
-Environment variables, or a `.env` file (project root, `./.pi-py.env`, or `~/.pi-py/.env`;
+Environment variables, or a `.env` file (project root `./.env`, or `~/.pi-py/.env`;
 the first file found wins, and existing environment variables always override it):
 
 ```bash
@@ -151,10 +151,11 @@ builtin; one broken source never takes the others down):
   workspace first, since the sandbox only mounts the workspace).
 
 Context compaction is automatic once history exceeds 80,000 chars: an LLM-written summary
-replaces the old prefix and the most recent 8 messages are kept verbatim. Compaction applies
-**in memory for the current run only** — `RunManager` does not wire `AgentLoop`'s `on_compact`
-hook and `MessageRepo` can only append, so the database keeps the full raw history and each
-subsequent turn reloads and re-compacts it.
+replaces the old prefix and the most recent 8 messages are kept verbatim, in memory for the
+current run. The summary is also persisted to the `compactions` table (via `on_compact`,
+fail-soft) while raw messages stay append-only, and each subsequent turn loads
+`[latest summary] + [messages after it]` instead of re-summarizing — the same history pays
+the summarization LLM call only once.
 
 ## Enterprise security
 

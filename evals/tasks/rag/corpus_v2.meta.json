@@ -1,0 +1,112 @@
+{
+  "built_at": "2026-09-29T02:16:33",
+  "corpus_profile": "v2",
+  "eval_user_id": 992002,
+  "milvus_collection": "pi_rag_chunks_itest_v2",
+  "llm_model": "qwen3.8-max",
+  "embedding_model": "qwen3.7-text-embedding",
+  "chunking": {
+    "max_chars": 800,
+    "min_chars": 100,
+    "overlap_chars": 120,
+    "contextual_prefix": true
+  },
+  "chunks_total": 527,
+  "chunks_by_doc": {
+    "med-obesity-2024": 76,
+    "med-obesity-diet-2024": 117,
+    "med-diabetes-diet-2023": 111,
+    "med-insomnia-2023": 69,
+    "med-lipid-2024": 30,
+    "med-obesity-consensus": 33,
+    "med-weight-flow-2021": 10,
+    "med-weight-principle-2024": 27,
+    "med-grassroots-2025": 20,
+    "med-pcos": 8,
+    "med-weight-knowledge-2024": 4,
+    "med-activity-strategy": 10,
+    "med-weight-standard": 12
+  },
+  "embed_tokens": 332662,
+  "questioned_chunks": 156,
+  "max_chunks_per_doc": 14,
+  "questions_per_chunk": 2,
+  "cases": 142,
+  "cases_by_category": {
+    "happy_path": 75,
+    "edge_case": 66,
+    "adversarial": 1
+  },
+  "cases_by_doc": {
+    "med-activity-strategy": 11,
+    "med-diabetes-diet-2023": 14,
+    "med-grassroots-2025": 9,
+    "med-insomnia-2023": 11,
+    "med-lipid-2024": 14,
+    "med-obesity-2024": 8,
+    "med-obesity-consensus": 12,
+    "med-obesity-diet-2024": 15,
+    "med-pcos": 4,
+    "med-weight-flow-2021": 10,
+    "med-weight-knowledge-2024": 6,
+    "med-weight-principle-2024": 17,
+    "med-weight-standard": 11
+  },
+  "lexical_leak_cases": 63,
+  "any_of_gold_expanded": 43,
+  "multi_gold_cases": 34,
+  "rejected": {
+    "excerpt not verbatim in chunk": 15,
+    "llm_error": 73
+  },
+  "notes": "chunks_total includes distractor-only docs that are indexed but never questioned. gold_chunk_keys are valid ONLY for the chunking config above - use rebind_golden() after changing it. v2 scope: all docs are text-native PDFs; parse_pdf emits no BLOCK_HEADING so every chunk's title_path is EMPTY - this is a pure-prose vector-vs-lexical test, the title_path-symmetry fix is validated on v1 (which has docx/md headings).",
+  "pruned_on": "2026-10-01T17:25:16",
+  "pruned_reason": "template-repeat gold: the answer_excerpt is one sentence recurring verbatim across N chunks of a compendium, so the case cannot discriminate (hit@k=1 for every config) and caps all-of recall@k at k/N. See evals/reports/badcase_v2_lost4_diagnosis.md",
+  "pruned_cases": [
+    {
+      "id": "rag-017",
+      "gold_keys": 54,
+      "excerpt": "*为食谱中用到的食药物质"
+    },
+    {
+      "id": "rag-023",
+      "gold_keys": 54,
+      "excerpt": "宏量营养素占总能量比为：蛋白质 15%～20%"
+    },
+    {
+      "id": "rag-027",
+      "gold_keys": 54,
+      "excerpt": "*为食谱中用到的食药物质"
+    },
+    {
+      "id": "rag-019",
+      "gold_keys": 52,
+      "excerpt": "2.*为食谱中用到的食药物质"
+    },
+    {
+      "id": "rag-097",
+      "gold_keys": 24,
+      "excerpt": "全天总用量：植物油15g，盐＜5g"
+    },
+    {
+      "id": "rag-021",
+      "gold_keys": 18,
+      "excerpt": "全天总用量：植物油 25g，盐 4g"
+    },
+    {
+      "id": "rag-098",
+      "gold_keys": 14,
+      "excerpt": "春季食谱 1（总能量约 1200kcal）"
+    },
+    {
+      "id": "rag-030",
+      "gold_keys": 12,
+      "excerpt": "杂粮饭（大米70g，黑米30g）"
+    },
+    {
+      "id": "rag-002",
+      "gold_keys": 10,
+      "excerpt": "41(2),2009, pp. 459-471"
+    }
+  ]
+}

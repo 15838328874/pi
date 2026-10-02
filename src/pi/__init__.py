@@ -17,7 +17,9 @@ from pathlib import Path
 __version__ = "0.1.0"
 
 _ENV_FILE_CANDIDATES = (
-    Path(".pi-py.env"),
+    # 2026-10-01: 曾有三个候选（.pi-py.env / .env / ~/.pi-py/.env）。
+    # 项目根的 .pi-py.env 与 .env 同槽位冗余（compose 无 ${} 替换、无冲突），
+    # 收敛为两个：项目内 .env，机器级 ~/.pi-py/.env。变更记录见 ARCHITECTURE §12.2。
     Path(".env"),
     Path.home() / ".pi-py" / ".env",
 )

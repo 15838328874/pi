@@ -1,0 +1,39 @@
+{
+  "built_at": "2026-09-28T19:08:35",
+  "eval_user_id": 992001,
+  "llm_model": "qwen3.8-max",
+  "embedding_model": "qwen3.7-text-embedding",
+  "chunking": {
+    "max_chars": 800,
+    "min_chars": 100,
+    "overlap_chars": 120,
+    "contextual_prefix": true
+  },
+  "chunks_total": 390,
+  "chunks_by_doc": {
+    "rag-eval": 9,
+    "html-decode": 1,
+    "array-docx": 19,
+    "broker-pdf": 5,
+    "sales-xlsx": 5,
+    "claims-csv": 351
+  },
+  "embed_tokens": 241936,
+  "cases": 60,
+  "cases_by_category": {
+    "edge_case": 23,
+    "happy_path": 30,
+    "adversarial": 7
+  },
+  "cases_by_doc": {
+    "array-docx": 34,
+    "broker-pdf": 10,
+    "html-decode": 2,
+    "rag-eval": 14
+  },
+  "lexical_leak_cases": 9,
+  "rejected": {
+    "llm_error": 4
+  },
+  "notes": "chunks_total includes distractor-only docs (claims-csv, sales-xlsx) that are indexed but never questioned. gold_chunk_keys are valid ONLY for the chunking config above - use rebind_golden() after changing it."
+}

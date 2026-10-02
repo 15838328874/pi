@@ -1,0 +1,1034 @@
+{
+  "name": "rag-corpus-v1",
+  "cases": [
+    {
+      "id": "rag-001",
+      "query": "在数组简介里，动态初始化的默认值是由谁给出的？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#1"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "动态初始化: 我们给定长度, 由系统给出默认初始化值.",
+      "notes": "leak_span=0 tok_overlap=0.65",
+      "answer_excerpts": [
+        "动态初始化: 我们给定长度, 由系统给出默认初始化值."
+      ]
+    },
+    {
+      "id": "rag-002",
+      "query": "静态初始化方式下，数组长度是根据什么确定的？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#1"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "静态初始化: 我们给定初始化值, 由系统指定长度.",
+      "notes": "leak_span=0 tok_overlap=0.54",
+      "answer_excerpts": [
+        "静态初始化: 我们给定初始化值, 由系统指定长度."
+      ]
+    },
+    {
+      "id": "rag-003",
+      "query": "只想规定数组能放多少个元素时，系统会如何处理元素初始值？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#2"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "我们制定长度, 由系统给出默认值.",
+      "notes": "leak_span=0 tok_overlap=0.27",
+      "answer_excerpts": [
+        "我们制定长度, 由系统给出默认值."
+      ]
+    },
+    {
+      "id": "rag-004",
+      "query": "在‘数组简介’的示例里，直接传入元素后长度由谁指定？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#2"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "我们直接传入元素, 由系统指定长度.",
+      "notes": "leak_span=6 tok_overlap=0.70",
+      "answer_excerpts": [
+        "我们直接传入元素, 由系统指定长度."
+      ]
+    },
+    {
+      "id": "rag-005",
+      "query": "声明数组时，数据类型这一项指的是什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#3"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "数据类型: 指的是数组中存储元素的数据类型",
+      "notes": "leak_span=0 tok_overlap=0.53",
+      "answer_excerpts": [
+        "数据类型: 指的是数组中存储元素的数据类型"
+      ]
+    },
+    {
+      "id": "rag-006",
+      "query": "在数组简介的数组各部分解释中，new关键字有什么作用？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#3"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "new: 它是一个关键字, 表示用来创建数组对象的.",
+      "notes": "leak_span=7 tok_overlap=0.70",
+      "answer_excerpts": [
+        "new: 它是一个关键字, 表示用来创建数组对象的."
+      ]
+    },
+    {
+      "id": "rag-007",
+      "query": "数组元素的编号是从哪个数字开始算的？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#4"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "数组中的每个元素都是有编号的, 且编号是从0开始的",
+      "notes": "leak_span=0 tok_overlap=0.61",
+      "answer_excerpts": [
+        "数组中的每个元素都是有编号的, 且编号是从0开始的"
+      ]
+    },
+    {
+      "id": "rag-008",
+      "query": "在数组的特点及基本用法里，boolean 类型数组的元素默认值是什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#4"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "boolean类型的数组, 元素默认值是: false",
+      "notes": "leak_span=10 tok_overlap=0.82",
+      "answer_excerpts": [
+        "boolean类型的数组, 元素默认值是: false"
+      ]
+    },
+    {
+      "id": "rag-009",
+      "query": "如果要改动数组里某个位置保存的数值，应该采用什么写法？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#5"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "通过数组名[索引] = 值;的方式, 可以修改数组中的指定元素值.",
+      "notes": "leak_span=0 tok_overlap=0.21",
+      "answer_excerpts": [
+        "通过数组名[索引] = 值;的方式, 可以修改数组中的指定元素值."
+      ]
+    },
+    {
+      "id": "rag-010",
+      "query": "数组的特点及基本用法这一节里，想取某个下标对应的值该怎么写？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#5"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "通过数组名[索引]的形式, 可以快速获取数组中的指定元素.",
+      "notes": "leak_span=10 tok_overlap=0.39",
+      "answer_excerpts": [
+        "通过数组名[索引]的形式, 可以快速获取数组中的指定元素."
+      ]
+    },
+    {
+      "id": "rag-011",
+      "query": "在数组基本用法示例中，输出第三个数组元素的语句是什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#6"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "System.out.println(arr[2]);",
+      "notes": "leak_span=0 tok_overlap=0.43",
+      "answer_excerpts": [
+        "System.out.println(arr[2]);"
+      ]
+    },
+    {
+      "id": "rag-012",
+      "query": "在变量a被赋值并打印前，示例先把哪个索引位置设置成了11？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#6"
+      ],
+      "category": "adversarial",
+      "tags": [
+        "adversarial"
+      ],
+      "ground_truth": "arr[0] = 11;",
+      "notes": "leak_span=0 tok_overlap=0.43",
+      "answer_excerpts": [
+        "arr[0] = 11;"
+      ]
+    },
+    {
+      "id": "rag-013",
+      "query": "Java虚拟机运行代码时，栈里面会保存哪些内容？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#7"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "栈: 存储局部变量以及所有代码执行的.",
+      "notes": "leak_span=7 tok_overlap=0.53",
+      "answer_excerpts": [
+        "栈: 存储局部变量以及所有代码执行的."
+      ]
+    },
+    {
+      "id": "rag-014",
+      "query": "在讲数组的内存图时，内存被描述成什么样的区域？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#7"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "内存是计算机中的重要原件，也是临时存储区域",
+      "notes": "leak_span=6 tok_overlap=0.46",
+      "answer_excerpts": [
+        "内存是计算机中的重要原件，也是临时存储区域"
+      ]
+    },
+    {
+      "id": "rag-015",
+      "query": "示例里直接打印 arr 时输出的 [I@1540e19d 代表什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#8"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "其中[I@1540e19d是arr数组的地址值",
+      "notes": "leak_span=12 tok_overlap=0.30",
+      "answer_excerpts": [
+        "其中[I@1540e19d是arr数组的地址值"
+      ]
+    },
+    {
+      "id": "rag-016",
+      "query": "案例一演示数组内存执行流程时，代码里定义的 Java 类名是什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#8"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "public class ArrayDemo03 {",
+      "notes": "leak_span=0 tok_overlap=0.49",
+      "answer_excerpts": [
+        "public class ArrayDemo03 {"
+      ]
+    },
+    {
+      "id": "rag-017",
+      "query": "在 ArrayDemo04 的参考代码里，arr1 的第一个元素被赋了什么值？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#9"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "arr1[0] = 11;",
+      "notes": "leak_span=13 tok_overlap=0.58",
+      "answer_excerpts": [
+        "arr1[0] = 11;"
+      ]
+    },
+    {
+      "id": "rag-018",
+      "query": "案例二中第二个数组变量初始化时包含哪两个元素？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#9"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "int[] arr2 = {1, 2};",
+      "notes": "leak_span=0 tok_overlap=0.49",
+      "answer_excerpts": [
+        "int[] arr2 = {1, 2};"
+      ]
+    },
+    {
+      "id": "rag-019",
+      "query": "最开始定义的 int 数组要保存哪几个初始数字？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#10"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "存储元素11, 22, 33.",
+      "notes": "leak_span=0 tok_overlap=0.30",
+      "answer_excerpts": [
+        "存储元素11, 22, 33."
+      ]
+    },
+    {
+      "id": "rag-020",
+      "query": "第二个数组拿到第一个数组的地址后，需求要求把哪个元素改成多少？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#10"
+      ],
+      "category": "adversarial",
+      "tags": [
+        "adversarial"
+      ],
+      "ground_truth": "修改第二个元素值为200.",
+      "notes": "leak_span=8 tok_overlap=0.55",
+      "answer_excerpts": [
+        "修改第二个元素值为200."
+      ]
+    },
+    {
+      "id": "rag-021",
+      "query": "在 ArrayDemo05 示例里，把第二个数组的第二个元素改成 200 的语句是什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#11"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "arr2[1] = 200;",
+      "notes": "leak_span=13 tok_overlap=0.54",
+      "answer_excerpts": [
+        "arr2[1] = 200;"
+      ]
+    },
+    {
+      "id": "rag-022",
+      "query": "案例三“两个数组指向同一个对象”中，第二个数组是怎样获得第一个数组的引用？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#11"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "int[] arr2 = arr1;",
+      "notes": "leak_span=11 tok_overlap=0.76",
+      "answer_excerpts": [
+        "int[] arr2 = arr1;"
+      ]
+    },
+    {
+      "id": "rag-023",
+      "query": "数组在实际开发中使用时，索引超出边界会触发哪个异常？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#12"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "数组索引越界异常(ArrayIndexOutOfBoundsException)",
+      "notes": "leak_span=6 tok_overlap=0.59",
+      "answer_excerpts": [
+        "数组索引越界异常(ArrayIndexOutOfBoundsException)"
+      ]
+    },
+    {
+      "id": "rag-024",
+      "query": "除了下标范围问题，这个容器相关小节还提到哪种异常？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#12"
+      ],
+      "category": "adversarial",
+      "tags": [
+        "adversarial"
+      ],
+      "ground_truth": "空指针异常(NullPointerException)",
+      "notes": "leak_span=0 tok_overlap=0.29",
+      "answer_excerpts": [
+        "空指针异常(NullPointerException)"
+      ]
+    },
+    {
+      "id": "rag-025",
+      "query": "数组索引越界异常通常是由什么操作导致的？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#13"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "访问了数组中不存在的索引.",
+      "notes": "leak_span=8 tok_overlap=0.44",
+      "answer_excerpts": [
+        "访问了数组中不存在的索引."
+      ]
+    },
+    {
+      "id": "rag-026",
+      "query": "如果想避免这类数组访问问题，文档建议怎么做？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#13"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "访问数组中存在的索引即可.",
+      "notes": "leak_span=0 tok_overlap=0.24",
+      "answer_excerpts": [
+        "访问数组中存在的索引即可."
+      ]
+    },
+    {
+      "id": "rag-027",
+      "query": "如果程序里访问了一个为 null 的对象，文档建议怎么修复？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#14"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "对对象赋具体的值即可.",
+      "notes": "leak_span=0 tok_overlap=0.33",
+      "answer_excerpts": [
+        "对对象赋具体的值即可."
+      ]
+    },
+    {
+      "id": "rag-028",
+      "query": "在“两个小问题”这一章的 3.2 小节里，提到的是哪种异常？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#14"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "3. 两个小问题 > 3.2 空指针异常",
+      "notes": "leak_span=0 tok_overlap=0.40",
+      "answer_excerpts": [
+        "3. 两个小问题 > 3.2 空指针异常"
+      ]
+    },
+    {
+      "id": "rag-029",
+      "query": "若需要找出数组中最大或最小的元素，文档里对应哪项处理？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#15"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "获取数组的最值(最大值, 或者最小值).",
+      "notes": "leak_span=0 tok_overlap=0.23",
+      "answer_excerpts": [
+        "获取数组的最值(最大值, 或者最小值)."
+      ]
+    },
+    {
+      "id": "rag-030",
+      "query": "编号为4的章节把数组描述成什么样的容器？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#15"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "数组是我们在实际开发中用到的比较多的一种容器",
+      "notes": "leak_span=0 tok_overlap=0.24",
+      "answer_excerpts": [
+        "数组是我们在实际开发中用到的比较多的一种容器"
+      ]
+    },
+    {
+      "id": "rag-031",
+      "query": "示例程序是用什么方式逐个输出数组元素的？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#16"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "通过for循环, 遍历数组.",
+      "notes": "leak_span=0 tok_overlap=0.22",
+      "answer_excerpts": [
+        "通过for循环, 遍历数组."
+      ]
+    },
+    {
+      "id": "rag-032",
+      "query": "标题里提到的案例一主要演示哪种数组操作？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#16"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "4.1 案例一: 遍历数组",
+      "notes": "leak_span=0 tok_overlap=0.32",
+      "answer_excerpts": [
+        "4.1 案例一: 遍历数组"
+      ]
+    },
+    {
+      "id": "rag-033",
+      "query": "这个案例要求对数组执行什么操作并展示？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#18"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "反转数组, 并打印反转后的结果.",
+      "notes": "leak_span=0 tok_overlap=0.31",
+      "answer_excerpts": [
+        "反转数组, 并打印反转后的结果."
+      ]
+    },
+    {
+      "id": "rag-034",
+      "query": "示例程序使用的类名是什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "array-docx#18"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "public class ArrayDemo10 {",
+      "notes": "leak_span=0 tok_overlap=0.13",
+      "answer_excerpts": [
+        "public class ArrayDemo10 {"
+      ]
+    },
+    {
+      "id": "rag-035",
+      "query": "这份文件开头标注的是哪一类证券研究材料？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "证 券 研 究 报 告 行 业 研 究",
+      "notes": "leak_span=0 tok_overlap=0.19",
+      "answer_excerpts": [
+        "证 券 研 究 报 告 行 业 研 究"
+      ]
+    },
+    {
+      "id": "rag-036",
+      "query": "这份证券研究材料最终被归入的具体点评类别是什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "证 券 研 究 报 告 行 业 研 究\n行 业 点 评",
+      "notes": "leak_span=0 tok_overlap=0.22",
+      "answer_excerpts": [
+        "证 券 研 究 报 告 行 业 研 究\n行 业 点 评"
+      ]
+    },
+    {
+      "id": "rag-037",
+      "query": "工业富联2024年上半年收入增速加快主要是因为什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#1"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "收入增速加快原因系品牌客户不断增加 AI 服务器订单",
+      "notes": "leak_span=8 tok_overlap=0.68",
+      "answer_excerpts": [
+        "收入增速加快原因系品牌客户不断增加 AI 服务器订单"
+      ]
+    },
+    {
+      "id": "rag-038",
+      "query": "英伟达B200A的存储器采用的HBM3e堆叠和总容量是多少？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#1"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "HBM3e（第五代高带宽内存）12hi（12 层堆叠），总容量为 144GB",
+      "notes": "leak_span=0 tok_overlap=0.75",
+      "answer_excerpts": [
+        "HBM3e（第五代高带宽内存）12hi（12 层堆叠），总容量为 144GB"
+      ]
+    },
+    {
+      "id": "rag-039",
+      "query": "这份材料推荐关注哪些公司？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#2"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "建议关注：英伟达、苹果、工业富联、海光信息。",
+      "notes": "leak_span=0 tok_overlap=0.13",
+      "answer_excerpts": [
+        "建议关注：英伟达、苹果、工业富联、海光信息。"
+      ]
+    },
+    {
+      "id": "rag-040",
+      "query": "文中用哪两个事项提示与国际关系和贸易限制相关的不确定性？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#2"
+      ],
+      "category": "adversarial",
+      "tags": [
+        "adversarial"
+      ],
+      "ground_truth": "地缘政治冲突与出口管制",
+      "notes": "leak_span=0 tok_overlap=0.17",
+      "answer_excerpts": [
+        "地缘政治冲突与出口管制"
+      ]
+    },
+    {
+      "id": "rag-041",
+      "query": "如果某只股票被给出买入评级，报告预计其相对基准指数会怎样？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#3"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "买入 股价表现将强于基准指数20%以上",
+      "notes": "leak_span=0 tok_overlap=0.58",
+      "answer_excerpts": [
+        "买入 股价表现将强于基准指数20%以上"
+      ]
+    },
+    {
+      "id": "rag-042",
+      "query": "港股市场在这份报告里以哪个指数作为基准？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#3"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "港股市场以恒生指数为基准",
+      "notes": "leak_span=0 tok_overlap=0.59",
+      "answer_excerpts": [
+        "港股市场以恒生指数为基准"
+      ]
+    },
+    {
+      "id": "rag-043",
+      "query": "报告首页列出的联系人如果没有特别说明，主要负责什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#4"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "仅作为本公司就本报告与客户的联络人，承担联络工作",
+      "notes": "leak_span=0 tok_overlap=0.64",
+      "answer_excerpts": [
+        "仅作为本公司就本报告与客户的联络人，承担联络工作"
+      ]
+    },
+    {
+      "id": "rag-044",
+      "query": "报告首页联系人被明确限制不能从事哪类业务？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "broker-pdf#4"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "不从事任何证券投资咨询服务业务",
+      "notes": "leak_span=0 tok_overlap=0.56",
+      "answer_excerpts": [
+        "不从事任何证券投资咨询服务业务"
+      ]
+    },
+    {
+      "id": "rag-045",
+      "query": "为什么这个能扩展 Markdown 的功能默认没有打开？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "html-decode#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path",
+        "lexical_leak"
+      ],
+      "ground_truth": "面临着安全上的风险，所以默认是不开启的",
+      "notes": "leak_span=12 tok_overlap=0.38",
+      "answer_excerpts": [
+        "面临着安全上的风险，所以默认是不开启的"
+      ]
+    },
+    {
+      "id": "rag-046",
+      "query": "想过滤指定标签及属性的解析时，应该修改哪个配置项？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "html-decode#0"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "settings.htmlDecode",
+      "notes": "leak_span=12 tok_overlap=0.53",
+      "answer_excerpts": [
+        "settings.htmlDecode"
+      ]
+    },
+    {
+      "id": "rag-047",
+      "query": "为什么要对RAG的效果进行评估？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#0"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "评估出RAG对大模型能力改善的程度",
+      "notes": "leak_span=0 tok_overlap=0.43",
+      "answer_excerpts": [
+        "评估出RAG对大模型能力改善的程度"
+      ]
+    },
+    {
+      "id": "rag-048",
+      "query": "当团队想调整检索增强生成相关参数时，评估能给出什么指导？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#0"
+      ],
+      "category": "adversarial",
+      "tags": [
+        "adversarial"
+      ],
+      "ground_truth": "RAG优化过程，通过评估可以知道改善的方向和参数调整的程度",
+      "notes": "leak_span=0 tok_overlap=0.22",
+      "answer_excerpts": [
+        "RAG优化过程，通过评估可以知道改善的方向和参数调整的程度"
+      ]
+    },
+    {
+      "id": "rag-049",
+      "query": "如果想请专业人员对生成答案把关，文中说会怎么做？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#1"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "邀请专家或人工评估员对RAG生成的结果进行评估",
+      "notes": "leak_span=0 tok_overlap=0.42",
+      "answer_excerpts": [
+        "邀请专家或人工评估员对RAG生成的结果进行评估"
+      ]
+    },
+    {
+      "id": "rag-050",
+      "query": "文中用哪个英文词来形容人工评估这种办法？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#1"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "最Low的方式是进行人工评估",
+      "notes": "leak_span=0 tok_overlap=0.31",
+      "answer_excerpts": [
+        "最Low的方式是进行人工评估"
+      ]
+    },
+    {
+      "id": "rag-051",
+      "query": "对于RAG系统的评价，材料更看好哪种评估路线？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#2"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "自动化评估肯定是RAG评估的主流和发展方向。",
+      "notes": "leak_span=0 tok_overlap=0.15",
+      "answer_excerpts": [
+        "自动化评估肯定是RAG评估的主流和发展方向。"
+      ]
+    },
+    {
+      "id": "rag-052",
+      "query": "如果让机器而不是人工来评价RAG系统，材料把这种评价方式放在什么位置？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#2"
+      ],
+      "category": "adversarial",
+      "tags": [
+        "adversarial"
+      ],
+      "ground_truth": "自动化评估肯定是RAG评估的主流",
+      "notes": "leak_span=0 tok_overlap=0.07",
+      "answer_excerpts": [
+        "自动化评估肯定是RAG评估的主流"
+      ]
+    },
+    {
+      "id": "rag-053",
+      "query": "使用LangSmith做评估前，需要先准备什么？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#3"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "需要准备测试数据集 不仅可以评估RAG效果",
+      "notes": "leak_span=9 tok_overlap=0.40",
+      "answer_excerpts": [
+        "需要准备测试数据集 不仅可以评估RAG效果"
+      ]
+    },
+    {
+      "id": "rag-054",
+      "query": "LangSmith被放在哪个章节路径下？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#3"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "二.RAG评估方法 > 3.LangSmith",
+      "notes": "leak_span=9 tok_overlap=0.05",
+      "answer_excerpts": [
+        "二.RAG评估方法 > 3.LangSmith"
+      ]
+    },
+    {
+      "id": "rag-055",
+      "query": "在RAG评估的数据集字段里，模型生成的回复会记录在哪一个字段？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#6"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "answer：从 RAG 管道生成的答案。",
+      "notes": "leak_span=0 tok_overlap=0.35",
+      "answer_excerpts": [
+        "answer：从 RAG 管道生成的答案。"
+      ]
+    },
+    {
+      "id": "rag-056",
+      "query": "RAG评估方法中，哪一节介绍数据集格式？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#6"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case"
+      ],
+      "ground_truth": "二.RAG评估方法 > 5.数据集格式",
+      "notes": "leak_span=7 tok_overlap=0.63",
+      "answer_excerpts": [
+        "二.RAG评估方法 > 5.数据集格式"
+      ]
+    },
+    {
+      "id": "rag-057",
+      "query": "在评估检索质量时，哪个指标的数值越高，代表检索结果与正确答案越相关？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#7"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "context_recall（召回性，越高表示",
+      "notes": "leak_span=8 tok_overlap=0.58",
+      "answer_excerpts": [
+        "context_recall（召回性，越高表示"
+      ]
+    },
+    {
+      "id": "rag-058",
+      "query": "context_precision 是哪个评估指标的别称？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#7"
+      ],
+      "category": "edge_case",
+      "tags": [
+        "edge_case",
+        "lexical_leak"
+      ],
+      "ground_truth": "上下文相关性，也叫 context_precision",
+      "notes": "leak_span=17 tok_overlap=0.45",
+      "answer_excerpts": [
+        "上下文相关性，也叫 context_precision"
+      ]
+    },
+    {
+      "id": "rag-059",
+      "query": "评估生成质量时，哪个指标反映回答和问题之间的相关程度？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#8"
+      ],
+      "category": "happy_path",
+      "tags": [
+        "happy_path"
+      ],
+      "ground_truth": "answer_relevancy（答案的相关性）",
+      "notes": "leak_span=6 tok_overlap=0.49",
+      "answer_excerpts": [
+        "answer_relevancy（答案的相关性）"
+      ]
+    },
+    {
+      "id": "rag-060",
+      "query": "如果想判断模型回答是否充分利用了检索到的资料，应关注哪个指标？",
+      "user_id": 992001,
+      "gold_chunk_keys": [
+        "rag-eval#8"
+      ],
+      "category": "adversarial",
+      "tags": [
+        "adversarial"
+      ],
+      "ground_truth": "faithfulness（忠实性，越高表示",
+      "notes": "leak_span=0 tok_overlap=0.28",
+      "answer_excerpts": [
+        "faithfulness（忠实性，越高表示"
+      ]
+    }
+  ]
+}

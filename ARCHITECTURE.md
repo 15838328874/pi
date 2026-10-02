@@ -635,7 +635,7 @@ MCP/skill 工具不声明任何能力（空集）——allow-list 策略下 fail
 - 容器配置：挂载 `-v <workspace>:/ws`、工作目录 `/ws`、默认 `--network none` 断网。
 - **fail-closed**：配了沙箱但 docker 不可用 → 命令直接报错，绝不退回裸跑。
 
-**③ `DockerPool`（预热池，docker 模式默认）**：解决冷路径"每次调用都付一遍
+**③ `DockerPool`（池，docker 模式默认）**：解决冷路径"每次调用都付一遍
 create→start→销毁"的延迟。设计：
 
 | 机制 | 实现 |

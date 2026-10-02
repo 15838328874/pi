@@ -116,7 +116,7 @@ provider，工具照样走 policy / audit / tracing / 配额，但宿主工具�
 **未做/后续**：
 - **上传即入库已落地**（2026-10-02 后）：`POST /v1/rag/ingest`（multipart 异步）+ `GET/DELETE /v1/rag/docs` + 前端「知识库」面板，取代原先只能 `--path` 的 CLI 灌库。对接文档 §4.7 的 `--file-id`（经 `FileRepo` + `ObjectStore` 从文件管线取原料）仍是**可选的第二入口**，未做。
 - **扫描件/图片 OCR 重解析已接入** PaddleOCR 线上 API（`PI_RAG_HEAVY_PARSER=*`，走 `HeavyParser.parse(path)->str` 协议）；MinerU 自托管待有 ≥16G 内存的机器，按同一协议迁移即可。多模态/GraphRAG 属 v2。
-- **借鉴 RAGFlow DeepDoc 的解析思路已落地**（2026-10-02）：复杂 PDF（双栏/扫描/表格）默认路由 PaddleOCR-VL 做版面级解析（pdfplumber 仅作单栏纯文字的快速路径）。路由用三个**通用、与文档无关**的信号——text density（扫描件）、garbled 占比（乱码）、行内最大字符间隙中位数（双栏/表格中缝）；PaddleOCR 输出经 `clean_ocr_markdown` 做 vendor 中立清洗（行内 LaTeX→文本、HTML 表格→pipe 表格、标签剥除），MinerU 换配置即可复用。端到端实测：双栏期刊 PDF 的语义答案片段（如"入睡潜伏期超过 30 min"）在 pdfplumber 索引中被双栏交错打散（连续命中 0/4），PaddleOCR 索引全部连续命中（4/4）。
+- **借鉴 RAGFlow DeepDoc 的解析思路已落地**（2026-10-02）：复杂 PDF（双栏/扫描/表格）默认路由 PaddleOCR-VL 做版面级解析（pdfplumber 仅作单栏纯文字的快速路径）。路由用三个**通用、与文档无关**的信号——text density（扫描件）、garbled 占比（乱码）、行内最大字符间隙中位数（双栏/表格中缝）；PaddleOCR 输出经 `clean_ocr_markdown` 做 vendor 中立清洗（行内 LaTeX→文本、HTML 表格→pipe 表格、标签剥除），MinerU 换配置即可复用。**A/B 实测**（corpus v2，37 个双栏 case，`evals/reports/ab_20261002_144034.md`）：rerank 后 `recall@1` **0.429 → 0.824**、`hit@5` 0.883 → 0.946、`mrr` 0.672 → 0.878——增益集中在 top1 精度，正是"双栏交错打散答案片段"的修复方向（定性验证：答案片段在 pdfplumber 索引连续命中 0/4，PaddleOCR 索引 4/4）。⚠️ 两组 case 集不同（37 双栏 vs 142 全量），非严格对照，量级待旧解析器同 case 复测。详见 `ARCHITECTURE.md` §21.6「解析层改进的评测验证」。
 - 换 embedding 模型的**记忆向量重建命令**仍未补（见 §3）。
 
 **原设计浓缩（保留备查）**

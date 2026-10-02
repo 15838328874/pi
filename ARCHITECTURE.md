@@ -1757,6 +1757,35 @@ gold 仍含**真** section 的块，any-of 主指标下「命中任一真 gold �
 `tools/mine_badcases.py`（bad case 端到端挖掘：query + gold 全文 + 各 config top-k 带 score +
 "GT 是否真在 gold chunk 里"的空格归一化双检，专抓 PDF artifact 型 gold 缺陷）。
 
+#### 解析层改进的评测验证（2026-10-02）
+
+**动机**：`parse_pdf` 的双栏检测（→ 路由 PaddleOCR + `clean_ocr_markdown`）改的是**索引前的
+输入**，它是否真的改善检索，只有 A/B 能回答。
+
+**结果**（corpus v2，本地 5 份双栏医学指南 = 37 个 rebind 成功的 case；报告
+`ab_20261002_144034.md`）：同一套检索配置下，**rerank 后的 top1 准确率接近翻倍**：
+
+| metric | 旧（pdfplumber 双栏交错，142 case 全量） | 新（PaddleOCR 版面解析，37 双栏 case） |
+|---|---|---|
+| recall@1 | 0.429 | **0.824** |
+| hit@5 | 0.883 | **0.946** |
+| recall@5 | 0.854 | **0.946** |
+| mrr | 0.672 | **0.878** |
+
+**读数**：增益集中在 `recall@1`/`mrr`（top1 精度）而非覆盖率——正是「双栏交错把答案片段打散、
+rerank 后仍排不到第一」这一失效模式的修复方向（同轮定性验证：答案片段在 pdfplumber 索引里
+连续命中 0/4，PaddleOCR 索引 4/4）。
+
+> **严谨性边界**：两组 case 集不同（37 双栏 vs 142 全量），**不是严格对照**。要严格对照需用旧
+> 解析器在同一 37 case 上复测（临时关掉双栏路由）。当前 37 个 case 恰好都是双栏文档的 case，
+> 而旧解析器在这批 case 上只会更差，故结论方向可信、量级待严格复测。
+
+**踩过的两个评测工具坑（已修 / 已在 README 标注）**：
+1. `ab_rag.py` 之前没给 `IngestPipeline` 传 `heavy_parser` → 双栏 PDF 被标 `needs_heavy_parser`
+   后 `chunk=0`，评测**静默退化**成只剩单栏文档的 10 case。已修（从环境变量构建并装配）。
+2. `ab_rag.py` 的 `PI_ITEST_DATABASE_URL` 默认值写死 `3306`，而本机 3306 被 CubeSandbox 占用、
+   pi-py 的 MySQL 在 13306 → 不设就把语料灌进**错误的库**且不报错。见 `evals/reports/README.md`。
+
 ### 21.7 server 接线（M5）
 
 照 `ctx.memory` 的**同一个接缝**注入，不新造机制：

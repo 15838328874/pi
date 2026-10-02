@@ -1004,7 +1004,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_SANDBOX_POOL_PRESSURE_HIGH` / `_LOW` | 1.5GiB / 512MiB | 宿主可用内存双阈值，低于则收紧/激进回收 |
 | `PI_ALLOW_REGISTER` | 1 | 开放注册开关；0 = 注册接口 403、前端隐藏注册 tab（公网演示用） |
 | `PI_RAG_ENABLED` / `PI_RAG_MEMORY_VECTOR` | 1 / 0 | RAG 知识库总开关（关=rag_search 工具整个消失）/ 进程内向量兜底（多 worker 下默认关） |
-| `PI_RAG_MAX_UPLOAD_BYTES` | 50 MiB | `/v1/rag/ingest` 单文档上限，超出 413——每 MiB 都变成 OCR/embedding 配额消耗，上限收窄单次误传的爆炸半径 |
+| `PI_RAG_MAX_UPLOAD_BYTES` | 200 MiB | `/v1/rag/ingest` 单文档上限，超出 413——每 MiB 都变成 OCR/embedding 配额消耗，上限收窄单次误传的爆炸半径 |
 | `PI_RAG_MAX_CONCURRENT_INGESTS` | 8 | ingest 后台任务并发上限（I/O 密集，保护外部 OCR/embedding API 不被突发打满）；超出 429，稍后重试 |
 | 其余 `PI_RAG_*`（内核） | — | chunking/embedding/rerank/heavy-parser/Milvus 参数由 `RagConfig.from_env()` 读，完整表见 §21 |
 | `PI_ARCHIVE` | 1 | 会话归档开关（0=关）；`PI_ARCHIVE_DIR`（默认 ~/.pi-py/archives）、`PI_ARCHIVE_S3_*`（MinIO 惰性上传） |

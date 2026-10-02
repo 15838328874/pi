@@ -958,6 +958,7 @@ docker exec cube-sandbox-mysql mysql -ucube -pcube_pass cube_mvp \
 - [ ] **`PI_MAX_CONCURRENT_RUNS` 对齐物理核数**（8 核→12），不是按配额密度上限设（§10.6）
 - [ ] **若做过压测**：`mcpu_limit` 已还原为 `0`、`tap_init_num` 已还原为 `500`（§10.8）
 - [ ] `/metrics` 四个沙箱系列在（create/close/health/trace failures）
+- [ ] **`/readyz` 的 `checks.sandbox` 是 `ok`** —— 平台不可用时它会翻 **503**（含数据面 `*.cube.app` 解析检查）。这是目前**唯一能自动发现"沙箱平台整体挂掉"的信号**：没有它时 `/readyz` 照样返回 200 ready，只能等用户报错或人工翻日志（见 §12 的 coredns 两条）。指标虽已就位，但**尚无采集与告警**，待办见 `ROADMAP.md` §3
 - [ ] 归档目录可写；配 MinIO 后归档 json 的 `s3` 字段 non-null
 - [ ] 备份：MySQL 每日 dump；归档同步异机/对象存储
 

@@ -400,6 +400,85 @@ CompactionEvent / TurnEndEvent / ErrorEvent`。
 事件对象本身不含任何传输格式；唯一的序列化点是服务层的
 `runner.event_to_sse()`——把事件拍平成 SSE 帧（`event:` 名 + `data:` JSON）。
 
+**事件是纯数据**：7 个都是 `@dataclass`，字段只有 str/int/Usage，**没有方法、没有依赖**。
+`AgentEvent` 声明为 **union 而非基类**（`AgentEvent = TextDeltaEvent | ThinkingEvent | ...`），
+所以消费者用 `isinstance`/`match` 穷举时，新增事件类型不会被静默漏处理——这是刻意的类型选择。
+
+#### 6.2.1 解耦与投影：loop 只发信号，消费者各自投影
+
+**一句话判据**：想加一个新消费者时，要不要动 `loop.py`？不用 → 解耦成立。
+
+**① 「loop 无状态」= 不保有「跨 run 的、外部依赖的」状态**（不是不持有数据）
+
+§6.1 的构造参数**全是协议或回调，没有一个具体后端**——它拿到 `LLMProvider` 却不知道是
+哪家厂商/走不走网关/降级链多长，拿到 `runner: Any` 却不知道背后是本机执行还是
+CubeSandbox microVM。**缺席清单**才是重点：loop 里搜不到 `pi.server.*` / `db` / `redis` /
+`milvus` 的 import，没有 `open()` 写文件，没有 SQL。
+
+它确实持有 `self.messages`（会话历史），但那是**每次 run 由外层构造时注入、run 结束即弃**的；
+它不持有连接池、不持有单例、不缓存后端。这正是它能被单测直接构造（不起 DB、不起沙箱）的原因。
+
+**② 只发信号：一个事件流 + 三个钩子**
+
+`run()` 返回 `AsyncIterator[AgentEvent]`——**不 return 结果、不写副作用、不等待消费者**。
+除事件流外只有三个同步回调钩子：`on_message` / `on_compact` / `on_checkpoint`。
+
+**为什么 Checkpoint 走钩子而不是事件**：事件流是「给消费者的输出」（一次 run 一条流，
+可被多个消费者投影），而 Checkpoint 是**状态快照**——它不是流的一部分，是生命周期通知，
+用回调表达更贴切（`loop.py:363-364`）。
+
+一个体现纪律的细节：`ToolCallStartEvent` 是**执行之前**发的（`loop.py:289`），
+外层正是靠这个时机落库（见 ④）。**loop 只负责在对的时机发信号，不负责信号被用来干什么。**
+
+**③ 装配 / 存储 / 记忆 / 技能，全在外层**
+
+| 关注点 | 在哪 | 怎么进 loop |
+|---|---|---|
+| 装配 | `RunManager`（`server/runner.py:236`） | 构造 `AgentLoop(...)` 时注入 provider/tools/policy/audit/tracer |
+| 存储 | 同上，事件循环里 | loop **一行写库代码都没有**；落库靠事件时机驱动（见 ④） |
+| 记忆 | 两个**普通 Tool**（`recall`/`remember`） | 经 `ToolContext` 拿到 provider/policy/audit/tracer/session/user（`loop.py:173-178`） |
+| 技能 | `use_skill` 工具 + 外层拼好的 system_prompt | 同上传通道 |
+
+**一致性是这里的关键**：记忆、技能、RAG、子智能体**全部走同一条「工具」通道**，
+loop 不为任何一类特殊能力开洞。所以加一个新能力（如 `rag_search` 声明
+`knowledge.retrieve`）一个字都不用改 loop。
+
+**④ 投影：同一份事件流，多个消费者同时在消费**
+
+`server/runner.py:339-384` 就是一个 `async for` 里**五件事同时发生**：首个事件 → write-ahead
+落库（时机投影）；`TurnEndEvent` → 取 usage/turns（状态投影）；`ErrorEvent` → 判定
+`run_status`（归因投影）；`ToolCallStartEvent` → flush 缓冲（持久化投影）；`yield ev` →
+透传到 SSE（前端投影）。
+
+**加消费者的成本**：加一行 `isinstance` 分支，`loop.py` 的 534 行不动。这正是「审计、指标、
+回放、评测都是从轨迹/事件**投影**出来的，加投影不动核心循环」的含义。
+
+**⑤ ⚠️ 三个投影源要分清**（这里最容易讲错成一个源）
+
+| 消费者 | 真实来源 |
+|---|---|
+| SSE 透传 / 落库时机 / in-flight gauge | **事件流**（实时投影） |
+| 评测（`evals/` 整包）/ 回放（`/v1/.../trajectory`）/ `tool.call` 指标 | **轨迹**（jsonl + DB 双写） |
+| **审计** | **独立链路**：loop 直接调注入的 `AuditLogger`（`loop.py:521` `_audit`），**不经过轨迹** |
+
+`evals/__init__.py` 原文即「eval package is a **CONSUMER of the runtime's trajectory**」，
+这条成立；但**审计不是轨迹的投影**，它必须独立，理由有三：
+
+1. **审计要覆盖「被拒绝的」调用**——拒绝发生在 `policy.check()`，走的是另一条控制流，
+   **压根不在 run 的轨迹里**，而它恰恰是最该审计的一类事件。
+2. **审计是合规底稿，不能依赖业务日志的完整性**——轨迹可因磁盘满、或
+   `PI_TRAJECTORY_PATH=""`（可关闭）而缺失；审计走独立双写，且明确「mirror 失败不许影响
+   jsonl 副本」（`security/audit.py:30`）。
+3. **脱敏发生在审计入口**（`_audit` 里 `redact_text`），是审计自身职责，不该等投影时再补。
+
+口径不同会反映到数上：§17 第 24 条记录了实测——`pi_tool_calls_total{ok=False}` 报 12 个
+「失败」，而审计日志里 0 个失败（那 12 个是 policy 拒绝，审计记的是 `allowed=False, ok=None`）。
+查数要 join 审计的 `(allowed, ok)` 两字段，别直接下「工具坏了」的结论。
+
+> 因此准确的总括是：**轨迹**是「运行时视图」的投影源（评测/回放/导出都吃它）；**事件流**是
+> 「实时视图」的投影源（SSE/落库时机/in-flight）；**审计**是一条独立的合规链路。三者都因
+> 「loop 只管发信号」而互不干扰——但这不等于「一个源投影出所有东西」。
+
 ### 6.3 `compaction.py` — 上下文压缩
 
 | 函数 | 作用 |

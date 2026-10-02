@@ -162,7 +162,8 @@ class Tool(ABC):
     terminal: bool = False
     # Capabilities this tool requires, for capability-based authorization (see
     # security.policy). Vocabulary: filesystem.read / filesystem.write /
-    # process.execute / memory.read / memory.write / agent.delegate.
+    # process.execute / memory.read / memory.write / agent.delegate /
+    # knowledge.retrieve.
     # Empty = undeclared (MCP / skill tools): under an allow-list policy an
     # undeclared tool is denied (fail-closed), so it is only usable when no
     # allow-list is configured.

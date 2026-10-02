@@ -59,6 +59,11 @@ class ChunkStore(Protocol):
     async def delete_doc(self, user_id: int, doc_key: str) -> int:
         """Delete doc + its chunks (cascade). Returns chunks deleted."""
 
+    async def mark_stale_pending(self, reason: str) -> int:
+        """Every row still in `pending` has no live ingest job (jobs are
+        in-process only), so a server restart leaves them stuck forever.
+        Called once at startup; returns rows marked failed."""
+
     async def add_chunks(self, chunks: list[Chunk]) -> list[int]:
         """Persist chunks WITHOUT chunk_id set; returns assigned ids in input
         order. Idempotency is the ingest pipeline's job (delete-then-insert

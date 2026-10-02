@@ -187,6 +187,19 @@ class MysqlChunkStore:
             )
             return int(n or 0)
 
+    async def mark_stale_pending(self, reason: str) -> int:
+        """Startup sweep: pending rows have no live job after a restart."""
+        await self._ensure_schema()
+        async with self.engine.begin() as conn:
+            res = await conn.execute(
+                text(
+                    "UPDATE rag_docs SET status='failed', error=:reason "
+                    "WHERE status='pending'"
+                ),
+                {"reason": reason},
+            )
+            return int(res.rowcount or 0)
+
     # -- chunks -------------------------------------------------------------
 
     async def delete_chunks(self, user_id: int, doc_key: str) -> int:

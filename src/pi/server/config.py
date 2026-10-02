@@ -72,6 +72,13 @@ class ServerSettings:
     # as vector memory): under multiple workers an in-memory index looks
     # healthy while returning nothing, since each worker has its own.
     rag_memory_vector: bool = False
+    # Ingest jobs are I/O-bound (external OCR + embedding) but unbounded
+    # concurrency would burst the external APIs; uploads beyond the cap get 429.
+    rag_max_concurrent_ingests: int = 8
+    # Per-document upload ceiling for /v1/rag/ingest. Far below the workspace
+    # files cap (900 MiB): every MiB here becomes OCR/embedding spend against
+    # the uploader's quota, so the blast radius of one careless upload is small.
+    rag_max_upload_bytes: int = 50 * 1024 * 1024
     # MCP servers (JSON array string) and the skills root dir; empty = feature off.
     mcp_servers: list[dict] = field(default_factory=list)
     skills_dir: str = ""
@@ -152,6 +159,12 @@ class ServerSettings:
             not in ("0", "false", "no"),
             rag_memory_vector=os.environ.get("PI_RAG_MEMORY_VECTOR", "").strip().lower()
             in ("1", "true", "yes"),
+            rag_max_concurrent_ingests=int(
+                os.environ.get("PI_RAG_MAX_CONCURRENT_INGESTS", "8")
+            ),
+            rag_max_upload_bytes=int(
+                os.environ.get("PI_RAG_MAX_UPLOAD_BYTES", 50 * 1024 * 1024)
+            ),
             mcp_servers=_parse_mcp_servers(os.environ.get("PI_MCP_SERVERS", "")),
             skills_dir=os.environ.get("PI_SKILLS_DIR", ""),
             metrics_enabled=os.environ.get("PI_METRICS", "1") == "1",

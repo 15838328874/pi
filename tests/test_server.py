@@ -539,3 +539,18 @@ class TestForwardedFor:
         the leftmost, i.e. attacker-supplied, entry."""
         got = self._register_ip(tmp_path, monkeypatch, "*", f"1.2.3.4, {REAL_IP}")
         assert got == "1.2.3.4"
+
+    def test_rag_ingest_oversize_rejected(self, server):
+        """Upload beyond the RAG cap is rejected before any ingest work starts."""
+        server.app.state.settings.rag_max_upload_bytes = 100
+        _register(server, "alice", "password123")
+        token = _login(server, "alice", "password123")
+        h = {"Authorization": f"Bearer {token}"}
+        r = server.post(
+            "/v1/rag/ingest",
+            files={"file": ("big.txt", b"x" * 200, "text/plain")},
+            headers=h,
+        )
+        assert r.status_code == 413
+        docs = server.get("/v1/rag/docs", headers=h).json()["docs"]
+        assert docs == []

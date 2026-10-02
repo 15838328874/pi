@@ -67,6 +67,10 @@ def _search_takes_doc_keys(fn: Any) -> bool:
 
 class RagTool(Tool):
     name = "rag_search"
+    # Read-only retrieval over the calling user's own ingested documents
+    # (user-scoped, no side effects). Under an allow-list policy this must be
+    # explicitly admitted like any other capability - fail-closed applies.
+    capabilities = frozenset({"knowledge.retrieve"})
     description = (
         "Search the user's ingested enterprise documents (PDF/Word/CSV/Markdown) "
         "and return the most relevant passages WITH citations (doc, section, "

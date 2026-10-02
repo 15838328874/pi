@@ -32,7 +32,7 @@ from pi.rag.defaults.fake_embedder import FakeEmbedder
 from pi.rag.defaults.memory_vector import InMemoryVectorStore
 from pi.rag.defaults.sqlite_store import SqliteChunkStore
 from pi.rag.ingest import IngestPipeline
-from pi.rag.types import EmbedResult, IngestStatus
+from pi.rag.types import DocMeta, EmbedResult, IngestStatus
 
 # 1x1 PNG magic bytes - enough for sniff_kind to route to parse_image (which
 # flags needs_heavy_parser without decoding). Real corpus PNGs covered in probe.
@@ -599,3 +599,48 @@ def test_partial_projection_failure_still_bills_tokens_already_spent(tmp_path):
     asyncio.run(main())
 
 
+
+
+# ---------------------------------------------------------------------------
+# Startup sweep + tool capability + config limits (server-side hardening)
+# ---------------------------------------------------------------------------
+
+
+def test_mark_stale_pending_sweep(tmp_path):
+    """Startup sweep: rows left pending by a restart become failed; ready stays."""
+
+    async def main():
+        store = _make_store(tmp_path)
+        await store.upsert_doc(
+            DocMeta(doc_key="stuck.md", user_id=1, title="stuck"), status="pending"
+        )
+        await store.upsert_doc(
+            DocMeta(doc_key="ok.md", user_id=1, title="ok"), status="ready"
+        )
+        n = await store.mark_stale_pending("interrupted by server restart")
+        assert n == 1
+        stuck = await store.get_doc(1, "stuck.md")
+        assert stuck["status"] == "failed"
+        assert "restart" in stuck["error"]
+        ok = await store.get_doc(1, "ok.md")
+        assert ok["status"] == "ready"
+
+    asyncio.run(main())
+
+
+def test_rag_tool_declares_capability():
+    """rag_search must declare a capability: under an allow-list policy an
+    undeclared tool is denied fail-closed (P0-1), silently killing retrieval."""
+    from pi.tools.rag import RagTool
+
+    assert RagTool().capabilities == frozenset({"knowledge.retrieve"})
+
+
+def test_rag_config_limit_envs_parse(monkeypatch):
+    from pi.server.config import ServerSettings
+
+    monkeypatch.setenv("PI_RAG_MAX_UPLOAD_BYTES", "12345")
+    monkeypatch.setenv("PI_RAG_MAX_CONCURRENT_INGESTS", "3")
+    s = ServerSettings.from_env()
+    assert s.rag_max_upload_bytes == 12345
+    assert s.rag_max_concurrent_ingests == 3

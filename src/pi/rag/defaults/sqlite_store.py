@@ -154,6 +154,20 @@ class SqliteChunkStore:
 
         return await asyncio.to_thread(_run)
 
+    async def mark_stale_pending(self, reason: str) -> int:
+        """Startup sweep: pending rows have no live job after a restart."""
+        await self._ensure_schema()
+
+        def _run() -> int:
+            with self._connect() as c:
+                cur = c.execute(
+                    "UPDATE rag_docs SET status='failed', error=? WHERE status='pending'",
+                    (reason,),
+                )
+                return cur.rowcount
+
+        return await asyncio.to_thread(_run)
+
     async def delete_chunks(self, user_id: int, doc_key: str) -> int:
         await self._ensure_schema()
 

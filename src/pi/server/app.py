@@ -245,6 +245,18 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         settings.workspace_root.mkdir(parents=True, exist_ok=True)
         await store.ensure_buckets()  # object storage buckets（未配置/不可达→best-effort 跳过）
         await registry.warmup()  # preconnect MCP servers / load skill tools
+        if rag_runtime is not None:
+            # Ingest jobs live only in this process, so any row still pending at
+            # startup has no worker behind it - mark it failed instead of
+            # leaving a forever-stuck status (users can simply re-upload).
+            try:
+                n = await rag_runtime.store.mark_stale_pending(
+                    "interrupted by server restart"
+                )
+                if n:
+                    log.warning("marked %d stale pending RAG docs as failed", n)
+            except Exception:  # noqa: BLE001 - sweep must never block startup
+                log.exception("rag stale-pending sweep failed")
         yield
         await registry.close()  # terminate MCP child processes
         await db.dispose()
@@ -602,15 +614,19 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     # 主流的"上传即入库"体验：POST 立刻返回 pending，后台线程跑解析→切块→
     # embedding→索引，状态写回 rag_docs.status；前端轮询 GET /v1/rag/docs。
     _rag_jobs: set[tuple[int, str]] = set()
+    # Ingest jobs are I/O-bound but unbounded concurrency would burst the
+    # external OCR/embedding APIs; uploads beyond the cap get 429 up-front.
+    _rag_ingest_slots = asyncio.Semaphore(settings.rag_max_concurrent_ingests)
 
     async def _rag_ingest_job(user_id: int, doc_key: str, tmpdir: str) -> None:
         try:
-            await rag_runtime.ingest.ingest_file(
-                Path(tmpdir) / doc_key,
-                user_id=user_id,
-                doc_key=doc_key,
-                source=doc_key,  # 引用里显示原始文件名，而非临时路径
-            )
+            async with _rag_ingest_slots:
+                await rag_runtime.ingest.ingest_file(
+                    Path(tmpdir) / doc_key,
+                    user_id=user_id,
+                    doc_key=doc_key,
+                    source=doc_key,  # 引用里显示原始文件名，而非临时路径
+                )
         except Exception:  # noqa: BLE001 - 入库失败要能查，不能静默丢
             log.exception("rag ingest failed user=%s doc=%s", user_id, doc_key)
         finally:
@@ -629,16 +645,43 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         """
         if rag_runtime is None:
             raise HTTPException(status_code=503, detail="RAG is disabled (PI_RAG_ENABLED=0)")
+        if _rag_ingest_slots.locked():
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"too many concurrent ingests "
+                    f"(max {settings.rag_max_concurrent_ingests}); retry shortly"
+                ),
+            )
         user = await users.by_username(username)
         filename = (file.filename or "document").replace("\\", "/").rsplit("/", 1)[-1]
         doc_key = re.sub(r"[^A-Za-z0-9._\u4e00-\u9fff-]", "_", filename)[:200] or "document"
+        # Claim the slot BEFORE any await so two same-name uploads cannot both
+        # pass the 409 check (the add must stay await-free until the claim).
         if (user.id, doc_key) in _rag_jobs:
             raise HTTPException(status_code=409, detail="该文档正在入库，稍后再试")
-        tmpdir = tempfile.mkdtemp(prefix="pi-rag-upload-")
-        with (Path(tmpdir) / doc_key).open("wb") as fh:
-            while chunk := await file.read(1024 * 1024):
-                fh.write(chunk)
         _rag_jobs.add((user.id, doc_key))
+        tmpdir = tempfile.mkdtemp(prefix="pi-rag-upload-")
+        try:
+            total = 0
+            with (Path(tmpdir) / doc_key).open("wb") as fh:
+                while chunk := await file.read(1024 * 1024):
+                    total += len(chunk)
+                    if total > settings.rag_max_upload_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=(
+                                f"document too large (max "
+                                f"{settings.rag_max_upload_bytes} bytes)"
+                            ),
+                        )
+                    fh.write(chunk)
+        except BaseException:
+            # Upload failed (client abort / oversize): release the claim and
+            # the temp dir; nothing was enqueued.
+            _rag_jobs.discard((user.id, doc_key))
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            raise
         asyncio.create_task(_rag_ingest_job(user.id, doc_key, tmpdir))
         return {"doc_key": doc_key, "status": "pending"}
 

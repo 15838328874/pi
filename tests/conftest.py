@@ -17,13 +17,20 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-TEST_DB_URL = "mysql+aiomysql://pi:pi_py_local@127.0.0.1:3306/pi_py_test"
+# 默认值即 local-dev.md 的约定。可用环境变量覆盖，供 3306/6379 已被别的服务
+# 占用的机器（如与 CubeSandbox 同机部署，其 MySQL/Redis 就在默认端口上）：
+#   PI_TEST_DB_URL=mysql+aiomysql://pi:pi_py_local@127.0.0.1:13306/pi_py_test
+#   PI_TEST_REDIS_URL=redis://127.0.0.1:16379/1
+TEST_DB_URL = os.environ.get(
+    "PI_TEST_DB_URL", "mysql+aiomysql://pi:pi_py_local@127.0.0.1:3306/pi_py_test"
+)
+TEST_REDIS_URL = os.environ.get("PI_TEST_REDIS_URL", "redis://127.0.0.1:6379/1")
 
 # pi/__init__.py auto-loads ./.env on import, and existing environment variables
 # win. Pin these before any test module imports pi so a production .env sitting in
 # the repo root cannot point the suite at real Redis/Docker or write outside tmp.
 os.environ["PI_DATABASE_URL"] = TEST_DB_URL
-os.environ["PI_REDIS_URL"] = "redis://127.0.0.1:6379/1"
+os.environ["PI_REDIS_URL"] = TEST_REDIS_URL
 os.environ["PI_REDIS_NS"] = ""
 os.environ["PI_JWT_SECRET"] = "test-secret-key"
 os.environ["PI_SANDBOX"] = ""
@@ -47,16 +54,26 @@ os.environ["PI_METRICS_TOKEN"] = ""
 
 def _clean_tables() -> None:
     """清空共享 MySQL 测试库（测试间隔离）。连接失败时直接报错——按新纪律，
-    基础设施没起就是测试环境错误，不静默跳过。"""
+    基础设施没起就是测试环境错误，不静默跳过。
+
+    连接信息**从 TEST_DB_URL 解析**，不再单写一份 host/port/user/password：
+    原先这里硬编码 port=3306，而建表走的是 TEST_DB_URL 的端口。一旦两者不一致
+    （例如本机 3306 已被别的服务占用、测试库挪到 13306），清表就连到了**另一个
+    库**且不报错——测试库永远不清，残留数据让后续用例随机失败（表现为注册类
+    测试 409 "username already exists"，且单跑正常、连跑才挂）。
+    """
     import aiomysql
+    from sqlalchemy.engine import make_url
+
+    url = make_url(TEST_DB_URL)
 
     async def clean() -> None:
         conn = await aiomysql.connect(
-            host="127.0.0.1",
-            port=3306,
-            user="pi",
-            password="pi_py_local",
-            db="pi_py_test",
+            host=url.host or "127.0.0.1",
+            port=url.port or 3306,
+            user=url.username or "pi",
+            password=url.password or "",
+            db=url.database or "pi_py_test",
             charset="utf8mb4",
         )
         try:

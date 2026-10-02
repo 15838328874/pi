@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 from httpx import ASGITransport
 
+from conftest import TEST_DB_URL, TEST_REDIS_URL
 from pi.client import PiClient, PiError
 from pi.server.app import create_app
 from pi.server.config import ServerSettings
@@ -21,8 +22,12 @@ from pi.server.config import ServerSettings
 
 @pytest.fixture()
 def app(monkeypatch, tmp_path: Path):
-    monkeypatch.setenv("PI_DATABASE_URL", "mysql+aiomysql://pi:pi_py_local@127.0.0.1:3306/pi_py_test")
-    monkeypatch.setenv("PI_REDIS_URL", "redis://127.0.0.1:6379/1")
+    # 复用 conftest 的 TEST_DB_URL / TEST_REDIS_URL，别在这里再写一份字面量：
+    # 之前两处各写各的端口，3306/6379 被别的服务占用时（与 CubeSandbox 同机
+    # 部署就是这种情况）本文件会连到**错的库**——表现为 redis AuthenticationError，
+    # 而 conftest 那侧却正常。单一口径 + 支持 PI_TEST_* 覆盖。
+    monkeypatch.setenv("PI_DATABASE_URL", TEST_DB_URL)
+    monkeypatch.setenv("PI_REDIS_URL", TEST_REDIS_URL)
     monkeypatch.setenv("PI_REDIS_NS", "sdk-" + uuid.uuid4().hex[:8])
     monkeypatch.setenv("PI_MODEL", "fake/demo")
     monkeypatch.setenv("PI_JWT_SECRET", "test-secret-key")

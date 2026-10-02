@@ -137,6 +137,99 @@ def _detect_language(text: str) -> str:
     return "zh" if cjk else "en"
 
 
+# ---- 页眉/页脚检测 + 排版质量信号 -----------------------------------------
+# 通用性设计：不匹配任何具体期刊名/文档名，只用两个**可量化、与文档无关**的信号：
+#   1) 跨页重复行频率（数字归一化后）—— 页眉页脚在几乎每页重复，正文不会；
+#   2) 指纹是否只含"数字占位符+标点"（页码/装饰/分隔线这类短行）。
+# 由这两个信号算出"页眉页脚污染率"，既是过滤依据，也是判断"该 PDF 是否该
+# 交给 layout-aware 的 heavy parser"的通用排版质量分。
+_HEADER_FREQ = 0.4      # 含文字的行（期刊名/卷期）出现在 ≥40% 页才算页眉
+_HEADER_NUM_FREQ = 0.6  # 纯数字/符号行（页码/装饰）阈值更高：正文独立数字行罕见，宁可不杀
+_HEADER_MIN_LEN = 4     # 含文字指纹的最短长度；再短且非纯数字符号的，不判
+# 双栏布局检测：几何行内相邻字符的最大 x 间隙（中缝）的中位数。
+# 关键事实（实测）：pdfplumber 对双栏页面把左右栏拼成一条**全宽行**，左右栏交界
+# 处有一条无字符的竖缝——这条拼接行内会出现一个远大于词间距（~16pt）的间隙
+# （双栏期刊实测 33~98pt）。单栏文本的行内最大间隙就是词间距（~16pt），且页与页
+# 之间极其稳定。因此"行内最大间隙中位数"能可靠区分两者，且与文档内容/语言/期刊
+# 名无关（只依赖字符坐标）。
+#
+# 早先的"30%~70% 分位跨度"算法是错的：它对任何填满页宽的文本（无论单双栏）都
+# 给出 ~0.4，把单行长文本（如 tests 里的 mini PDF）误判成双栏。已废弃。
+_COLUMN_SEAM_THRESHOLD = 20.0  # 行内最大字符间隙中位数 > 此值（pt）= 双栏/表格
+_MULTI_COLUMN_PAGE_RATIO = 0.5  # 超过一半页是双栏/表格 → 路由 layout-aware heavy parser
+
+
+def _line_fingerprint(line: str) -> str:
+    """数字归一化 + 去空白 + 大小写归一化：让只差页码/大小写的行指纹相同。"""
+    return re.sub(r"\s+", "", re.sub(r"\d+", "#", line.strip())).lower()
+
+
+def _is_numeric_symbol_fp(fp: str) -> bool:
+    """指纹是否只由数字占位符和标点组成（页码 "#"、装饰 "··"、分隔线 "--"）。"""
+    return bool(fp) and not re.search(r"[\u4e00-\u9fffA-Za-z]", fp)
+
+
+def _intra_line_gap_median(page) -> float:
+    """单页所有几何行内相邻字符的最大 x 间隙的中位数（pt）。
+
+    双栏/表格页的拼接行里，左右栏交界（或表格列间）有一条无字符的宽缝，行内
+    最大间隙会远大于词间距；单栏文本的行内最大间隙就是词间空格。返回中位数
+    （而非最大值）以免疫个别含装饰分隔线的行。
+    """
+    line_max_gaps: list[float] = []
+    for line in page.extract_text_lines():
+        xs = sorted(
+            c.get("x0") for c in line.get("chars", [])
+            if isinstance(c.get("x0"), (int, float))
+        )
+        if len(xs) >= 3:
+            gaps = [xs[i + 1] - xs[i] for i in range(len(xs) - 1)]
+            line_max_gaps.append(max(gaps))
+    if not line_max_gaps:
+        return 0.0
+    line_max_gaps.sort()
+    return line_max_gaps[len(line_max_gaps) // 2]
+
+
+def _filter_repeated_lines(pages: list[str]) -> tuple[list[str], float]:
+    """剔除跨页重复的页眉/页脚行，返回 (过滤后的每页文本, 污染率)。
+
+    污染率 = 被识别为页眉页脚的字符数 / 总字符数，是给调用方的**通用排版
+    质量信号**（见 parse_pdf）：污染率高通常意味着双栏期刊式排版，pdfplumber
+    的抽取（页眉混入 + 双栏交错）质量差，应路由 heavy parser。
+    """
+    n = len(pages)
+    total_chars = sum(len(t) for t in pages)
+    if n < 3:
+        return pages, 0.0  # 太短的文件无从判断"跨页重复"
+    paged = [[ln.strip() for ln in t.splitlines() if ln.strip()] for t in pages]
+    freq: dict[str, int] = {}
+    for lines in paged:
+        seen: set[str] = set()  # 同一页内重复只计一次，避免高估
+        for ln in lines:
+            fp = _line_fingerprint(ln)
+            if fp and fp not in seen:
+                seen.add(fp)
+                freq[fp] = freq.get(fp, 0) + 1
+    text_threshold = max(2, int(n * _HEADER_FREQ))
+    num_threshold = max(2, int(n * _HEADER_NUM_FREQ))
+    header = {
+        fp for fp, hits in freq.items()
+        if (len(fp) >= _HEADER_MIN_LEN and hits >= text_threshold)
+        or (_is_numeric_symbol_fp(fp) and hits >= num_threshold)
+    }
+    if not header:
+        return pages, 0.0
+    removed = 0
+    filtered: list[str] = []
+    for lines in paged:
+        kept = [ln for ln in lines if _line_fingerprint(ln) not in header]
+        removed += sum(len(ln) for ln in lines) - sum(len(ln) for ln in kept)
+        filtered.append("\n".join(kept))
+    contamination = removed / max(1, total_chars)
+    return filtered, contamination
+
+
 # ---------------------------------------------------------------------------
 # Backends: each returns ParseResult. Heavy deps lazy-imported inside.
 # ---------------------------------------------------------------------------
@@ -202,6 +295,130 @@ def _strip_inline_markup(text: str) -> str:
     out = _MD_UNDER.sub(r"\1", out)
     out = _MD_CODE_SPAN.sub(r"\1", out)
     out = _WS_RUN.sub(" ", out)
+    return out.strip()
+
+
+# -- layout-model markdown cleaning (PaddleOCR / MinerU output) ------------
+# Layout models (RAGFlow-style DeepDoc, PaddleOCR-VL, MinerU) return "markdown"
+# that is really HTML+LaTeX: tables as <table><tr><td>...</td></tr></table>,
+# centred captions as <div style=...>, images as <img src="imgs/...">, and math
+# as $ \omega $ / $ ^{[16]} $. Feeding that raw to the chunker wastes the vector
+# budget on markup and - worse - loses table structure (cells glued together)
+# and lets citation superscripts ($ ^{[16]} $) leak in as noise.
+#
+# This cleaner is VENDOR-NEUTRAL and CONTENT-NEUTRAL: it targets the OUTPUT
+# SHAPE (HTML table, inline math, self-closing img), never a specific document,
+# journal, or language. MinerU can reuse it unchanged when a service exists.
+
+# Inline math $...$ (never display $$...$$, which layout models rarely emit in
+# doc parsing; if it appears the same regex still degrades gracefully).
+_LATEX_INLINE = re.compile(r"\$([^$]+)\$")
+
+# Common LaTeX symbol commands -> Unicode. A generic map, not document-specific:
+# these glyphs are what an embedder understands better than raw TeX control words.
+_LATEX_SYMBOLS = {
+    # Greek (lower + upper)
+    r"\alpha": "α", r"\beta": "β", r"\gamma": "γ", r"\delta": "δ",
+    r"\epsilon": "ε", r"\varepsilon": "ε", r"\zeta": "ζ", r"\eta": "η",
+    r"\theta": "θ", r"\iota": "ι", r"\kappa": "κ", r"\lambda": "λ",
+    r"\mu": "μ", r"\nu": "ν", r"\xi": "ξ", r"\pi": "π", r"\rho": "ρ",
+    r"\sigma": "σ", r"\tau": "τ", r"\upsilon": "υ", r"\phi": "φ",
+    r"\chi": "χ", r"\psi": "ψ", r"\omega": "ω",
+    r"\Gamma": "Γ", r"\Delta": "Δ", r"\Theta": "Θ", r"\Lambda": "Λ",
+    r"\Pi": "Π", r"\Sigma": "Σ", r"\Phi": "Φ", r"\Omega": "Ω",
+    # operators / relations
+    r"\geq": "≥", r"\ge": "≥", r"\leq": "≤", r"\le": "≤",
+    r"\neq": "≠", r"\ne": "≠", r"\approx": "≈", r"\equiv": "≡",
+    r"\pm": "±", r"\mp": "∓", r"\times": "×", r"\div": "÷",
+    r"\cdot": "·", r"\cdots": "…", r"\ldots": "…",
+    r"\rightarrow": "→", r"\to": "→", r"\leftarrow": "←",
+    r"\leftrightarrow": "↔", r"\Rightarrow": "⇒", r"\Leftarrow": "⇐",
+    r"\infty": "∞", r"\propto": "∝", r"\sim": "~", r"\in": "∈",
+    r"\notin": "∉", r"\subset": "⊂", r"\supset": "⊃", r"\cup": "∪",
+    r"\cap": "∩", r"\forall": "∀", r"\exists": "∃", r"\partial": "∂",
+    r"\nabla": "∇", r"\degree": "°", r"\deg": "°",
+}
+# Formatting-prefix commands: the semantic content lives in the {braces}, so
+# drop the control word (e.g. \text{foo} -> foo, \mathrm{foo} -> foo).
+_LATEX_FORMAT_PREFIX = re.compile(r"\\[a-zA-Z]+\s*\{")
+
+
+def _latex_inline_to_text(text: str) -> str:
+    """Inline LaTeX ``$...$`` -> readable plain text.
+
+    Rules (all content-neutral):
+    - known symbol commands -> Unicode (``\\omega`` -> ω, ``\\geq`` -> ≥);
+    - superscript/subscript markers (``^``/``_``) and braces are flattened, so a
+      citation superscript ``$ ^{[16]} $`` becomes ``[16]`` and a table footnote
+      ``$ ^{{a}} $`` becomes ``a``;
+    - formatting prefixes (``\\text{...}``) drop the control word, keep the body;
+    - any leftover control word (e.g. a unit ``\\mmol``) keeps its NAME with the
+      backslash stripped (-> ``mmol``), so ``$ \\geq 2.3\\ mmol/L $`` -> ``≥ 2.3 mmol/L``.
+    """
+    def repl(m: re.Match) -> str:
+        body = m.group(1)
+        body = _LATEX_FORMAT_PREFIX.sub("{", body)
+        for cmd, ch in _LATEX_SYMBOLS.items():
+            body = body.replace(cmd, ch)
+        body = re.sub(r"[\^_]", "", body)  # flatten sup/sub
+        body = body.replace("{", "").replace("}", "")
+        body = body.replace("\\", "")  # leftover control words keep their name
+        return body.strip()
+
+    return _LATEX_INLINE.sub(repl, text)
+
+
+_HTML_TABLE = re.compile(r"<table\b[^>]*>.*?</table>", re.I | re.S)
+_HTML_TR = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.I | re.S)
+_HTML_CELL = re.compile(r"<(?:td|th)\b[^>]*>(.*?)</(?:td|th)>", re.I | re.S)
+
+
+def _html_table_to_markdown(text: str) -> str:
+    """``<table>...</table>`` -> markdown pipe grid (``| cell | cell |``).
+
+    Each ``<tr>`` becomes one row, each ``<td>/<th>`` one cell. Row/col spans
+    are FLATTENED (a merged cell is emitted once, at its first position): the
+    merge *shape* is a rendering concern, retrieval needs the cell TEXT and the
+    row grouping, both of which survive. The pipe grid is then recognised by
+    parse_markdown as BLOCK_TABLE (atomic in the chunker).
+    """
+    def table_repl(m: re.Match) -> str:
+        rows: list[str] = []
+        for tr in _HTML_TR.finditer(m.group(0)):
+            cells: list[str] = []
+            for cm in _HTML_CELL.finditer(tr.group(1)):
+                cell = _HTML_ANY_TAG.sub("", cm.group(1))
+                cell = html.unescape(cell)
+                # Layout models double-escape newlines INSIDE a cell (a literal
+                # backslash-n, not a real line break): flatten to a space so the
+                # pipe grid stays one line per row.
+                cell = cell.replace("\\n", " ").replace("\\r", " ")
+                cell = re.sub(r"\s+", " ", cell).strip()
+                if cell:
+                    cells.append(cell)
+            if cells:
+                rows.append("| " + " | ".join(cells) + " |")
+        return "\n".join(rows)
+
+    return _HTML_TABLE.sub(table_repl, text)
+
+
+def clean_ocr_markdown(text: str) -> str:
+    """Layout-model output -> clean Markdown (used by heavy-parser ingest).
+
+    Pipeline (order matters): inline LaTeX first (so table cells and captions
+    both get plain text), then HTML tables -> pipe grids, then strip the
+    remaining HTML tags (div/span/img/p) keeping their text, and finally
+    collapse the blank-line noise the tag removal leaves behind.
+    """
+    if not text:
+        return ""
+    out = _latex_inline_to_text(text)
+    out = _html_table_to_markdown(out)
+    out = _HTML_ANY_TAG.sub("", out)
+    out = html.unescape(out)
+    out = re.sub(r"[ \t]+\n", "\n", out)
+    out = re.sub(r"\n{3,}", "\n\n", out)
     return out.strip()
 
 
@@ -448,13 +665,26 @@ def parse_pdf(path: Path, max_pages: int = 500, min_density: float = DEFAULT_MIN
     page_count = 0
     total_chars = 0
     truncated = False
+    multi_column_pages = 0
     try:
         with pdfplumber.open(path) as pdf:
             page_count = len(pdf.pages)
             if page_count > max_pages:
                 truncated = True
-            for i, page in enumerate(pdf.pages[:max_pages]):
-                text = page.extract_text() or ""
+            pages = list(pdf.pages[:max_pages])
+            # 双栏/表格检测（行内最大字符间隙中位数，通用）：pdfplumber 对双栏
+            # 的抽取不可靠（左右栏交错成一条全宽行），这类文档应路由 layout-aware
+            # 的 heavy parser。表格页的列间空白同样会产生大间隙，而 layout 模型
+            # 对表格的结构化本就更好，所以一并路由——保守、安全。
+            for page in pages:
+                if _intra_line_gap_median(page) >= _COLUMN_SEAM_THRESHOLD:
+                    multi_column_pages += 1
+            # 先抽每页文本，剔除跨页重复的页眉/页脚，再切段落——否则期刊的
+            # 页眉会混进正文、污染 embedding、挤占检索 top1。
+            texts, _ = _filter_repeated_lines(
+                [page.extract_text() or "" for page in pages]
+            )
+            for i, (page, text) in enumerate(zip(pages, texts)):
                 total_chars += len(text.strip())
                 # tables first (as structured rows), then non-table text
                 try:
@@ -478,6 +708,13 @@ def parse_pdf(path: Path, max_pages: int = 500, min_density: float = DEFAULT_MIN
     # scanned page that OCR could recover, so needs_heavy_parser is legitimate
     # here (unlike text-native formats).
     q, heavy, reason = _quality_verdict(plain, page_count or None, min_density, scannable=True)
+    # 通用排版信号：双栏布局 → pdfplumber 抽取不可靠，路由 heavy parser。
+    # layout-aware OCR（PaddleOCR/MinerU）能还原双栏顺序、剔除页眉页脚。
+    if not heavy and page_count and multi_column_pages / page_count >= _MULTI_COLUMN_PAGE_RATIO:
+        heavy = True
+        reason = (reason + "; " if reason else "") + (
+            f"multi-column layout ({multi_column_pages}/{page_count} pages)"
+        )
     if truncated and not heavy:
         reason = (reason + "; " if reason else "") + f"truncated at {max_pages}/{page_count} pages"
     return ParseResult(

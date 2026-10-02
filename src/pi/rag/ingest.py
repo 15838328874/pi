@@ -30,7 +30,7 @@ from pathlib import Path
 
 from pi.rag.chunker import Chunker
 from pi.rag.config import RagConfig
-from pi.rag.parser import parse_file
+from pi.rag.parser import clean_ocr_markdown, parse_file
 from pi.rag.protocols import (
     ChunkStore,
     Embedder,
@@ -239,6 +239,13 @@ class IngestPipeline:
             return None
         if not md or not md.strip():
             log.warning("heavy parser returned empty markdown for %s", key)
+            return None
+        # layout 模型（PaddleOCR/MinerU）输出是 HTML+LaTeX 混合：先做 vendor 无关
+        # 清洗（HTML 表格→pipe 表格、LaTeX→文本、标签剥除），再复用 markdown
+        # parser 走正常切块链路。清洗是通用的，换 MinerU 也走这条。
+        md = clean_ocr_markdown(md)
+        if not md:
+            log.warning("heavy parser markdown cleaned to empty for %s", key)
             return None
         # OCR 出的 markdown 落成临时 .md，复用 markdown parser 走正常切块链路
         with tempfile.TemporaryDirectory(prefix="pi-rag-ocr-") as td:

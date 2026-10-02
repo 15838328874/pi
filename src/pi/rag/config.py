@@ -235,6 +235,15 @@ class RagConfig:
     max_pdf_pages: int = 500  # per-file ceiling; bigger files -> needs_heavy_parser
     min_text_density: float = 50.0  # chars/page below this = likely scanned -> needs_heavy_parser
 
+    # Heavy parser (external OCR service for scans/images). Empty = disabled,
+    # images/scans stay needs_heavy_parser (v1 behaviour). "paddleocr" wires
+    # pi.rag.heavy.PaddleOcrHeavyParser; MinerU support lands behind the same
+    # protocol when a service exists.
+    heavy_parser: str = ""
+    heavy_parser_url: str = ""
+    heavy_parser_token: str = ""
+    heavy_parser_model: str = ""
+
     @classmethod
     def from_env(cls) -> "RagConfig":
         borrowed: list[tuple[str, str]] = []
@@ -284,6 +293,10 @@ class RagConfig:
             rerank_retries=_env_int("PI_RAG_RERANK_RETRIES", 1),
             max_pdf_pages=_env_int("PI_RAG_MAX_PDF_PAGES", 500),
             min_text_density=_env_float("PI_RAG_MIN_TEXT_DENSITY", 50.0),
+            heavy_parser=os.environ.get("PI_RAG_HEAVY_PARSER", "").strip().lower(),
+            heavy_parser_url=os.environ.get("PI_RAG_HEAVY_PARSER_URL", "").strip(),
+            heavy_parser_token=os.environ.get("PI_RAG_HEAVY_PARSER_TOKEN", "").strip(),
+            heavy_parser_model=os.environ.get("PI_RAG_HEAVY_PARSER_MODEL", "").strip(),
         )
         # Report inheritance only when it can actually bite: without a Milvus
         # URI the vector channel is off and the borrowed model is never used, so

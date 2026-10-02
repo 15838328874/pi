@@ -62,7 +62,7 @@ from pi.rag.defaults.memory_vector import InMemoryVectorStore
 from pi.rag.defaults.mysql_store import MysqlChunkStore
 from pi.rag.defaults.sqlite_store import SqliteChunkStore
 from pi.rag.ingest import IngestPipeline
-from pi.rag.protocols import ChunkStore, Embedder, RagVectorStore, Reranker, UsageHooks
+from pi.rag.protocols import ChunkStore, Embedder, HeavyParser, RagVectorStore, Reranker, UsageHooks
 from pi.rag.retriever import HybridRetriever
 from pi.rag.types import EmbedResult
 
@@ -363,6 +363,14 @@ def build_runtime(
         config=cfg,
         hooks=hooks,
     )
+    # External OCR service for scans/images (optional; None = v1 behaviour:
+    # flag needs_heavy_parser, don't OCR).
+    heavy_parser: HeavyParser | None = None
+    if cfg.heavy_parser:
+        from pi.rag.heavy import build_heavy_parser  # lazy: pulls in httpx
+
+        heavy_parser = build_heavy_parser(cfg)
+
     ingest = IngestPipeline(
         store,
         embedder,
@@ -370,6 +378,7 @@ def build_runtime(
         config=cfg,
         hooks=hooks,
         lexical_index=lexical,
+        heavy_parser=heavy_parser,
     )
     return RagRuntime(
         config=cfg,

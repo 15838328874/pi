@@ -19,6 +19,7 @@ Design rules baked into these signatures:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Protocol, Sequence, runtime_checkable
 
 from pi.rag.types import Chunk, DocMeta, EmbedResult, RetrievedChunk
@@ -188,3 +189,17 @@ class UsageHooks(Protocol):
         """outcome enum (see types.RetrievalMode + failure outcomes):
         hybrid_ok / vector_only / bm25_fallback / sql_fallback /
         embed_failed / rerank_failed / error"""
+
+
+@runtime_checkable
+class HeavyParser(Protocol):
+    """External OCR service for scans/images (v1.5, now landed).
+
+    Blocking by design (OCR jobs are second-to-minute scale and polled); the
+    caller runs it via asyncio.to_thread. Returns Markdown text, raises
+    HeavyParserError on any failure. Vendor-swappable: PaddleOCR today,
+    MinerU behind the same protocol when a service exists.
+    """
+
+    def parse(self, path: Path) -> str:
+        """File (image/scan) -> Markdown text. May raise; never returns ''."""

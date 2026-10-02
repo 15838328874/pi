@@ -25,12 +25,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import tempfile
 from pathlib import Path
 
 from pi.rag.chunker import Chunker
 from pi.rag.config import RagConfig
 from pi.rag.parser import parse_file
-from pi.rag.protocols import ChunkStore, Embedder, LexicalIndex, RagVectorStore, UsageHooks
+from pi.rag.protocols import (
+    ChunkStore,
+    Embedder,
+    HeavyParser,
+    LexicalIndex,
+    RagVectorStore,
+    UsageHooks,
+)
 from pi.rag.types import (
     Chunk,
     ChunkDraft,
@@ -64,6 +72,7 @@ class IngestPipeline:
         chunker: Chunker | None = None,
         hooks: UsageHooks | None = None,
         lexical_index: LexicalIndex | None = None,
+        heavy_parser: HeavyParser | None = None,
     ) -> None:
         self.store = store
         self.embedder = embedder
@@ -75,6 +84,9 @@ class IngestPipeline:
         # invalidate the user's cached shard after a re-ingest (chunk_ids change
         # under delete-then-insert, so a stale cache would hydrate wrong chunks).
         self.lexical_index = lexical_index
+        # Optional: external OCR service for scans/images. None = v1 behaviour
+        # (flag needs_heavy_parser, don't OCR).
+        self.heavy_parser = heavy_parser
 
     # -- public API ---------------------------------------------------------
 
@@ -123,13 +135,32 @@ class IngestPipeline:
 
         # 2) QUALITY GATE: scanned/complex layout -> record, do NOT index.
         if parsed.needs_heavy_parser:
-            reason = parsed.reason or "low text density / garbled (likely scanned)"
-            await self._record_status(key, user_id, p, outcome.title, visibility,
-                                      IngestStatus.NEEDS_HEAVY_PARSER.value, reason)
-            outcome.status = IngestStatus.NEEDS_HEAVY_PARSER.value
-            outcome.reason = reason[:300]
-            outcome.degraded = True
-            return outcome
+            if self.heavy_parser is not None:
+                # 有外部 OCR 服务：转发 → markdown → 重新 parse，成功则继续走
+                # 正常的 chunk/embed/index 链路（不回退到 NEEDS_HEAVY_PARSER）。
+                reparsed = await self._ocr_reparse(p, key, parsed.reason)
+                if reparsed is not None:
+                    parsed = reparsed
+                else:
+                    # OCR 也失败：不是文档本身坏，是服务/资源问题。记 NEEDS_HEAVY
+                    # （而非 FAILED），换机器/修服务后 rebuild-index 能救。
+                    await self._record_status(
+                        key, user_id, p, outcome.title, visibility,
+                        IngestStatus.NEEDS_HEAVY_PARSER.value,
+                        "heavy parser failed (see service log)",
+                    )
+                    outcome.status = IngestStatus.NEEDS_HEAVY_PARSER.value
+                    outcome.reason = "heavy parser failed"
+                    outcome.degraded = True
+                    return outcome
+            else:
+                reason = parsed.reason or "low text density / garbled (likely scanned)"
+                await self._record_status(key, user_id, p, outcome.title, visibility,
+                                          IngestStatus.NEEDS_HEAVY_PARSER.value, reason)
+                outcome.status = IngestStatus.NEEDS_HEAVY_PARSER.value
+                outcome.reason = reason[:300]
+                outcome.degraded = True
+                return outcome
 
         # 3) CHUNK (pure). Empty parse (no blocks) -> FAILED, not a silent READY.
         drafts: list[ChunkDraft] = self.chunker.chunk(parsed)
@@ -192,6 +223,42 @@ class IngestPipeline:
         await self._invalidate_lexical(int(user_id))
 
         return outcome
+
+    async def _ocr_reparse(self, p: Path, key: str, original_reason: str) -> ParseResult | None:
+        """转发一份扫描件/图片给重解析服务，把返回的 markdown 重新 parse。
+
+        返回新的 ParseResult（继续 chunk/embed/index），或 None（OCR 失败——
+        调用方决定落到 NEEDS_HEAVY_PARSER）。失败**不抛**：ingest 不能因为一个
+        外部 OCR 服务的瞬断就把整批入库打挂。
+        """
+        try:
+            md = await asyncio.to_thread(self.heavy_parser.parse, p)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("heavy parser failed for %s (%s): %s", key, original_reason,
+                        type(exc).__name__)
+            return None
+        if not md or not md.strip():
+            log.warning("heavy parser returned empty markdown for %s", key)
+            return None
+        # OCR 出的 markdown 落成临时 .md，复用 markdown parser 走正常切块链路
+        with tempfile.TemporaryDirectory(prefix="pi-rag-ocr-") as td:
+            tmp = Path(td) / "ocr.md"
+            tmp.write_text(md, encoding="utf-8")
+            try:
+                parsed = await asyncio.to_thread(
+                    parse_file,
+                    tmp,
+                    max_pdf_pages=self.config.max_pdf_pages,
+                    min_density=self.config.min_text_density,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning("OCR markdown re-parse failed for %s: %s", key, type(exc).__name__)
+                return None
+        if parsed.needs_heavy_parser or not parsed.blocks:
+            log.warning("OCR output for %s still unparseable (%d blocks)", key, len(parsed.blocks))
+            return None
+        log.info("heavy parser OCR'd %s -> %d blocks", key, len(parsed.blocks))
+        return parsed
 
     async def rebuild_index(self, user_id: int) -> dict:
         """Re-embed everything for one user and re-project the vector index.

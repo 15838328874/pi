@@ -42,12 +42,20 @@ class PaddleOcrHeavyParser:
     ``markdown.text`` 拼接成一个 Markdown 文档。
     """
 
-    def __init__(self, url: str, token: str, model: str, *, timeout: float = 60.0) -> None:
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        model: str,
+        *,
+        timeout: float = 60.0,
+        transport: httpx.BaseTransport | None = None,  # test seam (mock transport)
+    ) -> None:
         self.url = url.rstrip("/")
         self.token = token
         self.model = model
         self.timeout = timeout
-        self._client = httpx.Client(timeout=timeout)
+        self._client = httpx.Client(timeout=timeout, transport=transport)
 
     def close(self) -> None:
         self._client.close()
@@ -112,10 +120,10 @@ class PaddleOcrHeavyParser:
         raise HeavyParserError(f"OCR job {job_id} timed out after {_MAX_POLL_ATTEMPTS} polls")
 
     def _download(self, json_url: str) -> str:
-        # 结果 URL 是预签名的对象存储地址，不能带 Authorization 头，也不走本
-        # 客户端（可能跨域/跨签）。独立 GET。
+        # 结果 URL 是预签名的对象存储地址：不带 Authorization 头（self._client
+        # 未设默认 header，这里也不传）。走同一 client，便于测试用 transport 注入。
         try:
-            resp = httpx.get(json_url, timeout=self.timeout)
+            resp = self._client.get(json_url)
             resp.raise_for_status()
         except httpx.HTTPError as exc:
             raise HeavyParserError(f"OCR result download failed: {type(exc).__name__}: {exc}") from exc

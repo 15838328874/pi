@@ -29,3 +29,9 @@ pi-real.env
 evals/*.log
 evals/junit_*.xml
 evals/**/*.orig.json
+# 评测报告不进仓库：13 份 A/B 报告单份 128~490 行，合计约 250KB，且每次跑评测
+# 都会新增——进仓库会让 diff 被报告淹没。它们是可再生本地产物（见
+# evals/reports/README.md）。代码注释里 "See evals/reports/xxx.md" 指的是本机
+# 这些文件，不在版本控制内。
+evals/reports/*
+!evals/reports/README.md

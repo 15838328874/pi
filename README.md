@@ -69,7 +69,7 @@ PI_MODEL=openai/qwen3.8-max
 OPENAI_API_KEY=sk-...
 OPENAI_BASE_URL=https://your-openai-compatible-endpoint/v1
 # optional vector semantic memory: set ALL FOUR to enable (else lexical retrieval)
-PI_EMBEDDING_URL=https://.../api/v1/services/embeddings/text-embedding/text-embedding
+PI_EMBEDDING_URL=https://.../compatible-mode/v1/embeddings
 PI_EMBEDDING_API_KEY=sk-...
 PI_EMBEDDING_MODEL=qwen3.7-text-embedding
 PI_MILVUS_URI=http://milvus-host:19530

@@ -1727,8 +1727,8 @@ gold 仍含**真** section 的块，any-of 主指标下「命中任一真 gold �
   `rerank/<model>`（否则月度按模型分解会说谎）；`metrics.retrieval(outcome=f"rag_{outcome}")`。
 - `RunManager(rag=runtime)` → `agent.ctx.rag = runtime`（`ToolContext.rag` 字段照 `memory` 先例声明）。
 - lifespan 关闭 runtime；`app.state.rag` 暴露给端点。
-- **server 生产 embedding 用 `HttpEmbedder`（style=openai）而非复用 `pi.llm.embedding.EmbeddingClient`**：
-  后者说 DashScope 原生线格式，本项目端点是 `/compatible-mode`（OpenAI 兼容），用错=每次 400。
+- **embedding 统一为 OpenAI 兼容形状**（`/compatible-mode/v1/embeddings`）。`pi.llm.embedding.EmbeddingClient`
+  与 `HttpEmbedder` 现在都只认这一种，不再有 style 选择——换模型只需改 URL+model。
 - **`allow_memory_vector`：CLI 可 True（单进程自洽），server 必须 False**
   （多 worker 下进程内索引看着健康却啥都不返回，比诚实降级更坏）。
 

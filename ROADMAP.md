@@ -80,6 +80,7 @@
 | 沙箱平台告警规则 + 推送通道 | `/readyz` 已带 `sandbox` 硬检查（平台挂 → 503，已完成），但**没有任何东西在消费它**：机器上未部署 Prometheus/Alertmanager，`deploy/prometheus.yml` 只是示例且 targets 写的是 compose 网络里的 `app:8300`（本机部署对不上），也**没有任何告警规则文件**。要补：① 起 Prometheus 抓 `/metrics`（targets 按实际部署改）+ 告警规则（如 `rate(pi_sandbox_create_failures_total[5m]) > 0`、`up == 0`、`readyz != 200`）；② Alertmanager 接推送（微信/钉钉/邮件）。指标已现成：`pi_sandbox_create_failures_total` / `_command_timeouts_total` / `_close_failures_total` / `_create_duration_seconds` | 中 |
 | 管理台平台健康卡片 | `/v1/admin/stats` 目前只返回 `today/users/sessions`，运维看不到平台状态。补：cubelet 是否在线、模板是否 READY、近期建沙箱失败数、`/readyz` 各项，做成 `admin.html` 上的状态卡片 | 中 |
 | `/metrics` 加访问 token | 当前 `PI_METRICS_TOKEN` 为空 → `/metrics` 完全开放（启动日志已明确告警："Fine behind a private network, a leak on a published port"）。本机只绑 127.0.0.1 暂时无碍，但一旦挂反代就可能泄漏用量/并发等运行数据。同时改 `prometheus.yml` 的 `authorization.credentials_file` 配套 | 中 |
+| 记忆向量重建命令 | 换 embedding 模型后 RAG 侧有 `pi-py rag rebuild-index --user <id>`，但**记忆向量 `pi_memories` 没有重建入口**——`vectorstore.py` 注释说它是"可重建索引"，却无对应 CLI。换模型时旧记忆向量全部失效且无报错（静默降级到词法）。补一个 `pi-py memory rebuild`（或复用 RAG 的重建范式：从 SQL 真相源 re-embed 到 Milvus）| 中 |
 
 ## 4. 后续阶段开发
 

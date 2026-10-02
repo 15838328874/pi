@@ -327,12 +327,19 @@ all((embedding_url, embedding_api_key, embedding_model, milvus_uri))
 | 变量 | 值 |
 |---|---|
 | `PI_MILVUS_URI` | `http://127.0.0.1:19530` |
-| `PI_EMBEDDING_URL` | `https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding` |
+| `PI_EMBEDDING_URL` | `https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings` |
 | `PI_EMBEDDING_API_KEY` | 阿里云百炼 key |
 | `PI_EMBEDDING_MODEL` | `text-embedding-v3`（1024 维） |
 
-**嵌入接口是 DashScope 原生格式**（`{"input":{"texts":[...]}}`，不是 OpenAI 的 `{"input":"..."}`）。
-pi-py 只用 **embedding**，**没有 rerank 功能**（`grep -r rerank src/` 无结果），别被误导去配 rerank。
+**嵌入接口统一用 OpenAI 兼容格式**（请求 `{"input":[...]}`、应答 `{"data":[{"index":i,"embedding":[...]}]}`）。
+客户端只实现这一种形状——**换 embedding 模型只需改上面两个变量，不涉及代码**；同一形状也被
+OpenAI 官方、DeepSeek、vLLM、Ollama、TEI 等提供。此前还支持 DashScope 原生线
+（`/api/v1/services/embeddings/...`），已移除：两种形状并存时 style 与实际端点不一致
+**不会报错**，只会静默产生漂移向量（检索质量下降而日志干净）。
+
+> ⚠️ 换 embedding 模型后**必须重建向量**：RAG 侧 `pi-py rag rebuild-index --user <id>`
+> （SQL 是真相源、Milvus 是可重建投影）；记忆向量侧目前**还没有重建命令**，见 `ROADMAP.md` §3。
+pi-py 记忆层只用 **embedding**；RAG（§21 / feat-rag）**有 rerank**，配 `PI_RAG_RERANK_*`。
 
 **部署（docker-compose，端口必须避开平台已有服务）：**
 
@@ -995,7 +1002,8 @@ docker exec cube-sandbox-mysql mysql -ucube -pcube_pass cube_mvp \
 | **coredns 没跑 → `*.cube.app` 整个解析不了** | 与上一行同样的 `Name or service not known`，但**根因不同**：`cube-sandbox-coredns` 未运行 | `systemctl status cube-sandbox-coredns cube-sandbox-dns`，**两个都要 active**：前者答 `*.cube.app → 节点IP`（Corefile 里写死 10.0.0.8），后者把 `~cube.app` 路由到 169.254.254.53。⚠️ **coredns 是 cubesandbox 模式的必需组件**，不是"可选/闲置"——只有不启用 cubesandbox 时才可不管它。`cube-sandbox-dns` 因 `Requires=coredns` 会连带起不来 |
 | **coredns 起不来：`bind: permission denied`** | `Listen: listen tcp 169.254.254.53:53: bind: permission denied`，容器反复重启 | 镜像自带 `USER nonroot`，非 root 无 `CAP_NET_BIND_SERVICE` 绑不了 53；vendor 脚本又没留 `--cap-add` 口子。加 `/etc/sysctl.d/99-cube-coredns.conf`：`net.ipv4.ip_unprivileged_port_start = 53`（容器用 `--network host`，故对其生效），`sysctl --system` 后重启服务。**回滚时别忘了显式设回 1024**——删配置文件不会回退运行时值 |
 | **`PI_SANDBOX_CA_FILE` 指向 `/root/...` 读不到** | 非 root 服务沙箱连接/TLS 失败，或 CA 静默缺失 | 默认值 `/root/.local/share/mkcert/rootCA.pem` 位于 `/root`（700），非 root 服务读不了。复制到可读路径再设 `PI_SANDBOX_CA_FILE`。**必须是「平台 CA + 系统 CA 合并」**：只放平台 CA 会让 `SSL_CERT_FILE` 覆盖系统信任链，**直接打断模型与 embedding 的 HTTPS**。<br>`cat /root/.local/share/mkcert/rootCA.pem /etc/ssl/certs/ca-certificates.crt > <可读路径>/cube-ca-bundle.pem` |
-| **embedding 端点必须是原生格式，不能用 OpenAI 兼容** | 日志 `vector memory search failed (embed); falling back to lexical`，栈里 `KeyError: 'output'` | `EmbeddingClient` 只认 DashScope 原生契约（请求 `{"input":{"texts":[...]}}`、应答 `{"output":{"embeddings":[...]}}`）。填 `/compatible-mode/v1/embeddings`（OpenAI 形状）必挂。用 `https://<host>/api/v1/services/embeddings/text-embedding/text-embedding`。**失败是静默降级**，只在日志留一行，表现为"记忆检索时而好用时而不好用" |
+| **embedding 端点形态与客户端不一致**（现已从设计上消除） | 日志 `vector memory search failed (embed); falling back to lexical`，栈里 `KeyError`（原生客户端收到 OpenAI 应答是 `'output'`；反之是 `'data'`）| 历史坑：客户端曾只认 DashScope 原生契约（`{"input":{"texts":[...]}}` / `{"output":{"embeddings":[...]}}`），而 Aliyun MaaS 同时提供 `/compatible-mode` 的 OpenAI 形状，**填错不会报错**，只静默降级、表现为"记忆检索时而好用时而不好用"。现已统一为 **OpenAI 形状**（见 §4.4），`PI_RAG_EMBED_STYLE` 一并移除——**style 与端点不一致这个失效模式不再存在**。升级后若沿用原生 URL 会立刻 4xx/解析失败（响亮而非静默），改 URL 为 `/compatible-mode/v1/embeddings` 即可 |
+| **换 embedding 模型后检索变差**（未重建向量） | 换了 `PI_EMBEDDING_MODEL` 后检索质量骤降，但**没有任何报错** | 不同模型的向量空间不可比，旧向量全部失效。RAG 侧重建：`pi-py rag rebuild-index --user <id>`（SQL 是真相源、Milvus 是可重建投影）；**记忆向量（`pi_memories`）目前没有重建命令**，换模型前需留意（`ROADMAP.md` §3 已记待办）|
 | **向量召回"有命中反而失败"（`KeyError: 'id'`）** | 记忆条数从 0 变 1 后，向量检索开始恒抛错并被降级吞掉 | pymilvus 3.x 主键挂在 `Hit.id` 属性上，`Hit.entity` 只含请求的 `output_fields`；旧写法 `h["id"]` 在**空结果时不触发**（列表推导式不执行）故长期潜伏。改用 `h.id` |
 | **`docker-compose` v1 管不了已存在的容器** | `docker compose up -d` 报 `KeyError: 'ContainerConfig'`（`compose/service.py: get_container_data_volumes`）| v1 (1.29.2) 与 Docker 29 不兼容，**只能在从零创建时用**。装 compose v2：apt 无 `docker-compose-plugin` 时从镜像源取 `.deb`，或把二进制放到 `/usr/local/lib/docker/cli-plugins/docker-compose` |
 | **本地栈 milvus 容器反复 Restarting** | `tini` 打印 usage 后退出（exit 1）| `milvusdb/milvus` 镜像 **`Cmd=null`**，compose 不显式给命令就无程序可执行。补 `command: ["milvus","run","standalone"]`；embedded etcd 还需 `ETCD_DATA_DIR` 与 `ETCD_CONFIG_PATH=/milvus/configs/advanced/etcd.yaml` |

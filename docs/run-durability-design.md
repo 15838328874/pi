@@ -1,7 +1,8 @@
 # run 持久化生产级改造——设计存档（未实施）
 
-> 状态：**第一步（write-ahead）已落地（2026-10-02），其余暂缓实施**。设计定稿于
-> 2026-10-01。实施时以本文档为蓝图，逐 step 独立提交、可独立回滚。
+> 状态：**第一、二步（write-ahead + 逐轮落库）已落地（2026-10-02），其余暂缓**。
+> 设计定稿于 2026-10-01，实施路径于 2026-10-02 按主流产品形态修订（见 §4 注）。
+> 实施时以本文档为蓝图，逐 step 独立提交、可独立回滚。
 > 前置依赖已就绪：loop 侧 checkpoint/resume 已完整（`agent/loop.py`），P0-2
 > completed_tools 幂等账本已落地并有测试——本方案只需接 server 侧，不动 resume 逻辑。
 
@@ -131,7 +132,7 @@ run**（ErrorEvent "lost session lock"，finish status=failed）——这是分�
 
 | 事实 | 位置 |
 |---|---|
-| 消息 buffer 攒整轮，结束才 `append_many` | runner.py:156-160、332-342；**2026-10-02 起用户消息 write-ahead 先行落库**（首事件前，finally 兜底），其余消息仍结束批量 |
+| 消息 buffer 攒整轮，结束才 `append_many` | runner.py:156-160、332-342 | **已改（2026-10-02）**：write-ahead（首事件前）+ 每工具轮边界（`toolcall_start` 前）增量 flush + 结束收尾；硬崩溃丢失窗口 ≤ 当前轮 |
 | flush 用 `base_idx=count_for_session` 重算——多次 flush 会静默重复 idx（messages 表无 (session_id, idx) 唯一约束） | runner.py:333 |
 | 干净失败（超时/异常）finally 仍落库，消息不丢 | runner.py:305-342 |
 | 硬崩溃丢整个 run 的所有消息（buffer 在内存） | — |
@@ -145,10 +146,17 @@ run**（ErrorEvent "lost session lock"，finish status=failed）——这是分�
 
 ## 4. 方案总览（四步）
 
-1. **Write-ahead**：run 开始前（锁内、loop 前）先落用户消息 + runs 行（status=running）
-2. **逐轮落库**：消息在轮边界增量 flush，不再攒到结束
-3. **Checkpoint 接线**：`on_checkpoint` → runs 表 checkpoint 列（异步、fail-soft、每工具轮触发不节流）+ resume 端点 + 前端"继续"按钮
-4. **状态机**：runs.status ∈ running/completed/failed/timeout/crashed + 后台 sweeper 把残留 running 标 crashed
+1. **Write-ahead** ✅ 已落地（2026-10-02）：用户消息首事件前落库，硬崩溃不丢用户的话
+2. **逐轮落库** ✅ 已落地（2026-10-02）：`toolcall_start` 边界增量 flush，丢失窗口 ≤ 当前轮
+3. **Checkpoint 接线**（可选增强）：`on_checkpoint` → runs 表 checkpoint 列 + resume 端点
+4. **状态机**（可选增强）：runs.status + 后台 sweeper 标 crashed
+
+> **路线修订（2026-10-02）**：主流产品（ChatGPT/Claude Code）没有显式 resume
+> 机制——它们靠**逐消息持久化**让"历史即 checkpoint"，用户说"继续"就是续跑。
+> 按此修订：第 1、2 步是必经之路（已落地）；第 3、4 步降级为**可选增强**，
+> 只补消息级持久化给不了的两块：幂等重放保证（已完成的工具绝不重执行）与
+> 用量续计（崩溃 run 的 token 账）。若产品形态需要"重试弹框"，弹框只是替用户
+> 发一条"继续"消息，不需要 resume 端点。
 
 ## 5. 详细设计
 
@@ -310,11 +318,15 @@ stale_running(cutoff) / mark_crashed(run_id, cutoff)`；`latest_for_session` 加
 
 ## 10. 决策记录与实施触发条件
 
-- **2026-10-02**：**第一步落地——write-ahead 已实现**：`on_message` 摘取首条用户消息，
+- **2026-10-02（第二刀）**：**逐轮落库已落地**——`toolcall_start` 边界 flush
+  buffer（模型请求执行工具前，客户端已见过的全部消息先落库），未用设计稿的
+  队列（producer 与回调同 task，直接 await 即可，多实例安全由会话锁保证）。
+  按主流产品形态**修订路线**：checkpoint/resume 端点、状态机与"继续"按钮降级
+  为可选增强（见 §4 注）。新增 1 例测试，全套 267 passed。
+- **2026-10-02（第一刀）**：**write-ahead 已实现**：`on_message` 摘取首条用户消息，
   首个 SSE 事件发出前落库（失败 = ErrorEvent 终止 run，数据安全优先），run 未走到
   首事件时 finally 兜底补落。改动仅 runner.py（~40 行）+ test_server.py 3 例，
-  全套 266 passed。硬崩溃从此丢不掉用户的话；剩余 8 步（逐轮落库/checkpoint/
-  状态机/resume 等）仍在待办。
+  全套 266 passed。硬崩溃从此丢不掉用户的话。
 - **2026-10-01**：设计定稿（含多实例 v2 修订）；用户评估后决定**暂缓实施**（改动面大：
   9 步、跨 server/agent/前端/缓存/迁移），方案归档至本文档 + ROADMAP 未完成事项。
 - **建议的实施触发条件**（满足其一即可考虑启动）：

@@ -256,9 +256,10 @@ SSE 正常结束、消息照常落库。
 具体形态：loop 构造函数收 `on_message` / `on_compact` / `on_checkpoint` 三个可选回调，
 内部在"状态已定稿"的时刻调用。server 的 `on_message` 就是往 buffer 里追加，
 run 结束后一次 `append_many` 批量落库——**不是每条消息单独写库**，一次 run 只有一次批量写，
-这在公网数据库场景（每轮约 40 次串行往返）是显著优化。（2026-10-02 起有个例外：
-**用户消息 write-ahead 先行落库**——首个 SSE 事件发出前单独写，硬崩溃不丢用户的话，
-见 ARCHITECTURE §11.5。）
+这在公网数据库场景（每轮约 40 次串行往返）是显著优化。（2026-10-02 起有两个例外：
+**用户消息 write-ahead 先行落库**——首个 SSE 事件发出前单独写；**每工具轮边界增量
+flush**——`toolcall_start` 前把客户端已见过的消息落库。硬崩溃丢失窗口 ≤ 当前轮，
+用户回来看到截断历史说"继续"即可，见 ARCHITECTURE §11.5。）
 
 **2. `message_idx` 并行数组**（P3 最微妙处）：压缩按**列表下标**切（`messages[:-keep_last]`），
 但落库按 **DB idx**。所以 loop 维护 `self.message_idx: list[int | None]`，每追加一条消息同步追加下标，
@@ -358,7 +359,7 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | 安全 | 能力授权（allow/deny_capabilities：allow 为子集语义、未声明能力的 MCP/skill 工具 fail-closed 拒绝） | `security/policy.py` `tools/base.py` | 12 内置工具全声明能力 |
 | 沙箱 | **CubeSandbox microVM（生产）**：每回合独立 VM/GNU timeout/退出码透传/10MB 上限/生命周期管理 + Docker 预热池（本地） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 + 52 exec/s（Docker 形态） |
 | 归档 | 会话工作区 tar.gz + 差异元数据 + MinIO 惰性上传 | `server/archive.py` | 9 turns 实测 |
-| 文件管线 | MinIO 预签名直连 + sha256 用户级去重 + files 表索引 | `server/storage.py` `server/db.py` | 266 单测 |
+| 文件管线 | MinIO 预签名直连 + sha256 用户级去重 + files 表索引 | `server/storage.py` `server/db.py` | 267 单测 |
 | 记忆 | episodic（compactions 表复用摘要） | `server/db.py` | 不重复花钱总结 |
 | 记忆 | semantic（remember/recall 工具 + 自动召回注入） | `tools/memory.py` | 跨会话 |
 | 记忆 | 向量检索（Milvus + 云 embedding，词法兜底） | `server/vectorstore.py` `llm/embedding.py` | 换后端只改一处 |
@@ -678,7 +679,7 @@ stdio 子进程只 spawn 一次，shutdown 时统一回收）。
 
 | 层 | 内容 | 规模 | 依赖 | 命令 |
 |---|---|---|---|---|
-| **单测** | 逻辑/协议/安全/降级/契约，共 266 例 | 20 秒 | 本地 MySQL（pi_py_test）+ Redis；LLM/embedding/Milvus 用替身 | `.venv/bin/python -m pytest -q` |
+| **单测** | 逻辑/协议/安全/降级/契约，共 267 例 | 20 秒 | 本地 MySQL（pi_py_test）+ Redis；LLM/embedding/Milvus 用替身 | `.venv/bin/python -m pytest -q` |
 | **真实栈集成** | 真 MySQL+Redis+Milvus+云 embedding | 2 例 | 完整本地栈 + 云 API | `PI_INTEGRATION=1 pytest integration/ -q` |
 | **浏览器** | Playwright 无头 Chromium：登录/流式/布局/联动/缓存头 | 脚本 | 运行中的服务 | `/tmp/*.py` 脚本或未来 `tests/browser/` |
 | **压测** | 沙箱容量、并发锁 | 2 工具 | Docker 沙箱 | `tools/sandbox_bench.py` `tools/loadtest.py` |
@@ -829,7 +830,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 3. 涉及 app 的测试用 `TestClient(create_app(...))` fixture 模式，参考 `tests/test_server.py`；
 4. 涉及 MySQL 数据断言：每个测试开始前库是干净的（conftest 自动清表 + 播种 u1..u20/s1..s9）；
 5. 前端改动：跑 node 语法检查 + Playwright 脚本（布局断言）；
-6. 全套 `.venv/bin/python -m pytest -q` 必须全绿——266 例是底线不是上限。
+6. 全套 `.venv/bin/python -m pytest -q` 必须全绿——267 例是底线不是上限。
 
 ---
 
@@ -837,7 +838,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 
 | 指标 | 数值 | 来源/条件 |
 |---|---|---|
-| 测试规模 | **266 单测 + 2 真实栈集成**，20 秒跑完 | 本地 MySQL+Redis 统一栈 |
+| 测试规模 | **267 单测 + 2 真实栈集成**，20 秒跑完 | 本地 MySQL+Redis 统一栈 |
 | 沙箱吞吐（Docker 形态基准） | **~52 exec/s 饱和、零失败**（p50 44ms@N=1 → 1162ms@N=64） | `tools/sandbox_bench.py`，4 vCPU/16GiB，Docker 预热池 |
 | 沙箱内存（Docker 形态） | 每预热容器 ~26 MiB；64 容器冷启动 3.0s | 同上 |
 | 登录哈希 | **PBKDF2 453ms → 40ms**（CPU 52.7% → 99.7%） | `asyncio.to_thread` 优化 |
@@ -885,7 +886,7 @@ src/pi/
 │                  + rollout/reward/filter/export（RL 数据飞轮）
 ├── cli.py         入口：serve / migrate / eval run|diff|rollout
 └── prompt.py      系统提示词
-tests/             266 个单测（连本地 MySQL/Redis）
+tests/             267 个单测（连本地 MySQL/Redis）
 integration/       真实栈集成测试（PI_INTEGRATION=1）
 tools/             压测/播种脚本（sandbox_bench、loadtest、seed_testdb）
 deploy/            本地/生产 compose、环境模板、部署文档
@@ -985,7 +986,7 @@ pi-py serve                        # http://localhost:8300
 #    （admin 写库授予：UPDATE users SET is_admin=1 WHERE username='...'）
 
 # 5) 测试（本地 MySQL/Redis 必须在跑）
-.venv/bin/python -m pytest -q              # 266 例
+.venv/bin/python -m pytest -q              # 267 例
 PI_INTEGRATION=1 pytest integration/ -q    # 真实栈 2 例
 ```
 

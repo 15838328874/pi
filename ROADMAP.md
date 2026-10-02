@@ -17,7 +17,7 @@
 
 | 能力 | 位置 | 验证 |
 |---|---|---|
-| Agent loop + 12 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 266 单测 |
+| Agent loop + 12 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 267 单测 |
 | **能力授权（P0-1）**：allow/deny_capabilities 策略键（allow 子集语义、未声明能力的 MCP/skill 工具 fail-closed） | `security/policy.py` `tools/base.py` | 7 单测（TestCapabilities） |
 | **幂等重放（P0-2）**：checkpoint 带 completed_tools 账本，resume 重放已完成工具而非重执行副作用 | `agent/loop.py` | 2 单测（test_durable） |
 | LLM 接入层（openai/anthropic/fake）+ 降级链 + 退避重试 | `src/pi/llm/` | 单测 + 真实模型（qwen3.8-flash/max） |
@@ -41,7 +41,7 @@
 | **沙箱生产化**（CubeSandbox microVM + GNU timeout + 退出码透传 + 10MB 装载上限 + 三层 VM 泄漏防线 + **懒加载/复用池/内存自适应回收生命周期**） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 |
 | **会话闭环归档**（turn 基线快照 + 结束 tar.gz + 差异元数据 + MinIO 惰性接口） | `server/archive.py` | 9 turns 实测 diff 精确 |
 | **沙箱健康指标**（创建失败/命令超时/close 失败/创建耗时 4 系列） | `observability/metrics.py` | 真实任务实测 |
-| **文件管线 P0/P1/P2**（MinIO 预签名直连 + sha256 用户级去重 + files 表 + list_files/fetch_file 工具 + 沙箱能力镜像） | `server/storage.py` `server/db.py` `tools/files.py` | 266 单测 |
+| **文件管线 P0/P1/P2**（MinIO 预签名直连 + sha256 用户级去重 + files 表 + list_files/fetch_file 工具 + 沙箱能力镜像） | `server/storage.py` `server/db.py` `tools/files.py` | 267 单测 |
 | **轨迹结构化落库**（runs 表 + `/v1/trajectory/{run_id}` 回放 + `/v1/admin/trajectory/{run_id}` 跨用户） | `server/db.py` `server/app.py` | 单测 + 实测 |
 | **审计结构化查询**（audit_events 表双写，jsonl 仍是合规底稿） | `server/db.py` `security/audit.py` | 单测 + 实测 |
 | **官方 SDK**（异步客户端：SSE 流式解析、PiError 语义、trust_env=False） | `src/pi/client.py` | 单测 + 真实模型实测 |
@@ -73,7 +73,7 @@
 |---|---|---|
 | 管理员会话浏览器 | 管理员查看任意用户会话/轨迹（需一批 admin_* 端点 + 管理台页面） | 中 |
 | eval 补全 | flywheel 自动抽取任务、regress、badcase 自动归因 | 中 |
-| run 持久化生产级改造 | write-ahead + 逐轮落库 + checkpoint 接 server + runs 状态机 + resume 端点 + 多实例锁心跳（TTL 120s 续期）。loop 侧已就绪（checkpoint + completed_tools 幂等重放账本）。**第一步 write-ahead 已落地（2026-10-02：用户消息首事件前落库，硬崩溃不丢用户的话）**，剩余 8 步暂缓——设计与取舍记录见 [`docs/run-durability-design.md`](docs/run-durability-design.md) | 中 |
+| run 持久化生产级改造 | write-ahead + 逐轮落库 + checkpoint 接 server + runs 状态机 + resume 端点 + 多实例锁心跳（TTL 120s 续期）。**第一、二步已落地（2026-10-02：write-ahead + 逐轮落库，硬崩溃丢失窗口 ≤ 当前轮，用户说"继续"即可续跑）**；剩余（checkpoint/resume 端点、状态机）按主流产品形态降级为**可选增强**，暂缓——设计与取舍记录见 [`docs/run-durability-design.md`](docs/run-durability-design.md) | 低 |
 | 交互式 run（中途提问确认 + 计划目录产品化） | 模型中途发 questions 事件挂起、用户经 answer 端点回复后从断点续跑（对齐 Claude Code 式协作体验）；plan 文件渲染计划卡。**依赖** run 持久化改造（checkpoint/resume 是前置，挂起=暂停的 run）。设计见 [`docs/run-durability-design.md`](docs/run-durability-design.md) §11，暂缓实施 | 低 |
 | 媒体输出（图片/视频生成 + 知识库视频检索） | media payload 通道（toolcall_end 加 images 字段 + 前端 fetch→blob 渲染）；视频生成走异步 job 模式（提交即返回 + 后台轮询）；知识库视频走文本代理向量化（ASR 转写分段 + show_media 工具）。设计见 [`docs/media-output-design.md`](docs/media-output-design.md)，暂缓实施。实施顺序：共用 payload 通道 → 视频生成 → 知识库检索（摄取管线最重） | 低 |
 | 沙箱平台告警规则 + 推送通道 | `/readyz` 已带 `sandbox` 硬检查（平台挂 → 503，已完成），但**没有任何东西在消费它**：机器上未部署 Prometheus/Alertmanager，`deploy/prometheus.yml` 只是示例且 targets 写的是 compose 网络里的 `app:8300`（本机部署对不上），也**没有任何告警规则文件**。要补：① 起 Prometheus 抓 `/metrics`（targets 按实际部署改）+ 告警规则（如 `rate(pi_sandbox_create_failures_total[5m]) > 0`、`up == 0`、`readyz != 200`）；② Alertmanager 接推送（微信/钉钉/邮件）。指标已现成：`pi_sandbox_create_failures_total` / `_command_timeouts_total` / `_close_failures_total` / `_create_duration_seconds` | 中 |

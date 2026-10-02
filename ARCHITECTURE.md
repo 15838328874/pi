@@ -3,7 +3,7 @@
 > 面向后来人的完整说明：项目是什么、怎么设计的、每个模块每个函数干什么、
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
-> 最后更新：2026-10-02 · 代码规模约 10,000 行源码 + 266 个测试
+> 最后更新：2026-10-02 · 代码规模约 10,000 行源码 + 267 个测试
 >
 > **文档地图**（四个文档各管一段，知识点不重复）：
 >
@@ -224,7 +224,7 @@ pi-python/
 │       ├── archive.py        会话工作区归档（tar.gz + 差异元数据 + MinIO 惰性上传）
 │       ├── storage.py         MinIO/S3 文件管线（预签名直连 + sha256 去重）
 │       └── client.py         SDK（异步 HTTP 客户端，SSE 流式解析）
-├── tests/                   266 个测试（连本地 MySQL/Redis，服务替身分层）
+├── tests/                   267 个测试（连本地 MySQL/Redis，服务替身分层）
 ├── migrations/              Alembic 迁移（0001 建表 ~ 0007 files）
 ├── docs/                    CubeSandbox 设计笔记 / 生产部署手册 / 生产就绪审计（专项文档）
 ├── tools/loadtest.py        SSE 压测工具
@@ -592,7 +592,7 @@ CLI:`pi-py eval rollout --tasks DIR --model X --n 8 --concurrency 16 --sandbox d
 
 | 方法 | 作用 |
 |---|---|
-| `append_many(session_id, entries)` | 批量追加，`entries` 为 `[{'idx', 'role', 'blocks'}, ...]`；`blocks` 是 `Message.model_dump_json()` 的字符串。一次事务写完——这就是原则 1（run 原子性）的落地点；用户消息则 write-ahead 先行单独落库（2026-10-02 起，见 §11.5） |
+| `append_many(session_id, entries)` | 批量追加，`entries` 为 `[{'idx', 'role', 'blocks'}, ...]`；`blocks` 是 `Message.model_dump_json()` 的字符串。一次事务写完——这就是原则 1（run 原子性）的落地点；用户消息 write-ahead 先行落库、每工具轮边界增量 flush（2026-10-02 起，见 §11.5） |
 | `list_for_session(session_id, after_idx=-1)` | 按 `idx` 升序读回，`after_idx >= 0` 时只取 `idx > after_idx`（摘要复用加载用）；调用方用 `Message.model_validate_json` 反序列化 |
 | `count_for_session(session_id)` | 现有消息数，`RunManager` 用它算新消息的起始 `idx` |
 | `save_compaction(session_id, covered_upto_idx, summary, model)` | 摘要落 `compactions` 表（fail-soft，绝不挂 run） |
@@ -812,11 +812,13 @@ User-Agent，**不记密码**。三点注意：
 - run 超时（`PI_RUN_TIMEOUT_SECONDS`）用 `asyncio.timeout` 包住整个循环，超了发
   ErrorEvent 但**已产生的消息仍会持久化**（buffer 非空就写）——这是刻意的，
   部分结果比全丢有用。
-- **write-ahead（2026-10-02 起）**：非 resume run 的第一条消息必是用户 prompt
-  （loop 在任何流式事件前 append 它），`on_message` 单独摘出、在**首个 SSE 事件
+- **write-ahead + 逐轮落库（2026-10-02 起）**：非 resume run 的第一条消息必是用户
+  prompt（loop 在任何流式事件前 append 它），`on_message` 单独摘出、在**首个 SSE 事件
   发出前**落库（失败 = 发 ErrorEvent 终止 run，数据安全优先）；run 未走到首事件
-  就结束时由 finally 兜底补落。硬崩溃从此丢不掉用户的话。完整持久化方案
-  （逐轮落库/checkpoint/resume）见 `docs/run-durability-design.md`。
+  就结束时由 finally 兜底补落。此后每个 `ToolCallStartEvent` 前再 flush buffer——
+  模型请求执行工具前，客户端已见过的全部消息先落库。硬崩溃丢失窗口 ≤ 当前轮，
+  用户回来看到截断历史、说"继续"即可接着跑（主流产品形态，无需显式 resume 端点）。
+  完整方案与剩余可选增强见 `docs/run-durability-design.md`。
 
 ### 11.6 `db.py` — ORM 与仓储
 
@@ -1050,13 +1052,13 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
   配置变量 `PI_ITEST_*`，见 `integration/conftest.py`）。
 - 基础设施没起时单测会失败，先 `docker compose -f deploy/docker-compose.local.yml up -d`。
 
-测试组织（都在 `tests/`，共 266 例，2026-10-02 按 `--collect-only` 实测）：
+测试组织（都在 `tests/`，共 267 例，2026-10-02 按 `--collect-only` 实测）：
 
 | 文件 | 例数 | 覆盖 |
 |---|---|---|
 | `test_security.py` | 47 | 策略拒绝、路径逃逸、脱敏、审计（含认证记录的截断与防伪造行）、JWT；`server_policy` 只加不减（策略文件无法关掉 `path_sandbox`/`redact`）；能力授权 7 例（deny 交集、allow 子集语义、未声明能力 fail-closed、`from_dict` 解析、12 内置工具全声明能力）；对**仓库根那份生效的** `policy.json` 做回归：22 条危险命令必须拦、15 条日常命令必须放行（见 §17.18） |
 | `test_sandbox_pool.py` | 41 | 预热池（假传输，无需真 docker）：复用/预热/并发去重/回收/重建/驱逐/关闭；容器资源限额（`_parse_size`、`SandboxLimits` 校验与两种渲染、CLI/Engine API 两条建容器路径都真的带上了限额）；`PI_SANDBOX` 非法值必须报错而不是静默降级 |
-| `test_server.py` | 29 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；另有认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16）；write-ahead 3 例（中途崩溃/无输出崩溃后用户消息仍在、失败后 idx 连续） |
+| `test_server.py` | 30 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；另有认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16）；持久化 4 例（write-ahead：中途崩溃/无输出崩溃后用户消息仍在、失败后 idx 连续；逐轮落库：完成轮消息在下一轮崩溃后仍在） |
 | `test_trajectory_view.py` | 16 | 轨迹持久化 + 查看端点：会话级/run 级查询、DB 优先 jsonl 兜底、属主校验（跨用户 404 不泄漏存在性） |
 | `test_rollout.py` | 15 | RL 数据飞轮：rollout、reward 抽取、过滤、导出 JSONL |
 | `test_memory_vector.py` | 15 | 向量语义记忆：Milvus/embedding 路径 + 失败/未配置时优雅词法兜底 |
@@ -1083,7 +1085,7 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 > 事件流）随本地 CLI 一起删除；`test_deployment.py` 里的 GBK 解码例随 Windows 支持删除。
 > 101 → 93 的差额（8 例）全部来自这两处，没有覆盖率损失。（93 是**那次删除之后**的
 > 数量，不是当前总数；之后陆续补了认证审计、`X-Forwarded-For`、沙箱资源限额与
-> 策略回归，现在见上表 266 例。）
+> 策略回归，现在见上表 267 例。）
 
 **测试约定**：
 

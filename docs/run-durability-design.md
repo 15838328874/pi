@@ -274,7 +274,7 @@ stale_running(cutoff) / mark_crashed(run_id, cutoff)`；`latest_for_session` 加
 8. **测试**：test_server.py 新增 8-9 用例 + 新文件 tests/test_sweeper.py 4 用例 +
    cache 锁方法单测
 9. **文档**：ROADMAP 移除本待办项 + 已完表加行；ARCHITECTURE §8/§11/§6.1/§15 + 锁语义段；
-   PROJECT_GUIDE 更新接线状态与待办；README 补 resume 端点、run 生命周期、锁心跳说明
+   （原 PROJECT_GUIDE 已并入 ARCHITECTURE）README 补 resume 端点、run 生命周期、锁心跳说明
 
 ## 7. 测试清单（实施时写）
 

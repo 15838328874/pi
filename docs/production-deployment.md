@@ -552,8 +552,8 @@ systemd `EnvironmentFile` 引用。
 | `PI_MODEL` | `openai/gpt-4o` | 你的模型路由（如 `openai/qwen3.8-flash`）★ |
 | `PI_MODEL_LIST` | 空=仅默认 | 前端模型选择器可选项，逗号分隔（如 `openai/qwen3.8-flash,openai/deepseek-v4-pro`）；只决定下拉清单，不改默认 |
 | `PI_RUN_TIMEOUT_SECONDS` | `600` | 单次 run 超时（秒）；写游戏/搭项目等大任务建议 `1800` |
-| `OPENAI_BASE_URL` | — | 模型网关 base_url ★ |
-| `OPENAI_API_KEY` | — | 模型网关 key ★ |
+| `OPENAI_BASE_URL` | — | 模型网关 base_url ★（聚合网关见 §7.6，`http://127.0.0.1:3001/v1`） |
+| `OPENAI_API_KEY` | — | 模型网关 key ★（聚合网关令牌，见 §7.6） |
 | `PI_SANDBOX` | 空(本地模式) | `cubesandbox`（本手册场景） |
 | `PI_SANDBOX_TEMPLATE` | 空 | §6 建出的 `tpl-xxx` ★ |
 | `PI_CUBE_API_URL` | `http://127.0.0.1:3000` | CubeAPI 地址 |
@@ -633,6 +633,51 @@ sudo journalctl -u pi -f    # 看启动日志，确认没有 PI_DATABASE_URL 报
 公网入口走反代 + 认证；②`PI_CUBE_API_KEY`/`PI_JWT_SECRET`/所有密码换强随机；
 ③`/metrics` 只会对持有 `PI_METRICS_TOKEN` 的请求放行。
 
+### 7.6 LLM 聚合网关（new-api）：多厂商聚合 + 故障切换
+
+单厂商直连会被个人账号并发上限卡死（几十 QPS）。用 new-api 把 DeepSeek / 阿里云 MaaS / 智谱
+三家聚成一个 OpenAI 兼容端点，pi-py 只看到一个 `OPENAI_BASE_URL`，网关按优先级分发、超限自动切下一家。
+
+**① 起容器**（用 3001，避开 CubeAPI 的 3000）：
+
+```bash
+docker run -d --name llm-gateway --restart=always \
+  -p 127.0.0.1:3001:3000 \
+  -v llm-gateway-data:/data \
+  calciumion/new-api:latest
+```
+
+**② 首次初始化**：`POST /api/setup`（字段 `username`/`password`/`confirmPassword`/
+`SelfUseModeEnabled`/`DemoSiteEnabled`）→ `POST /api/user/login` 拿 `access_token`（JWT）+
+`user.id`，后续请求带 `Authorization: Bearer <jwt>` + `New-Api-User: <id>`。
+
+**③ 建渠道**（`POST /api/channel/`，DeepSeek/阿里云用 `type=1` OpenAI 兼容，智谱用 `type=26` Zhipu_v4）。
+⚠️ **base_url 不要带 `/v1`** —— new-api 会自己拼 `/v1/chat/completions`，带了会 404：
+
+| 渠道 | base_url | 模型 | 优先级 |
+|---|---|---|---|
+| DeepSeek 官方 | `https://api.deepseek.com` | `deepseek-flash`（并发上限 2500） | 30（最高） |
+| 阿里云 MaaS | `https://llm-20pjwl5hs1neek68.cn-beijing.maas.aliyuncs.com/compatible-mode` | `qwen3.8-flash` | 20 |
+| 智谱官方 | `https://open.bigmodel.cn` | `glm-5.3-flash` | 10 |
+
+**④ 建令牌**（`POST /api/token/`，`unlimited_quota=true`）。接口不返回 key ——
+完整 key 在网关 SQLite `/data/one-api.db` 的 `tokens` 表里（明文）。
+
+**⑤ 关额度预扣**（否则高峰期会被内部计费额度扣爆）：`SelfUseModeEnabled=true` +
+把 root 用户 `users.quota` 设成极大值（`UPDATE options SET value='true' WHERE key='SelfUseModeEnabled'`）。
+
+**⑥ pi-py 指向网关**（写进 `/etc/pi.env`）：
+
+```ini
+OPENAI_BASE_URL=http://127.0.0.1:3001/v1
+OPENAI_API_KEY=<网关令牌 key>
+PI_MODEL=openai/deepseek-flash
+PI_MODEL_LIST=openai/deepseek-flash,openai/qwen3.8-flash,openai/glm-5.3-flash
+```
+
+> 实测延迟：deepseek-flash 空载 1.2s、并发下 ~7s 最稳；阿里云 MaaS 空载 1.3s 但个人账号
+> 并发下限流到 32s，只做兜底；智谱 ~21s。所以**主走 DeepSeek（优先级最高），另两家兜底**，详见 §10.9.1。
+
 ---
 
 ## 8. 沙箱 VM 网络隔离（这是最容易踩的认知坑）
@@ -703,6 +748,12 @@ MinIO 一个公网地址，可无缝切回 VM 真直连。
 ## 10. 沙箱规格、并发与密度（为什么这样设计 + 实测数据）
 
 > 本节回答三个后来者一定会问的问题：**模板该给多少 CPU/内存？能跑多少并发？为什么官方说"单机数千"而我这里只有十几个？**
+
+> ⚠️ **历史数据提示（2026-10-02）**：本节 §10 的密度/吞吐实测全部基于**旧 8 核 / 61GB 机器**
+> （`quota_cpu=16000`、`PI_MAX_CONCURRENT_RUNS=12`、`PI_SANDBOX_POOL_SIZE=8`）。
+> 当前机器已升级为 **16 物理核 / 32 逻辑核 / 62G**（`quota_cpu=64000`、`PI_MAX_CONCURRENT_RUNS=50`、
+> `PI_SANDBOX_POOL_SIZE=30`），最新容量压测见 **§10.9.1**。
+> 本节公式与结论仍然正确，只是「具体数字」要按新机器重新代入。
 
 ### 10.1 一句话结论
 

@@ -391,9 +391,23 @@ def test_chunker_empty_input():
 pytestmark_corpus = pytest.mark.skipif(not HAS_CORPUS, reason=f"corpus not found: {CORPUS}")
 
 
+def _corpus_file(name: str) -> Path:
+    """Return a corpus file by name, or SKIP this test when it is absent.
+
+    The corpus is user-provided and frequently PARTIAL: one deployment has the
+    medical-guideline PDFs (corpus v2), another the v1 mixed-format set
+    (csv/xlsx/docx/研报 PDF/手写 PNG). Gating only on the DIRECTORY turns a
+    partial corpus into red tests, which is worse than a skip - it trains people
+    to ignore failures. So the skip granularity is per-FILE.
+    """
+    if CORPUS is None or not (CORPUS / name).is_file():
+        pytest.skip(f"corpus file not in this deployment: {name}")
+    return CORPUS / name
+
+
 @pytestmark_corpus
 def test_corpus_csv_real():
-    res = parse_file(CORPUS / "训练数据.csv")
+    res = parse_file(_corpus_file("训练数据.csv"))
     assert res.needs_heavy_parser is False
     body = res.plain_text()
     assert "policy_number:" in body or "months_as_customer:" in body
@@ -402,14 +416,14 @@ def test_corpus_csv_real():
 
 @pytestmark_corpus
 def test_corpus_xlsx_real():
-    res = parse_file(CORPUS / "销售数据统计.xlsx")
+    res = parse_file(_corpus_file("销售数据统计.xlsx"))
     body = res.plain_text()
     assert "Sheet1" in body and ("日期:" in body or "销量:" in body)
 
 
 @pytestmark_corpus
 def test_corpus_html_real():
-    res = parse_file(CORPUS / "html-tags-decode.html")
+    res = parse_file(_corpus_file("html-tags-decode.html"))
     assert res.title  # title extracted
     assert "script" not in res.plain_text().lower() or True  # content parsed
     assert res.char_count > 200
@@ -417,7 +431,7 @@ def test_corpus_html_real():
 
 @pytestmark_corpus
 def test_corpus_md_real():
-    res = parse_file(CORPUS / "RAG评估.md")
+    res = parse_file(_corpus_file("RAG评估.md"))
     # it's actually markdown-with-html (语料特性): must still yield text
     assert res.char_count > 500
     # and must have RECOVERED the heading hierarchy (it uses <h1 id=...>)
@@ -431,7 +445,7 @@ def test_corpus_md_real():
 
 @pytestmark_corpus
 def test_corpus_docx_real():
-    res = parse_file(CORPUS / "数组.docx")
+    res = parse_file(_corpus_file("数组.docx"))
     assert res.backend == "python-docx"
     assert res.char_count > 1000
     assert res.needs_heavy_parser is False
@@ -441,7 +455,7 @@ def test_corpus_docx_real():
 def test_corpus_pdfs_route_correctly():
     """研报 PDF (text-bearing, must parse) + 183MB 书 (must not blow memory:
     page-capped). Both must reach a VERDICT (ready or needs_heavy), never crash."""
-    report = parse_file(CORPUS / "甬兴证券-AI行业点评报告：海外科技巨头持续发力AI，龙头公司中报业绩亮眼.pdf")
+    report = parse_file(_corpus_file("甬兴证券-AI行业点评报告：海外科技巨头持续发力AI，龙头公司中报业绩亮眼.pdf"))
     assert report.backend == "pdfplumber"
     # 券商研报是文本型 PDF：应可解析（若判定为扫描件也必须有明确 reason）
     if not report.needs_heavy_parser:
@@ -450,7 +464,7 @@ def test_corpus_pdfs_route_correctly():
         assert report.reason
 
     book = parse_file(
-        CORPUS / "从零开始大模型开发与微调基于PyTorch与ChatGLM.pdf",
+        _corpus_file("从零开始大模型开发与微调基于PyTorch与ChatGLM.pdf"),
         max_pdf_pages=20,  # cap pages: full 183MB parse is a heavy-parser job
     )
     assert book.page_count is not None and book.page_count > 20
@@ -459,16 +473,23 @@ def test_corpus_pdfs_route_correctly():
 
 @pytestmark_corpus
 def test_corpus_pngs_flagged():
+    checked = 0
     for name in ("PDF解析截图.png", "手写公式.png", "数学公式.png"):
-        res = parse_file(CORPUS / name)
+        p = CORPUS / name if CORPUS else None
+        if p is None or not p.is_file():
+            continue  # 部分语料：缺的 PNG 跳过，不是失败
+        res = parse_file(p)
         assert res.needs_heavy_parser is True, f"{name} must route to heavy parser"
         assert "OCR" in res.reason
+        checked += 1
+    if not checked:
+        pytest.skip("no corpus PNGs in this deployment")
 
 
 @pytestmark_corpus
 def test_corpus_end_to_end_chunking():
     """Real file through the full M1 pipeline: parse -> chunk -> contextual."""
-    res = parse_file(CORPUS / "RAG评估.md")
+    res = parse_file(_corpus_file("RAG评估.md"))
     drafts = Chunker(ChunkingConfig(max_chars=400)).chunk(res)
     assert len(drafts) >= 3
     assert all(d.text.strip() for d in drafts)

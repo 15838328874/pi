@@ -40,7 +40,7 @@ pi-py 是 **earendol-works/pi**（TypeScript 版编码智能体外壳）的 **Py
 
 设计上的北极星原则（理解所有代码的钥匙）：
 
-1. **一次 run 是原子单位**：要么整轮对话（含所有工具调用）成功后一次性持久化，要么失败不留半截状态。
+1. **用户见过的必落库，用户没见过的绝不落库**：持久化不是"要么全成、要么全丢"——用户消息 write-ahead 先行落库（首个 SSE 事件前），此后每个工具轮边界（`toolcall_start` 前）增量 flush，每段一次事务、库里绝无半截状态；硬崩溃最多丢当前轮，用户回来看到截断历史、说"继续"即可接着跑。原子事务管一致性、逐轮落库管不丢数据，完整方案与取舍见 `docs/run-durability-design.md`。
 2. **每个 session 同一时刻只有一个 run**：分布式锁保证，跨实例也成立（Redis 后端）。
 3. **安全策略是闸门，不是装饰**：每次工具调用都过 `policy.check()`，拒绝即审计、即报错给模型。
 4. **附属系统永不阻塞主流程**：计量、审计、回调失败只记日志，绝不让 run 失败。
@@ -170,13 +170,15 @@ RunManager.run_turn
   ├─ 加载历史消息（MessageRepo）
   ├─ 装配 AgentLoop（工具 + 策略 + 审计 + tracer）
   ├─ sandbox 预热（docker 池模式下与 LLM 首响应并行）
+  ├─ 用户消息 write-ahead 落库（首个 SSE 事件发出前，流内触发）
   ├─ async with asyncio.timeout(600s):
   │    AgentLoop.run(prompt):
   │      追加用户消息 → 调 provider.stream() 流式收事件
   │        → 模型要工具？→ policy.check() → 执行 → 结果回喂 → 再来一轮
   │        → 不要工具？→ 结束
-  │      （历史超阈值先压缩；每步写审计和 trace span）
-  ├─ 成功：整批消息 MessageRepo.append_many（一次事务）
+  │      （历史超阈值先压缩；每步写审计和 trace span；
+  │        每个 toolcall_start 前把已定稿消息 append_many 增量落库）
+  ├─ 收尾：剩余消息 MessageRepo.append_many（一次事务，含失败场景）
   ├─ 成功：UsageTracker.record（失败只记日志，不回滚对话）
   └─ finally: 释放 session 锁
 ```
@@ -339,7 +341,7 @@ LLMProvider.stream(system, messages, tools) -> AsyncIterator[StreamEvent]
 | `tools` | 必填 | `Tool` 实例列表，内部建成 name→tool 字典 |
 | `messages` | `[]` | 历史（服务层从库里反序列化后注入） |
 | `cwd` | 当前目录 | 工具的工作目录（= 会话的 workspace） |
-| `on_message` | None | 每条新消息的回调（服务层用它攒批，run 成功后一次事务落库） |
+| `on_message` | None | 每条新消息的回调（服务层 write-ahead + 工具轮边界增量落库 + 收尾合批，见 §11.5） |
 | `max_turns` | 40 | 防死循环：模型反复调工具的硬上限 |
 | `compact_threshold` / `compact_keep` | 80,000 / 8 | 压缩触发阈值（字符数）/ 压缩后保留的尾部消息数 |
 | `policy` / `audit` / `tracer` | None | 安全策略 / 审计 / 追踪（§9、§10） |

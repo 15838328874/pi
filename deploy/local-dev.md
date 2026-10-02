@@ -37,6 +37,40 @@ set -a; source .env.local; set +a
 pi-py migrate
 ```
 
+### 2.1 端口冲突：让 `.env.local` 成为唯一来源
+
+若本机 3306/6379 已被别的服务占用（**与 CubeSandbox 同机部署就是这种情况**——它自己的
+MySQL/Redis 正好在默认端口上），把本地栈端口整体上移即可，**只改 `.env.local` 一处**：
+
+```bash
+PI_MYSQL_PORT=13306      # compose 端口映射
+PI_REDIS_PORT=16379
+PI_MILVUS_PORT=19531
+PI_DATABASE_URL=mysql+aiomysql://pi:pi_py_local@127.0.0.1:13306/pi_py   # 应用
+PI_REDIS_URL=redis://127.0.0.1:16379/0
+PI_MILVUS_URI=http://127.0.0.1:19531
+```
+
+再把它接到 compose 的 env 文件位置，三处自动一致：
+
+```bash
+ln -sf ../.env.local deploy/.env      # compose 读 deploy/.env；软链接后读同一份
+```
+
+之后：
+
+| 消费方 | 怎么拿到端口 |
+|---|---|
+| 应用（`pi-py serve` / systemd） | 直接读 `.env.local` 的 `PI_*_URL` |
+| 基础设施（compose） | 通过 `deploy/.env` 软链接读到同一份的 `PI_*_PORT` |
+| 测试（`tests/conftest.py`） | 从 `PI_DATABASE_URL` / `PI_REDIS_URL` **推导**（换库名 `pi_py_test`、Redis db1）|
+
+**为什么要有这层统一**（实测踩过）：三处各写一份端口时，一旦不一致就会出现
+"建表连一套、清表连另一套"的静默错位——清理作用在别的库上且不报错，测试库永远不清，
+用例随机失败（注册类 409、redis 认证错误，单跑正常、连跑才挂），极难定位。
+`deploy/docker-compose.local.yml` 的端口默认值仍是 `3306/6379`（与生产文档一致），
+所以没软链接的机器行为不变。
+
 ## 3. 启动
 
 ```bash

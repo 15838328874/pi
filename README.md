@@ -195,7 +195,8 @@ it; both compose files bind-mount the same file to `/etc/pi-py/policy.json`). Sh
 Capability vocabulary (declared in `tools/*.py`): `filesystem.read` (read/ls/grep/find,
 list_files), `filesystem.write` (write/edit, fetch_file), `process.execute` + both
 filesystem caps (bash), `memory.read` (recall), `memory.write` (remember),
-`agent.delegate` (spawn_subagents). Check order: deny_tools → deny_capabilities →
+`agent.delegate` (spawn_subagents), `knowledge.retrieve` (rag_search, 只读检索本用户
+已入库文档). Check order: deny_tools → deny_capabilities →
 allow_capabilities → bash patterns → path sandbox.
 
 Patterns are anchored to command position (`(?:^|[;&|(]\s*)`) on purpose: a bare `"sudo"`

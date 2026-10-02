@@ -476,6 +476,7 @@ class Tool(ABC):
 | `memory.read` | recall |
 | `memory.write` | remember |
 | `agent.delegate` | spawn_subagents |
+| `knowledge.retrieve` | rag_search（只读检索本用户已入库文档，无副作用） |
 
 MCP/skill 工具不声明任何能力（空集）——allow-list 策略下 fail-closed 拒绝，所以配置了
 能力白名单后外部工具默认不可用，需要明确放行。
@@ -1002,6 +1003,10 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_SANDBOX_POOL_TTL` / `PI_SANDBOX_POOL_TTL_TIGHT` | 900 / 300 | 空闲 VM 回收阈值（内存宽裕 / 紧张两档） |
 | `PI_SANDBOX_POOL_PRESSURE_HIGH` / `_LOW` | 1.5GiB / 512MiB | 宿主可用内存双阈值，低于则收紧/激进回收 |
 | `PI_ALLOW_REGISTER` | 1 | 开放注册开关；0 = 注册接口 403、前端隐藏注册 tab（公网演示用） |
+| `PI_RAG_ENABLED` / `PI_RAG_MEMORY_VECTOR` | 1 / 0 | RAG 知识库总开关（关=rag_search 工具整个消失）/ 进程内向量兜底（多 worker 下默认关） |
+| `PI_RAG_MAX_UPLOAD_BYTES` | 50 MiB | `/v1/rag/ingest` 单文档上限，超出 413——每 MiB 都变成 OCR/embedding 配额消耗，上限收窄单次误传的爆炸半径 |
+| `PI_RAG_MAX_CONCURRENT_INGESTS` | 8 | ingest 后台任务并发上限（I/O 密集，保护外部 OCR/embedding API 不被突发打满）；超出 429，稍后重试 |
+| 其余 `PI_RAG_*`（内核） | — | chunking/embedding/rerank/heavy-parser/Milvus 参数由 `RagConfig.from_env()` 读，完整表见 §21 |
 | `PI_ARCHIVE` | 1 | 会话归档开关（0=关）；`PI_ARCHIVE_DIR`（默认 ~/.pi-py/archives）、`PI_ARCHIVE_S3_*`（MinIO 惰性上传） |
 | `PI_S3_ENDPOINT` / `PI_S3_ACCESS_KEY` / `PI_S3_SECRET_KEY` / `PI_S3_BUCKET_FILES` / `PI_S3_BUCKET_ARTIFACTS` | 空=关 | MinIO/S3 文件管线（预签名直连、sha256 用户级去重、files 表索引） |
 
@@ -1803,7 +1808,7 @@ rerank 后仍排不到第一」这一失效模式的修复方向（同轮定性�
 
 ### 21.8 配置
 
-内核 `RagConfig.from_env()` 读全部 `PI_RAG_*`（§13 有完整表）。要点：
+内核 `RagConfig.from_env()` 读全部 `PI_RAG_*`（ServerSettings 层的四个开关/限额见 §13，内核参数表见下文）。要点：
 - **embedding 复用 server 级 `PI_EMBEDDING_*`**（同一端点也服务语义记忆），
   `PI_RAG_EMBEDDING_*` 可按部署覆盖。
 - **Milvus 复用 `PI_MILVUS_URI`**，`PI_RAG_MILVUS_URI` 可覆盖；两者都空 →

@@ -356,7 +356,7 @@ SSE 帧协议（浏览器 EventSource 只支持 GET，run 端点是 POST）。
 | 工具 | MCP 工具源（stdio + fail-soft + 生命周期） | `tools/mcp.py` | 标准协议 |
 | 工具 | Skills 技能包（SKILL.md + 索引注入 + 脚本走沙箱） | `tools/skill.py` | 渐进披露 |
 | 工具 | ToolRegistry（聚合/去重/预热缓存） | `tools/registry.py` | 一个抽象管所有来源 |
-| 安全 | 能力授权（allow/deny_capabilities：allow 为子集语义、未声明能力的 MCP/skill 工具 fail-closed 拒绝） | `security/policy.py` `tools/base.py` | 12 内置工具全声明能力 |
+| 安全 | 能力授权（allow/deny_capabilities：allow 为子集语义、未声明能力的 MCP/skill 工具 fail-closed 拒绝） | `security/policy.py` `tools/base.py` | 12 内置工具全声明能力（+ rag_search 声明 knowledge.retrieve） |
 | 沙箱 | **CubeSandbox microVM（生产）**：每回合独立 VM/GNU timeout/退出码透传/10MB 上限/生命周期管理 + Docker 预热池（本地） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 + 52 exec/s（Docker 形态） |
 | 归档 | 会话工作区 tar.gz + 差异元数据 + MinIO 惰性上传 | `server/archive.py` | 9 turns 实测 |
 | 文件管线 | MinIO 预签名直连 + sha256 用户级去重 + files 表索引 | `server/storage.py` `server/db.py` | 267 单测 |

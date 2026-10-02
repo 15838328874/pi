@@ -52,6 +52,13 @@ class LlmCall:
     latency_ms: int
     text: str  # aggregated assistant text for this turn
     tool_calls: list[dict]  # [{id, name, arguments(raw json string)}]
+    # Prompt-cache accounting for THIS turn (0 when the provider reports none).
+    # Recorded per turn, not just per run, because that is what makes a cache
+    # regression attributable: a run-level total cannot tell "the prefix broke
+    # from turn 3" apart from "this endpoint never caches". See Usage in
+    # models.py for the provider field shapes.
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
     ts: float = field(default_factory=time.time)
 
 
@@ -89,6 +96,11 @@ class RunFinished:
     output_tokens: int
     turns: int
     latency_ms: int
+    # Run-level prompt-cache totals (sum of the per-turn LlmCall fields).
+    # hit/(hit+miss) is the run's cache hit rate - the number that decides
+    # whether the request prefix is stable enough to be worth caching.
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
     ts: float = field(default_factory=time.time)
 
 

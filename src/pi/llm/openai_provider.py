@@ -13,6 +13,36 @@ from pi.llm.think_filter import ThinkFilter
 from pi.models import Message, Role, TextBlock, ToolCallBlock, ToolResultBlock, ToolSpec, Usage
 
 
+def _cache_tokens(u: Any) -> tuple[int, int]:
+    """Normalize provider prompt-cache counters to (hit, miss). Best-effort.
+
+    Two shapes exist in the wild and we accept both, because the same code paths
+    serve DeepSeek and OpenAI-compatible endpoints:
+      - DeepSeek (and several Chinese providers): flat fields on usage, which the
+        OpenAI SDK parks in ``model_extra`` (they are not in its typed schema);
+      - OpenAI: nested ``prompt_tokens_details.cached_tokens`` (hit only - miss
+        is then whatever is left of ``prompt_tokens``).
+    Never raises and never guesses: unknown shape -> (0, 0), which reads as
+    "cache not observed" rather than a fake hit rate.
+    """
+    extra = getattr(u, "model_extra", None) or {}
+    hit = getattr(u, "prompt_cache_hit_tokens", None)
+    if hit is None:
+        hit = extra.get("prompt_cache_hit_tokens")
+    miss = getattr(u, "prompt_cache_miss_tokens", None)
+    if miss is None:
+        miss = extra.get("prompt_cache_miss_tokens")
+    if hit is None or miss is None:
+        details = getattr(u, "prompt_tokens_details", None)
+        cached = getattr(details, "cached_tokens", None) if details is not None else None
+        if cached is not None:
+            hit = cached
+            if miss is None:
+                total = getattr(u, "prompt_tokens", 0) or 0
+                miss = max(0, total - int(cached))
+    return int(hit or 0), int(miss or 0)
+
+
 class OpenAIProvider(LLMProvider):
     name = "openai"
 
@@ -97,9 +127,12 @@ class OpenAIProvider(LLMProvider):
 
         async for chunk in stream:
             if chunk.usage:
+                hit, miss = _cache_tokens(chunk.usage)
                 usage = Usage(
                     input_tokens=chunk.usage.prompt_tokens or 0,
                     output_tokens=chunk.usage.completion_tokens or 0,
+                    cache_hit_tokens=hit,
+                    cache_miss_tokens=miss,
                 )
             if not chunk.choices:
                 continue

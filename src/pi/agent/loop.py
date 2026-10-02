@@ -303,6 +303,8 @@ class AgentLoop:
                         model=getattr(self.provider, "model", ""),
                         input_tokens=call_usage.input_tokens,
                         output_tokens=call_usage.output_tokens,
+                        cache_hit_tokens=call_usage.cache_hit_tokens,
+                        cache_miss_tokens=call_usage.cache_miss_tokens,
                         stop_reason=stop_reason,
                         latency_ms=int((time.perf_counter() - t0) * 1000),
                         text="".join(text_parts),
@@ -391,6 +393,8 @@ class AgentLoop:
                 output_tokens=total.output_tokens,
                 turns=turns,
                 latency_ms=int((time.perf_counter() - self._run_started_at) * 1000),
+                cache_hit_tokens=total.cache_hit_tokens,
+                cache_miss_tokens=total.cache_miss_tokens,
             )
         )
         yield TurnEndEvent(usage=total, turns=turns)

@@ -59,11 +59,27 @@ class Message(BaseModel):
 class Usage(BaseModel):
     input_tokens: int = 0
     output_tokens: int = 0
+    # Provider prompt-cache accounting (observability only - never affects
+    # billing logic here). Providers report prefix-cache hits differently:
+    # DeepSeek returns flat `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`
+    # on the usage object; OpenAI nests it as `prompt_tokens_details.cached_tokens`.
+    # Both are normalized into these two fields by the provider.
+    #
+    # Why it matters: prefix caching is the single largest cost lever for an
+    # agent (long context, many rounds) - cache hits bill at ~10% of input. But
+    # a cache is only usable if the request's PREFIX is stable, and until these
+    # fields existed a hit rate of 0 was indistinguishable from a hit rate of
+    # 90%: both looked like one `input_tokens` number. Keep them populated
+    # whenever the provider reports them.
+    cache_hit_tokens: int = 0
+    cache_miss_tokens: int = 0
 
     def add(self, other: "Usage") -> "Usage":
         return Usage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
+            cache_hit_tokens=self.cache_hit_tokens + other.cache_hit_tokens,
+            cache_miss_tokens=self.cache_miss_tokens + other.cache_miss_tokens,
         )
 
 

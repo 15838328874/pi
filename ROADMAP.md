@@ -113,16 +113,18 @@ provider，工具照样走 policy / audit / tracing / 配额，但宿主工具�
 ② retriever 与 ingest 必须共享同一个 lexical index 实例；③ **换 embedding 模型必须先重建 Milvus 投影**，
 否则静默空间漂移（`tools/rebuild_eval_index.py --check/--apply` 自检索余弦判据）。
 
-**未做/后续**：`rag ingest` 目前取本地路径（`--path`）；对接文档 §4.7 要求的 `--file-id`
-（经 `FileRepo.by_id` + `ObjectStore.get_bytes` 从对象存储取原料）尚未实现——文件管线 P0/P1/P2
-已在本分支落地，接上是下一步。多模态/GraphRAG 属 v2。
+**未做/后续**：
+- **上传即入库已落地**（2026-10-02 后）：`POST /v1/rag/ingest`（multipart 异步）+ `GET/DELETE /v1/rag/docs` + 前端「知识库」面板，取代原先只能 `--path` 的 CLI 灌库。对接文档 §4.7 的 `--file-id`（经 `FileRepo` + `ObjectStore` 从文件管线取原料）仍是**可选的第二入口**，未做。
+- **扫描件/图片 OCR 重解析已接入** PaddleOCR 线上 API（`PI_RAG_HEAVY_PARSER=*`，走 `HeavyParser.parse(path)->str` 协议）；MinerU 自托管待有 ≥16G 内存的机器，按同一协议迁移即可。多模态/GraphRAG 属 v2。
+- 换 embedding 模型的**记忆向量重建命令**仍未补（见 §3）。
 
 **原设计浓缩（保留备查）**
 
 - **顺序铁律：先建评测，再调检索**（golden set + RAGAS 类指标），否则切块/embedding/rerank
   全是盲调。
 - **v1 及格线五件套**：解析层（PDF/Word/CSV，轻量后端 pdfplumber/python-docx/openpyxl；
-  重后端 MinerU/PaddleOCR 做成独立服务，不进 app 进程）→ 语义切块 + contextual retrieval →
+  重后端 MinerU/PaddleOCR 做成独立服务，不进 app 进程——**PaddleOCR 线上 API 已接入**，
+  MinerU 待自托管机器）→ 语义切块 + contextual retrieval →
   **混合检索（向量 + BM25，RRF 融合）+ rerank**（纯向量 top-k 不够用）→ 引用溯源 → 权限 ACL
   （复用多租户 user 维度）。
 - **形态**：`pi/rag/` 独立内核（parser/chunker/embedder/vectorstore/retriever）+

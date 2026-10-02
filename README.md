@@ -137,7 +137,7 @@ Twelve built-ins, registered in `tools/__init__.py::all_tools()`:
 match, replace_all, unified diff), `grep` (regex, skips VCS/build dirs), `find` (glob), `ls`,
 `remember`, `recall`, `spawn_subagents`, `list_files`, `fetch_file` (12 tools total; in-process `web_fetch`/`web_search` were removed over SSRF risk — sandboxed bash is the fetch path).
 
-Two extra tool sources, merged by `ToolRegistry` (builtin first; name collisions keep the
+Three extra tool sources, merged by `ToolRegistry` (builtin first; name collisions keep the
 builtin; one broken source never takes the others down):
 
 - **MCP** (`PI_MCP_SERVERS`, JSON array of `{"name","command":[...]}` stdio or `{"name","url"}`
@@ -149,6 +149,11 @@ builtin; one broken source never takes the others down):
   skill's full instructions on demand, and each `scripts/*` file becomes a
   `skill_<name>_<script>` tool executed inside the sandbox (the script is staged into the
   workspace first, since the sandbox only mounts the workspace).
+- **RAG** (`rag_search`, on by default; `PI_RAG_ENABLED=0` drops it): enterprise-document
+  retrieval with citations (doc/section/page), per-user ACL. Documents are ingested via the
+  HTTP upload endpoint (`POST /v1/rag/ingest`, async) or `pi-py rag ingest`; scanned pages /
+  images route to an external OCR service (`PI_RAG_HEAVY_PARSER=paddleocr`, swappable for
+  MinerU behind the same protocol). Details in `ARCHITECTURE.md` §21.
 
 Context compaction is automatic once history exceeds 80,000 chars: an LLM-written summary
 replaces the old prefix and the most recent 8 messages are kept verbatim, in memory for the

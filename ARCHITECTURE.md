@@ -1518,11 +1518,17 @@ Milvus collection `pi_rag_chunks` 只是**投影**——PK = `chunk_id`，可以
 
 ### 21.3 数据流
 
-**Ingest（灌库）**：
+**Ingest（灌库）** —— 两个入口，同一内核：
+
 ```
-pi-py rag ingest --path <文件或目录>
+入口 A：HTTP 上传（用户自助）     POST /v1/rag/ingest（multipart）
+入口 B：CLI（运维/批量）         pi-py rag ingest --path <文件或目录>
+
   → parser.parse_file()      7 后端路由（md/txt/html/csv/tsv/xlsx/docx + pdf）
-                             质量门：扫描版 PDF / 图片 → needs_heavy_parser（v1 不 OCR）
+                             质量门：扫描版 PDF / 图片 → needs_heavy_parser
+  → [扫描件/图片] heavy_parser.parse()   外部 OCR（PI_RAG_HEAVY_PARSER，默认 PaddleOCR）
+                              识别成 Markdown 后重新 parse，继续走正常链路；
+                              未配 OCR 服务或 OCR 失败 → 落 NEEDS_HEAVY_PARSER
   → chunker                  语义切块（max_chars=800，overlap=120）+ contextual retrieval
                              embed_text = "文档标题 > 章节 > 小节\n\n" + text
   → embedder.embed()         批量向量化（真计费）
@@ -1531,7 +1537,13 @@ pi-py rag ingest --path <文件或目录>
   → vector_store.upsert()    写 Milvus 投影
   → lexical.invalidate()     失效该用户的 BM25 缓存（下次检索重建）
 ```
-ingest 报告四态：`READY` / `INDEX!`（SQL 成功但向量缺失=活的降级）/ `HEAVY`（需 OCR）/ `FAILED`。
+
+ingest 终态：`READY`（含经 OCR 的扫描件）/ `INDEX_PENDING`（SQL 成功但向量缺失=活的降级）/
+`NEEDS_HEAVY_PARSER`（需 OCR 但未配/失败）/ `FAILED`。
+
+> HTTP 入口是异步的：上传立即返回 `pending`，后台任务跑完整条 ingest，状态写回
+> `rag_docs.status`，前端轮询 `GET /v1/rag/docs`。文档管理端点（list/delete）也在此面：
+> `GET /v1/rag/docs`、`DELETE /v1/rag/docs/{doc_key}`，全程按 `user_id` ACL。
 
 **Retrieve（检索）**：见 §21.4。
 

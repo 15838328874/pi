@@ -1,7 +1,7 @@
 # run 持久化生产级改造——设计存档（未实施）
 
-> 状态：**设计完成、暂缓实施**（2026-10-01）。改动面较大（9 步、跨 server/agent/前端），
-> 留作后续优化。实施时以本文档为蓝图，逐 step 独立提交、可独立回滚。
+> 状态：**第一步（write-ahead）已落地（2026-10-02），其余暂缓实施**。设计定稿于
+> 2026-10-01。实施时以本文档为蓝图，逐 step 独立提交、可独立回滚。
 > 前置依赖已就绪：loop 侧 checkpoint/resume 已完整（`agent/loop.py`），P0-2
 > completed_tools 幂等账本已落地并有测试——本方案只需接 server 侧，不动 resume 逻辑。
 
@@ -131,7 +131,7 @@ run**（ErrorEvent "lost session lock"，finish status=failed）——这是分�
 
 | 事实 | 位置 |
 |---|---|
-| 消息 buffer 攒整轮，结束才 `append_many` | runner.py:156-160、332-342 |
+| 消息 buffer 攒整轮，结束才 `append_many` | runner.py:156-160、332-342；**2026-10-02 起用户消息 write-ahead 先行落库**（首事件前，finally 兜底），其余消息仍结束批量 |
 | flush 用 `base_idx=count_for_session` 重算——多次 flush 会静默重复 idx（messages 表无 (session_id, idx) 唯一约束） | runner.py:333 |
 | 干净失败（超时/异常）finally 仍落库，消息不丢 | runner.py:305-342 |
 | 硬崩溃丢整个 run 的所有消息（buffer 在内存） | — |
@@ -310,6 +310,11 @@ stale_running(cutoff) / mark_crashed(run_id, cutoff)`；`latest_for_session` 加
 
 ## 10. 决策记录与实施触发条件
 
+- **2026-10-02**：**第一步落地——write-ahead 已实现**：`on_message` 摘取首条用户消息，
+  首个 SSE 事件发出前落库（失败 = ErrorEvent 终止 run，数据安全优先），run 未走到
+  首事件时 finally 兜底补落。改动仅 runner.py（~40 行）+ test_server.py 3 例，
+  全套 266 passed。硬崩溃从此丢不掉用户的话；剩余 8 步（逐轮落库/checkpoint/
+  状态机/resume 等）仍在待办。
 - **2026-10-01**：设计定稿（含多实例 v2 修订）；用户评估后决定**暂缓实施**（改动面大：
   9 步、跨 server/agent/前端/缓存/迁移），方案归档至本文档 + ROADMAP 未完成事项。
 - **建议的实施触发条件**（满足其一即可考虑启动）：

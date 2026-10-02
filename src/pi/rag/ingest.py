@@ -86,11 +86,16 @@ class IngestPipeline:
         doc_key: str | None = None,
         title: str | None = None,
         visibility: str = "private",
+        source: str | None = None,
     ) -> IngestOutcome:
         """Ingest one file end to end. Idempotent on (user_id, doc_key).
 
         doc_key defaults to the absolute path string (stable across re-runs for
-        the same file). title defaults to the parser's detected title.
+        the same file). title defaults to the parser's detected title. ``source``
+        is the display/citation origin (rag_docs.source_path); defaults to the
+        path. Callers that ingest from a spooled temp copy (e.g. the HTTP upload
+        endpoint) should pass the ORIGINAL filename here, so citations don't leak
+        a dead temp path.
         """
         p = Path(path)
         key = doc_key or str(p.resolve())
@@ -142,7 +147,7 @@ class IngestPipeline:
             doc_key=key,
             user_id=int(user_id),
             title=outcome.title,
-            source_path=str(p),
+            source_path=source or str(p),
             visibility=visibility,
         )
         await self.store.upsert_doc(doc, status=IngestStatus.PENDING.value)

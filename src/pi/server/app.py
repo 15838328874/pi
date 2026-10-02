@@ -11,13 +11,15 @@ import json
 import logging
 import re
 import secrets
+import shutil
+import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import jwt as pyjwt
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
@@ -595,6 +597,72 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             await store.delete(row.object_key, row.bucket)
         await files_repo.remove(file_id)
         return {"deleted": file_id}
+
+    # ---- 企业知识库文档管理（上传 → 异步入库 → 列表/删除）----------------
+    # 主流的"上传即入库"体验：POST 立刻返回 pending，后台线程跑解析→切块→
+    # embedding→索引，状态写回 rag_docs.status；前端轮询 GET /v1/rag/docs。
+    _rag_jobs: set[tuple[int, str]] = set()
+
+    async def _rag_ingest_job(user_id: int, doc_key: str, tmpdir: str) -> None:
+        try:
+            await rag_runtime.ingest.ingest_file(
+                Path(tmpdir) / doc_key,
+                user_id=user_id,
+                doc_key=doc_key,
+                source=doc_key,  # 引用里显示原始文件名，而非临时路径
+            )
+        except Exception:  # noqa: BLE001 - 入库失败要能查，不能静默丢
+            log.exception("rag ingest failed user=%s doc=%s", user_id, doc_key)
+        finally:
+            _rag_jobs.discard((user_id, doc_key))
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
+    @app.post("/v1/rag/ingest")
+    async def rag_ingest_doc(
+        file: UploadFile = File(...), username: str = Depends(current_user)
+    ) -> dict:
+        """上传一个文档并**异步**入库到企业知识库（解析→切块→embedding→索引）。
+
+        ``doc_key`` = 消毒后的文件名；同名重复上传 = 幂等重入库（旧 chunks/向量先清）。
+        返回 ``status=pending``；真正处理在后台进行，前端轮询 ``GET /v1/rag/docs``
+        看它变成 ``ready`` / ``failed``。
+        """
+        if rag_runtime is None:
+            raise HTTPException(status_code=503, detail="RAG is disabled (PI_RAG_ENABLED=0)")
+        user = await users.by_username(username)
+        filename = (file.filename or "document").replace("\\", "/").rsplit("/", 1)[-1]
+        doc_key = re.sub(r"[^A-Za-z0-9._\u4e00-\u9fff-]", "_", filename)[:200] or "document"
+        if (user.id, doc_key) in _rag_jobs:
+            raise HTTPException(status_code=409, detail="该文档正在入库，稍后再试")
+        tmpdir = tempfile.mkdtemp(prefix="pi-rag-upload-")
+        with (Path(tmpdir) / doc_key).open("wb") as fh:
+            while chunk := await file.read(1024 * 1024):
+                fh.write(chunk)
+        _rag_jobs.add((user.id, doc_key))
+        asyncio.create_task(_rag_ingest_job(user.id, doc_key, tmpdir))
+        return {"doc_key": doc_key, "status": "pending"}
+
+    @app.get("/v1/rag/docs")
+    async def rag_list_docs(username: str = Depends(current_user)) -> dict:
+        if rag_runtime is None:
+            raise HTTPException(status_code=503, detail="RAG is disabled (PI_RAG_ENABLED=0)")
+        user = await users.by_username(username)
+        return {"docs": await rag_runtime.store.list_docs(user.id)}
+
+    @app.delete("/v1/rag/docs/{doc_key:path}")
+    async def rag_delete_doc(doc_key: str, username: str = Depends(current_user)) -> dict:
+        if rag_runtime is None:
+            raise HTTPException(status_code=503, detail="RAG is disabled (PI_RAG_ENABLED=0)")
+        user = await users.by_username(username)
+        doc = await rag_runtime.store.get_doc(user.id, doc_key)
+        if doc is None:
+            raise HTTPException(status_code=404, detail="document not found")
+        # 先清向量投影，再删 SQL 真相源；最后失效词法分片（user 级）
+        if rag_runtime.vector_store is not None:
+            await rag_runtime.vector_store.delete_by_doc(user.id, doc_key)
+        chunks = await rag_runtime.store.delete_doc(user.id, doc_key)
+        await rag_runtime.lexical.invalidate(user.id)
+        return {"doc_key": doc_key, "deleted_chunks": chunks}
 
     async def _owned_session(session_id: str, username: str):
         user = await users.by_username(username)

@@ -3,7 +3,7 @@
 > 面向后来人的完整说明：项目是什么、怎么设计的、每个模块每个函数干什么、
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
-> 最后更新：2026-09-29 · 代码规模约 10,000 行源码 + 263 个测试
+> 最后更新：2026-10-02 · 代码规模约 10,000 行源码 + 267 个测试
 >
 > **文档地图**（四个文档各管一段，知识点不重复）：
 >
@@ -40,7 +40,7 @@ pi-py 是 **earendol-works/pi**（TypeScript 版编码智能体外壳）的 **Py
 
 设计上的北极星原则（理解所有代码的钥匙）：
 
-1. **一次 run 是原子单位**：要么整轮对话（含所有工具调用）成功后一次性持久化，要么失败不留半截状态。
+1. **用户见过的必落库，用户没见过的绝不落库**：write-ahead 先存用户消息、工具轮边界增量续存，一次事务一段，崩溃最多丢当前轮（细节与取舍见 `docs/run-durability-design.md`）。
 2. **每个 session 同一时刻只有一个 run**：分布式锁保证，跨实例也成立（Redis 后端）。
 3. **安全策略是闸门，不是装饰**：每次工具调用都过 `policy.check()`，拒绝即审计、即报错给模型。
 4. **附属系统永不阻塞主流程**：计量、审计、回调失败只记日志，绝不让 run 失败。
@@ -170,13 +170,15 @@ RunManager.run_turn
   ├─ 加载历史消息（MessageRepo）
   ├─ 装配 AgentLoop（工具 + 策略 + 审计 + tracer）
   ├─ sandbox 预热（docker 池模式下与 LLM 首响应并行）
+  ├─ 用户消息 write-ahead 落库（首个 SSE 事件发出前，流内触发）
   ├─ async with asyncio.timeout(600s):
   │    AgentLoop.run(prompt):
   │      追加用户消息 → 调 provider.stream() 流式收事件
   │        → 模型要工具？→ policy.check() → 执行 → 结果回喂 → 再来一轮
   │        → 不要工具？→ 结束
-  │      （历史超阈值先压缩；每步写审计和 trace span）
-  ├─ 成功：整批消息 MessageRepo.append_many（一次事务）
+  │      （历史超阈值先压缩；每步写审计和 trace span；
+  │        每个 toolcall_start 前把已定稿消息 append_many 增量落库）
+  ├─ 收尾：剩余消息 MessageRepo.append_many（一次事务，含失败场景）
   ├─ 成功：UsageTracker.record（失败只记日志，不回滚对话）
   └─ finally: 释放 session 锁
 ```
@@ -224,7 +226,7 @@ pi-python/
 │       ├── archive.py        会话工作区归档（tar.gz + 差异元数据 + MinIO 惰性上传）
 │       ├── storage.py         MinIO/S3 文件管线（预签名直连 + sha256 去重）
 │       └── client.py         SDK（异步 HTTP 客户端，SSE 流式解析）
-├── tests/                   263 个测试（连本地 MySQL/Redis，服务替身分层）
+├── tests/                   267 个测试（连本地 MySQL/Redis，服务替身分层）
 ├── migrations/              Alembic 迁移（0001 建表 ~ 0007 files）
 ├── docs/                    CubeSandbox 设计笔记 / 生产部署手册 / 生产就绪审计（专项文档）
 ├── tools/loadtest.py        SSE 压测工具
@@ -339,7 +341,7 @@ LLMProvider.stream(system, messages, tools) -> AsyncIterator[StreamEvent]
 | `tools` | 必填 | `Tool` 实例列表，内部建成 name→tool 字典 |
 | `messages` | `[]` | 历史（服务层从库里反序列化后注入） |
 | `cwd` | 当前目录 | 工具的工作目录（= 会话的 workspace） |
-| `on_message` | None | 每条新消息的回调（服务层用它攒批，run 成功后一次事务落库） |
+| `on_message` | None | 每条新消息的回调（服务层 write-ahead + 工具轮边界增量落库 + 收尾合批，见 §11.5） |
 | `max_turns` | 40 | 防死循环：模型反复调工具的硬上限 |
 | `compact_threshold` / `compact_keep` | 80,000 / 8 | 压缩触发阈值（字符数）/ 压缩后保留的尾部消息数 |
 | `policy` / `audit` / `tracer` | None | 安全策略 / 审计 / 追踪（§9、§10） |
@@ -592,7 +594,7 @@ CLI:`pi-py eval rollout --tasks DIR --model X --n 8 --concurrency 16 --sandbox d
 
 | 方法 | 作用 |
 |---|---|
-| `append_many(session_id, entries)` | 批量追加，`entries` 为 `[{'idx', 'role', 'blocks'}, ...]`；`blocks` 是 `Message.model_dump_json()` 的字符串。一次事务写完——这就是原则 1（run 原子性）的落地点 |
+| `append_many(session_id, entries)` | 批量追加，`entries` 为 `[{'idx', 'role', 'blocks'}, ...]`；`blocks` 是 `Message.model_dump_json()` 的字符串。一次事务写完——这就是原则 1（run 原子性）的落地点；用户消息 write-ahead 先行落库、每工具轮边界增量 flush（2026-10-02 起，见 §11.5） |
 | `list_for_session(session_id, after_idx=-1)` | 按 `idx` 升序读回，`after_idx >= 0` 时只取 `idx > after_idx`（摘要复用加载用）；调用方用 `Message.model_validate_json` 反序列化 |
 | `count_for_session(session_id)` | 现有消息数，`RunManager` 用它算新消息的起始 `idx` |
 | `save_compaction(session_id, covered_upto_idx, summary, model)` | 摘要落 `compactions` 表（fail-soft，绝不挂 run） |
@@ -760,7 +762,7 @@ User-Agent，**不记密码**。三点注意：
 | 端点 | 鉴权 | 作用 |
 |---|---|---|
 | `GET /healthz` | 无 | 存活探针（Docker HEALTHCHECK 用） |
-| `GET /readyz` | 无 | 就绪探针：检查 DB 和缓存，任一异常 503 |
+| `GET /readyz` | 无 | 就绪探针：检查 DB/缓存 + **沙箱后端硬检查**（cubesandbox=控制面 `/health` + 数据面 `*.PI_CUBE_DOMAIN` DNS 解析，缺一不可；docker=连 docker.sock，不起子进程；local=无外部依赖直接 ok）。沙箱不可用翻 503（Milvus 仍只记 `degraded` 不翻 503，见 §13 `PI_MILVUS_URI` 行） |
 | `POST /v1/auth/register` | 无（刻意免鉴权） | 注册（`PI_ALLOW_REGISTER=0` 时 403），一律普通用户；重名 409 |
 | `POST /v1/auth/login` | 无 | 验密 → 发 JWT |
 | `POST /v1/auth/logout` | 用户 | 把当前 token 的 jti 拉黑至过期 |
@@ -812,6 +814,13 @@ User-Agent，**不记密码**。三点注意：
 - run 超时（`PI_RUN_TIMEOUT_SECONDS`）用 `asyncio.timeout` 包住整个循环，超了发
   ErrorEvent 但**已产生的消息仍会持久化**（buffer 非空就写）——这是刻意的，
   部分结果比全丢有用。
+- **write-ahead + 逐轮落库（2026-10-02 起）**：非 resume run 的第一条消息必是用户
+  prompt（loop 在任何流式事件前 append 它），`on_message` 单独摘出、在**首个 SSE 事件
+  发出前**落库（失败 = 发 ErrorEvent 终止 run，数据安全优先）；run 未走到首事件
+  就结束时由 finally 兜底补落。此后每个 `ToolCallStartEvent` 前再 flush buffer——
+  模型请求执行工具前，客户端已见过的全部消息先落库。硬崩溃丢失窗口 ≤ 当前轮，
+  用户回来看到截断历史、说"继续"即可接着跑（主流产品形态，无需显式 resume 端点）。
+  完整方案与剩余可选增强见 `docs/run-durability-design.md`。
 
 ### 11.6 `db.py` — ORM 与仓储
 
@@ -884,13 +893,20 @@ User-Agent，**不记密码**。三点注意：
 （只是命名空间被随机化成 `test-xxxx`，不与 `prod:*` 冲突，但确实在污染生产实例），
 `PI_TRACER=jsonl` 也会让测试往 `~/.pi-py/` 写 trace 文件。
 
-因此 `tests/conftest.py` 在 **import pi 之前**把这些变量钉死：
+因此 `tests/conftest.py` 在 **import pi 之前**钉死变量（"已存在的环境变量优先"让
+`.env` 里的对应项失效）：
 
 ```python
-os.environ["PI_REDIS_URL"] = ""   # → MemoryBackend，绝不连真 Redis
+# DB/Redis 是"推导"不是"钉死"（2026-10-02 起）：从 .env.local 的
+# PI_DATABASE_URL / PI_REDIS_URL 换出 pi_py_test 库 / Redis db1——端口单一来源、
+# 测试自动跟随（PI_TEST_DB_URL / PI_TEST_REDIS_URL 可显式覆盖）。曾自带一份默认
+# 端口，与 .env.local 上移后的端口错位：清表连到别的库且不报错，用例随机失败。
+os.environ["PI_DATABASE_URL"] = TEST_DB_URL     # 见上，推导结果
+os.environ["PI_REDIS_URL"] = TEST_REDIS_URL     # 同上
 os.environ["PI_SANDBOX"]   = ""   # → LocalRunner，绝不起真容器
 os.environ["PI_POLICY"]    = ""
 os.environ["PI_TRACER"]    = "noop"
+# 其余 PI_EMBEDDING_* / PI_MILVUS_URI / PI_MCP_SERVERS / PI_SKILLS_DIR 全空
 ```
 
 因为"已存在的环境变量优先"，这几行赋值就让 `.env` 里的对应项失效。
@@ -978,7 +994,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_METRICS_TOKEN` | 空 | `/metrics` 门控 token；空=开放（启动打 warning），错 token 回 404 |
 | `PI_CUBE_API_URL` | `http://127.0.0.1:3000` | CubeSandbox 控制面（E2B 兼容 API）；`PI_SANDBOX=cubesandbox` 时使用 |
 | `PI_CUBE_API_KEY` | 空 | CubeSandbox（E2B 兼容 API）密钥；`PI_SANDBOX=cubesandbox` 必配 |
-| `PI_CUBE_DOMAIN` | `cube.app` | 沙箱数据面域名后缀（`{port}-{id}.cube.app`，解析到 `10.0.0.8`） |
+| `PI_CUBE_DOMAIN` | `cube.app` | 沙箱数据面域名后缀（`{port}-{id}.cube.app`，解析到 `10.0.0.8`）；`/readyz` 硬检查探它——DNS 解析失败 = 503（见 §11.3） |
 | `PI_SANDBOX_TEMPLATE` | 空 | CubeSandbox 模板 id；`PI_SANDBOX=cubesandbox` 必配（如 `cube-lite-py`） |
 | `PI_SANDBOX_CA_FILE` | `~/.pi-py/cube-ca-bundle.pem` | 平台自签 CA + 系统 CA 的合并包（设为 `SSL_CERT_FILE`）；单放平台 CA 会覆盖系统信任链 |
 | `PI_SANDBOX_CLOSE_TIMEOUT_SECONDS` | 90 | 沙箱 close/save 总超时；超时 turn 先走、清理线程收尾（VM 必死） |
@@ -1041,13 +1057,13 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
   配置变量 `PI_ITEST_*`，见 `integration/conftest.py`）。
 - 基础设施没起时单测会失败，先 `docker compose -f deploy/docker-compose.local.yml up -d`。
 
-测试组织（都在 `tests/`，共 263 例，2026-09-29 按 `--collect-only` 实测）：
+测试组织（都在 `tests/`，共 267 例，2026-10-02 按 `--collect-only` 实测）：
 
 | 文件 | 例数 | 覆盖 |
 |---|---|---|
 | `test_security.py` | 47 | 策略拒绝、路径逃逸、脱敏、审计（含认证记录的截断与防伪造行）、JWT；`server_policy` 只加不减（策略文件无法关掉 `path_sandbox`/`redact`）；能力授权 7 例（deny 交集、allow 子集语义、未声明能力 fail-closed、`from_dict` 解析、12 内置工具全声明能力）；对**仓库根那份生效的** `policy.json` 做回归：22 条危险命令必须拦、15 条日常命令必须放行（见 §17.18） |
 | `test_sandbox_pool.py` | 41 | 预热池（假传输，无需真 docker）：复用/预热/并发去重/回收/重建/驱逐/关闭；容器资源限额（`_parse_size`、`SandboxLimits` 校验与两种渲染、CLI/Engine API 两条建容器路径都真的带上了限额）；`PI_SANDBOX` 非法值必须报错而不是静默降级 |
-| `test_server.py` | 26 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；另有认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16） |
+| `test_server.py` | 30 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；另有认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16）；持久化 4 例（write-ahead：中途崩溃/无输出崩溃后用户消息仍在、失败后 idx 连续；逐轮落库：完成轮消息在下一轮崩溃后仍在） |
 | `test_trajectory_view.py` | 16 | 轨迹持久化 + 查看端点：会话级/run 级查询、DB 优先 jsonl 兜底、属主校验（跨用户 404 不泄漏存在性） |
 | `test_rollout.py` | 15 | RL 数据飞轮：rollout、reward 抽取、过滤、导出 JSONL |
 | `test_memory_vector.py` | 15 | 向量语义记忆：Milvus/embedding 路径 + 失败/未配置时优雅词法兜底 |
@@ -1074,15 +1090,16 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 > 事件流）随本地 CLI 一起删除；`test_deployment.py` 里的 GBK 解码例随 Windows 支持删除。
 > 101 → 93 的差额（8 例）全部来自这两处，没有覆盖率损失。（93 是**那次删除之后**的
 > 数量，不是当前总数；之后陆续补了认证审计、`X-Forwarded-For`、沙箱资源限额与
-> 策略回归，现在见上表 263 例。）
+> 策略回归，现在见上表 267 例。）
 
 **测试约定**：
 
 - 一律用 `FakeProvider` + 临时目录/一次性 SQLite 文件，绝不依赖真实模型或外部服务；
 - 异步测试用 `asyncio.run(main())` 包裹（未引入 pytest-asyncio 依赖）；
 - `conftest.py` 除了把 `src/` 加进 `sys.path`，还在 import pi **之前**钉死
-  `PI_REDIS_URL` / `PI_SANDBOX` / `PI_POLICY` / `PI_TRACER`，防止仓库根的生产 `.env`
-  被自动加载后把测试引到真 Redis / 真 docker 上（原理见 §12.2）；
+  `PI_SANDBOX` / `PI_POLICY` / `PI_TRACER` 等，防止仓库根的生产 `.env`
+  被自动加载后把测试引到真 docker / 写盘（原理见 §12.2）；DB/Redis 连接则从
+  `.env.local` **推导**（换 `pi_py_test` 库 / Redis db1，端口单一来源）；
 - `aiosqlite` 只是**测试依赖**（`[dev]` extra），生产路径不含 SQLite。
 
 ---

@@ -142,7 +142,8 @@ class RunManager:
         memory_repo: MemoryRepo | None = None,
         run_repo: RunRepo | None = None,
     ) -> AsyncIterator[AgentEvent]:
-        """Execute one user turn; messages are persisted on completion."""
+        """Execute one user turn; the user message is persisted up-front (write-ahead),
+        the rest incrementally at each tool round boundary and on completion."""
         # distributed session lock: correct across instances when Redis-backed
         lock_key = f"session:{session.id}"
         runner = None  # owned by this turn; closed (workspace saved, VM dead) in finally
@@ -155,9 +156,21 @@ class RunManager:
             async with self._semaphore:
                 buffer: list[Message] = []
                 compaction_to_save: dict | None = None
+                # Write-ahead (run-durability step 1): the first message of a
+                # non-resume run is always the user prompt (loop.py appends it
+                # before streaming anything), so capture it separately and
+                # persist it before the first event leaves this function. A hard
+                # crash after that point can no longer lose the user's words.
+                # Full plan: docs/run-durability-design.md.
+                write_ahead: Message | None = None
+                write_ahead_flushed = False
 
                 def on_message(msg: Message) -> None:
-                    buffer.append(msg)
+                    nonlocal write_ahead
+                    if write_ahead is None:
+                        write_ahead = msg  # first message = user prompt
+                    else:
+                        buffer.append(msg)
 
                 def on_compact(
                     new_messages: list[Message], covered_upto_idx: int | None
@@ -282,9 +295,64 @@ class RunManager:
                         async for ev in agent.run(prompt):
                             yield ev
 
+                async def _flush_write_ahead() -> None:
+                    nonlocal write_ahead_flushed
+                    if write_ahead is None or write_ahead_flushed:
+                        return
+                    base_idx = await message_repo.count_for_session(session.id)
+                    await message_repo.append_many(
+                        session.id,
+                        [
+                            {
+                                "idx": base_idx,
+                                "role": write_ahead.role.value,
+                                "blocks": write_ahead.model_dump_json(),
+                            }
+                        ],
+                    )
+                    write_ahead_flushed = True
+
+                async def _flush_buffer() -> None:
+                    """Incremental durability (run-durability step 2): persist
+                    finalized messages at each tool round boundary. Everything
+                    up to the previous round is in the DB before the model is
+                    allowed to start the next one, so a hard crash loses at
+                    most the in-flight round. Same task as the producer - no
+                    queue needed."""
+                    if not buffer:
+                        return
+                    base_idx = await message_repo.count_for_session(session.id)
+                    entries = [
+                        {
+                            "idx": base_idx + i,
+                            "role": m.role.value,
+                            "blocks": m.model_dump_json(),
+                        }
+                        for i, m in enumerate(buffer)
+                    ]
+                    await message_repo.append_many(session.id, entries)
+                    buffer.clear()
+
                 try:
                     async with self.metrics.in_flight():
+                        first_event = True
                         async for ev in _stream():
+                            if first_event:
+                                first_event = False
+                                try:
+                                    # Persist the user message before anything
+                                    # streams to the client; hard-fail (data
+                                    # safety first, see §17).
+                                    await _flush_write_ahead()
+                                except Exception as exc:  # noqa: BLE001
+                                    run_status = "error"
+                                    yield ErrorEvent(
+                                        message=(
+                                            "persisting user message failed: "
+                                            f"{type(exc).__name__}: {exc}"
+                                        )
+                                    )
+                                    break
                             if isinstance(ev, TurnEndEvent):
                                 final_usage = ev.usage
                                 final_turns = ev.turns
@@ -295,6 +363,24 @@ class RunManager:
                                 run_status = (
                                     "timeout" if "TimeoutError" in ev.message else "error"
                                 )
+                            elif isinstance(ev, ToolCallStartEvent):
+                                # Tool round boundary, flushed BEFORE executing:
+                                # everything the client has seen so far (assistant
+                                # message + earlier rounds' results) reaches the DB
+                                # first. A crash mid-tool loses at most the current
+                                # tool's result - the same truncated history a
+                                # user would see in the stream.
+                                try:
+                                    await _flush_buffer()
+                                except Exception as exc:  # noqa: BLE001
+                                    run_status = "error"
+                                    yield ErrorEvent(
+                                        message=(
+                                            "persisting messages failed: "
+                                            f"{type(exc).__name__}: {exc}"
+                                        )
+                                    )
+                                    break
                             yield ev
                 except TimeoutError:
                     run_status = "timeout"
@@ -329,6 +415,11 @@ class RunManager:
                     except Exception:  # noqa: BLE001 - metrics must never fail a run
                         logging.getLogger("pi.server").exception("metrics projection failed")
 
+                # Fallback: if the run never reached its first streamed event
+                # (or the early flush failed), persist the user message together
+                # with the rest - one batch, contiguous idx.
+                if write_ahead is not None and not write_ahead_flushed:
+                    buffer.insert(0, write_ahead)
                 if buffer:
                     base_idx = await message_repo.count_for_session(session.id)
                     entries = [

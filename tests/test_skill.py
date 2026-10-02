@@ -96,9 +96,11 @@ def test_script_tool_failure_is_error(tmp_path):
 
 class _RecordingProvider(FakeProvider):
     last_system: str | None = None
+    last_messages: list | None = None
 
     async def stream(self, system, messages, tools):
         type(self).last_system = system
+        type(self).last_messages = list(messages)
         async for ev in super().stream(system, messages, tools):
             yield ev
 
@@ -144,6 +146,79 @@ def test_skill_index_injected_into_system_prompt(tmp_path, monkeypatch):
         assert "code_review" in _RecordingProvider.last_system
         # no memory configured -> no memory block
         assert "<relevant memories>" not in _RecordingProvider.last_system
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+class _FakeMemoryRepo:
+    """Duck-typed MemoryRepo - the runner only ever calls `search`."""
+
+    def __init__(self, notes: list[str]) -> None:
+        self.notes = notes
+
+    async def search(self, user_id: int, query: str, k: int = 3):
+        return [type("M", (), {"text": t})() for t in self.notes]
+
+
+def test_memory_rides_user_turn_and_system_stays_stable(tmp_path, monkeypatch):
+    """记忆跟在用户回合里，system prompt 逐字节稳定（缓存前缀纪律）。
+
+    这条为什么必须钉住：system 消息就是 provider 前缀缓存的**前缀**。任何随查询
+    变化的内容一旦进入 system，缓存就从该点起全部失效——实测（DeepSeek，6 轮历史
+    + 12 个工具定义，约 2.8k input）命中率 **92% → 5%**：记忆一变，排在它后面的
+    技能索引、全部工具定义、整段历史全部重算。故本测试断言三件事：
+      1. 记忆**不在** system 里；
+      2. 记忆**在**该回合的 user 消息里，且原始 prompt 未被吞掉；
+      3. **有记忆与无记忆时 system 完全相同**（这才是前缀可复用的充要条件）。
+    """
+    db = Database(TEST_DB_URL)
+    runs = RunManager(
+        policy=Policy(), audit=None, max_concurrent=1,
+        timeout_seconds=30, registry=ToolRegistry(),
+    )
+    session = SessionRow(
+        id="s1", user_id=1, title="t", model="fake/demo",
+        cwd=str(tmp_path), created_at="2026-09-27T00:00:00+00:00",
+    )
+    provider = _RecordingProvider(responses=[[TextBlock(text="hi")]])
+    monkeypatch.setattr(
+        "pi.server.runner.resolve_chain",
+        lambda model, on_fallback=None, **kw: provider,
+    )
+
+    async def turn(memory_repo, prompt: str) -> tuple[str, list[str]]:
+        async for _ in runs.run_turn(
+            session=session, username="u1", user_id=1, prompt=prompt,
+            model="fake/demo", message_repo=MessageRepo(db), memory_repo=memory_repo,
+        ):
+            pass
+        texts = [
+            b.text
+            for m in (_RecordingProvider.last_messages or [])
+            for b in m.blocks
+            if isinstance(b, TextBlock)
+        ]
+        return _RecordingProvider.last_system or "", texts
+
+    async def main():
+        await db.init()
+        sys_with, texts_with = await turn(
+            _FakeMemoryRepo(["用户的项目代号是 Orion。"]), "代号是什么"
+        )
+        assert "<relevant memories>" not in sys_with, (
+            "记忆进了 system prompt —— 前缀缓存会从该点起全部失效"
+        )
+        assert any("<relevant memories>" in t and "Orion" in t for t in texts_with), (
+            "记忆应跟在用户回合里"
+        )
+        assert any("代号是什么" in t for t in texts_with), "原始 prompt 不能被吞掉"
+
+        sys_without, _ = await turn(_FakeMemoryRepo([]), "随便聊聊")
+        assert "<relevant memories>" not in sys_without
+        assert sys_with == sys_without, (
+            "system prompt 随回合变化，作为缓存前缀不再可复用"
+        )
         await db.dispose()
 
     asyncio.run(main())

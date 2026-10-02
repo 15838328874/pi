@@ -199,9 +199,37 @@ class RunManager:
                     history.append(Message.model_validate_json(row.blocks))
                     history_idx.append(row.idx)
 
+                # ---- prompt assembly: STATIC prefix, then dynamic tail --------
+                # The order here is a cache-shape decision, not a style one.
+                # Providers cache by PREFIX: the reused span runs from token 0 to
+                # the first differing token, and everything after it is recomputed
+                # (hit tokens bill at ~10% of input). So the system message must
+                # contain ONLY things that are stable across turns.
+                #
+                # Measured on DeepSeek (same request replayed, 6-turn history +
+                # 12 tool specs, ~2.8k input): with memories in the middle, any
+                # change to them dropped the hit rate to 5% - it invalidated the
+                # skill index, every tool definition AND the whole history behind
+                # it. Moving memories to the tail of the CURRENT user message
+                # keeps it at 92% (see evals + ARCHITECTURE §6.2.2).
+                #
+                # So: system = stable (base prompt + skill index); the volatile
+                # retrieval result travels with the user turn that caused it.
+                system_prompt = SYSTEM_PROMPT
+                skill_index = self.registry.skill_index()
+                if skill_index:
+                    system_prompt = (
+                        f"{system_prompt}\n\n"
+                        f"<available skills>\n{skill_index}\n</available skills>"
+                    )
+
                 # Semantic memory (P3): inject relevant cross-session memories so
                 # the agent breaks session amnesia without being asked to recall.
-                system_prompt = SYSTEM_PROMPT
+                # Prepended to THIS turn's user message (not the system prompt) -
+                # see the cache-shape note above. It is also semantically the
+                # right home: the system prompt describes who the agent is, while
+                # these are background notes for one specific question.
+                memory_prefix = ""
                 if memory_repo is not None:
                     try:
                         relevant = await memory_repo.search(user_id, prompt, k=3)
@@ -209,19 +237,9 @@ class RunManager:
                         relevant = []
                     if relevant:
                         lines = "\n".join(f"- {m.text}" for m in relevant)
-                        system_prompt = (
-                            f"{SYSTEM_PROMPT}\n\n"
-                            f"<relevant memories>\n{lines}\n</relevant memories>"
+                        memory_prefix = (
+                            f"<relevant memories>\n{lines}\n</relevant memories>\n\n"
                         )
-                # Skills: inject the compact index (names + one-liners, no body)
-                # so the model knows what is available and can use_skill for
-                # progressive loading. Mirrors the memory injection above.
-                skill_index = self.registry.skill_index()
-                if skill_index:
-                    system_prompt = (
-                        f"{system_prompt}\n\n"
-                        f"<available skills>\n{skill_index}\n</available skills>"
-                    )
 
                 provider = resolve_chain(
                     model,
@@ -292,7 +310,10 @@ class RunManager:
 
                 async def _stream():
                     async with asyncio.timeout(self.timeout):
-                        async for ev in agent.run(prompt):
+                        # memory_prefix rides the user turn, keeping the system
+                        # message byte-identical across turns (cache-shape note
+                        # above). Empty string when no memory matched.
+                        async for ev in agent.run(memory_prefix + prompt):
                             yield ev
 
                 async def _flush_write_ahead() -> None:

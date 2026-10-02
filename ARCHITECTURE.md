@@ -531,6 +531,50 @@ loop 不为任何一类特殊能力开洞。所以加一个新能力（如 `rag_
 > 「实时视图」的投影源（SSE/落库时机/in-flight）；**审计**是一条独立的合规链路。三者都因
 > 「loop 只管发信号」而互不干扰——但这不等于「一个源投影出所有东西」。
 
+#### 6.2.2 prompt 组装顺序 = 缓存形状决策（2026-10-02）
+
+**原则：静态内容在前，动态内容放到最后一条消息。**
+
+理由在 provider 侧：prompt 缓存（DeepSeek/OpenAI 的自动前缀缓存）是**前缀匹配**语义——
+复用区间从 token 0 一直到**第一个不同的 token**，其后全部重算。命中部分按输入价约 10% 计费，
+是 agent 场景（长上下文 + 多轮）最大的成本杠杆。
+
+所以「往 system 里塞动态内容」的代价被严重低估：它不是让那一小段失效，而是让它**后面的一切**
+（工具定义、技能索引、整段历史）一起失效。
+
+**实测**（本机直连 DeepSeek，它返回 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens`）：
+
+| 场景 | 命中率 |
+|---|---|
+| 完全相同请求连发（第 1 次建立缓存，其后） | 6% → **91%**（1920/2101，64-token 块对齐） |
+| 记忆在 system 中间、每轮变（后面还跟着技能索引） | **5%**（128/2779） |
+| 记忆随用户回合、system 固定 | **92%**（2560/2779） |
+
+**为什么"配技能"才暴露问题**：`PI_SKILLS_DIR` 为空时 `skill_index` 为空，记忆块实际是
+**追加在 system 末尾**的——末尾追加只影响末尾，前缀照样命中（真实会话实测 93~98%）。
+一旦配了技能，技能索引排在记忆**后面**，记忆一变就把技能 + 工具定义 + 历史全部废掉，
+命中率断崖到 5%。**即「想用技能」与「缓存命中」互斥**，而技能正是本系统的能力扩展点。
+
+**落地**（`runner.py` 的 prompt 组装处）：`system_prompt = SYSTEM_PROMPT [+ 技能索引]`（只放
+稳定内容）；检索到的记忆改为 `memory_prefix`，拼在**当前回合的 user 消息**里。
+语义上也更顺：system 描述「agent 是谁」，记忆是「这一问的背景」。
+
+**真实验证**（RunManager + 真 DeepSeek + 已配置技能）：记忆随轮次变化时命中率保持 **78~91%**。
+
+**守护测试**：`tests/test_skill.py::test_memory_rides_user_turn_and_system_stays_stable`
+断言三件事——记忆不在 system、记忆在该回合 user 消息里（且原 prompt 未被吞掉）、
+**有记忆与无记忆时 system 逐字节相同**（后者才是前缀可复用的充要条件）。
+
+**可观测**：`Usage.cache_hit_tokens` / `cache_miss_tokens` 由 provider 归一化两种厂商形态
+（DeepSeek 扁平字段落在 SDK `model_extra`；OpenAI 是 `prompt_tokens_details.cached_tokens`），
+`trajectory` 里 `LlmCall` 记本轮、`RunFinished` 记 run 合计——**按轮记录**是刻意的：run 级
+总数无法区分「前缀从第 3 轮开始坏」和「这个端点根本不缓存」。同 `tools/ab_rag.py` 的纪律：
+**先把指标建起来，再优化**。
+
+> ⚠️ 未验证：云部署走 `llm-gateway`（new-api）时，网关**是否改写 messages**。若它注入自己的
+> system prompt，前缀从第一个 token 起就不同，本节的结论与全部缓存收益都不成立。上生产前需
+> 在网关链路上复测命中率。
+
 ### 6.3 `compaction.py` — 上下文压缩
 
 | 函数 | 作用 |

@@ -685,6 +685,12 @@ def event_to_sse(ev: AgentEvent) -> str:
                 "usage": {
                     "input_tokens": ev.usage.input_tokens,
                     "output_tokens": ev.usage.output_tokens,
+                    # Prompt-cache counters, surfaced so the UI can show the hit
+                    # rate. 0/0 means "provider reported nothing" (not "0% hit"),
+                    # which is why the frontend keys on hit+miss > 0 before
+                    # rendering anything. See ARCHITECTURE §6.2.2.
+                    "cache_hit_tokens": ev.usage.cache_hit_tokens,
+                    "cache_miss_tokens": ev.usage.cache_miss_tokens,
                 },
             }
         )

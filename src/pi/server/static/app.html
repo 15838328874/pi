@@ -805,8 +805,17 @@ async function sendPrompt() {
         } else if (evt === "turn_end") {
           asst?.classList.remove("blink");
           const bubble = asst?.querySelector(".bubble") || asst;
+          const u = d.usage || {};
+          // Provider prompt-cache hit rate: what share of this turn's input was
+          // served from the prefix cache (billed at ~10%). Shown only when the
+          // provider reported cache counters - a blank/0 would otherwise read
+          // as "cache is broken" on endpoints that simply don't report it.
+          const hit = u.cache_hit_tokens || 0, miss = u.cache_miss_tokens || 0;
+          const cache = (hit + miss) > 0
+            ? ` · 缓存命中 ${Math.round(hit / (hit + miss) * 100)}%（${hit}/${hit + miss}）`
+            : "";
           bubble?.insertAdjacentHTML("beforeend",
-            `<div class="meta">本轮 ${d.usage.input_tokens} in / ${d.usage.output_tokens} out · ${d.turns} turns</div>`);
+            `<div class="meta">本轮 ${u.input_tokens} in / ${u.output_tokens} out · ${d.turns} turns${cache}</div>`);
         } else if (evt === "error") {
           showBanner("运行错误：" + d.message);
         }

@@ -3,7 +3,7 @@
 > 面向后来人的完整说明：项目是什么、怎么设计的、每个模块每个函数干什么、
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
-> 最后更新：2026-10-02 · 代码规模约 10,000 行源码 + 267 个测试
+> 最后更新：2026-10-02 · 代码规模约 10,000 行源码 + 528 个测试
 >
 > **文档地图**（三个文档各管一段，知识点不重复）：
 >
@@ -274,7 +274,7 @@ pi-python/
 │       ├── archive.py        会话工作区归档（tar.gz + 差异元数据 + MinIO 惰性上传）
 │       ├── storage.py         MinIO/S3 文件管线（预签名直连 + sha256 去重）
 │       └── client.py         SDK（异步 HTTP 客户端，SSE 流式解析）
-├── tests/                   267 个测试（连本地 MySQL/Redis，服务替身分层）
+├── tests/                   528 个测试（连本地 MySQL/Redis，服务替身分层）
 ├── migrations/              Alembic 迁移（0001 建表 ~ 0007 files）
 ├── docs/                    CubeSandbox 设计笔记 / 生产部署手册 / 生产就绪审计（专项文档）
 ├── tools/loadtest.py        SSE 压测工具
@@ -498,8 +498,9 @@ class Tool(ABC):
 - `SKIP_DIRS`：grep/find 自动跳过的目录（.git、node_modules、venv…）。
 - `truncate()`：统一截断并附 `[truncated, N more chars]` 提示。
 - `capabilities`：能力词汇表 `filesystem.read` / `filesystem.write` / `process.execute` /
-  `memory.read` / `memory.write` / `agent.delegate`（§7.2 有各工具声明表）。12 个内置工具
-  全部声明；MCP/skill 工具不声明（空集）——allow-list 策略下因此被 fail-closed 拒绝。
+  `memory.read` / `memory.write` / `agent.delegate` / `knowledge.retrieve`（§7.2 有各工具
+  声明表）。12 个内置工具全部声明（rag_search 声明 `knowledge.retrieve`）；MCP/skill
+  工具不声明（空集）——allow-list 策略下因此被 fail-closed 拒绝。
 
 **为什么工具结果有 `is_error`？** 失败不是异常——把错误作为正常结果回喂给模型，
 让它读到报错并自我纠正（改参数重试），这是编码智能体可用性的关键。真正的异常
@@ -600,7 +601,8 @@ policy 声明式路径沙箱构成两层越界防护**（详见 `docs/cube-sandb
 
 `ToolProvider`（`tools() -> list[Tool]`，可抛异常）+ `ToolRegistry` 聚合：
 
-- `BuiltinToolProvider` = 现有 12 个内置；`McpToolProvider` = `PI_MCP_SERVERS` 配的
+- `BuiltinToolProvider` = 现有 12 个内置；`RagToolProvider` = `rag_search`（`PI_RAG_ENABLED=0`
+  时整个 provider 不贡献，工具列表里无此工具）；`McpToolProvider` = `PI_MCP_SERVERS` 配的
   外部 server（官方 mcp SDK，stdio spawn 或 HTTP）；`SkillToolProvider` = `PI_SKILLS_DIR`
   下的 `SKILL.md` 技能包。
 - **fail-soft**：单个 provider 失败只记日志跳过，不炸启动；**按 name 去重**，先注册者
@@ -1146,22 +1148,31 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
   配置变量 `PI_ITEST_*`，见 `integration/conftest.py`）。
 - 基础设施没起时单测会失败，先 `docker compose -f deploy/docker-compose.local.yml up -d`。
 
-测试组织（都在 `tests/`，共 267 例，2026-10-02 按 `--collect-only` 实测）：
+测试组织（都在 `tests/`，共 528 例，2026-10-02 按 `--collect-only` 实测）：
 
 | 文件 | 例数 | 覆盖 |
 |---|---|---|
+| `test_rag_integration_m5.py` | 85 | RAG 集成级：真实链路装配（ingest→切块→embedding→检索→rerank 全链路，服务替身分层内的最高层） |
+| `test_rag_retriever.py` | 65 | 检索：向量×BM25→RRF→rerank 融合、三级降级链、user 级 ACL、引用溯源 |
 | `test_security.py` | 47 | 策略拒绝、路径逃逸、脱敏、审计（含认证记录的截断与防伪造行）、JWT；`server_policy` 只加不减（策略文件无法关掉 `path_sandbox`/`redact`）；能力授权 7 例（deny 交集、allow 子集语义、未声明能力 fail-closed、`from_dict` 解析、12 内置工具全声明能力）；对**仓库根那份生效的** `policy.json` 做回归：22 条危险命令必须拦、15 条日常命令必须放行（见 §17.18） |
 | `test_sandbox_pool.py` | 41 | 预热池（假传输，无需真 docker）：复用/预热/并发去重/回收/重建/驱逐/关闭；容器资源限额（`_parse_size`、`SandboxLimits` 校验与两种渲染、CLI/Engine API 两条建容器路径都真的带上了限额）；`PI_SANDBOX` 非法值必须报错而不是静默降级 |
-| `test_server.py` | 30 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；另有认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16）；持久化 4 例（write-ahead：中途崩溃/无输出崩溃后用户消息仍在、失败后 idx 连续；逐轮落库：完成轮消息在下一轮崩溃后仍在） |
+| `test_server.py` | 31 | 全 HTTP API：开放注册（含并发重名）、登录、会话、run SSE、跨用户隔离、限流（`TestClient` 进程内驱动 + 临时 SQLite）；另有认证事件审计（每个出口都落一条、不落密码）与 `X-Forwarded-For` 取真实 IP（可信 CIDR / 默认只信本机 / 伪造前缀 / `*` 反例，见 §17.16）；持久化 4 例（write-ahead：中途崩溃/无输出崩溃后用户消息仍在、失败后 idx 连续；逐轮落库：完成轮消息在下一轮崩溃后仍在）；RAG 上传 413 上限 |
+| `test_rag_parser.py` | 27 | 解析层：MD/PDF/docx/xlsx/HTML 路由、损坏文件降级（缺 bs4/pdfplumber 等可选依赖时对应用例 skip） |
+| `test_rag_eval.py` | 25 | RAG 评测：命中率/引用准确率判分、A/B 对比与报告 |
+| `test_rag_ingest.py` | 18 | 入库管线：幂等重入库、质量门（图片→needs_heavy_parser）、INDEX_PENDING 降级、ACL、启动清扫 stale-pending |
 | `test_trajectory_view.py` | 16 | 轨迹持久化 + 查看端点：会话级/run 级查询、DB 优先 jsonl 兜底、属主校验（跨用户 404 不泄漏存在性） |
 | `test_rollout.py` | 15 | RL 数据飞轮：rollout、reward 抽取、过滤、导出 JSONL |
+| `test_rag_embedder.py` | 15 | RAG embedding 适配：fake/http、批量、用量上报钩子 |
 | `test_memory_vector.py` | 15 | 向量语义记忆：Milvus/embedding 路径 + 失败/未配置时优雅词法兜底 |
 | `test_observability.py` | 14 | 计量、配额、价格、tracer、降级链 |
 | `test_metrics.py` | 14 | 指标：span 钩子、run/工具事件投影、gauge、gate、标签纪律（缺 metrics 类时 skip） |
 | `test_deployment.py` | 12 | 缓存后端、本地沙箱执行器、迁移可达性；其中 1 例（真 Redis 限流）在 localhost:6379 无服务时 **skip** |
+| `test_rag_reranker.py` | 10 | RAG rerank 适配与降级 |
+| `test_rag_ocr_clean.py` | 9 | OCR 输出清洗（PaddleOCR 重解析链路的后处理） |
 | `test_registry.py` | 8 | ToolRegistry：聚合、去重、fail-soft、缓存、技能索引 |
 | `test_launch.py` | 7 | 注销/撤销、管理员端点、审计按天滚动 |
 | `test_admin_console.py` | 7 | 管理台端点：/v1/admin/stats、usage、审计日期参数 |
+| `test_rag_heavy.py` | 6 | heavy-parser 协议（外部 OCR 重解析服务的接线） |
 | `test_trajectory.py` | 6 | canonical 轨迹（P1）：6 类事件、ts 墙钟语义 |
 | `test_mcp.py` | 5 | MCP 工具源：对假 stdio server（tests/fake_mcp_server.py） |
 | `test_evals.py` | 5 | eval harness（P4）：runner、判分器、报告、加载器 |
@@ -1179,7 +1190,7 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 > 事件流）随本地 CLI 一起删除；`test_deployment.py` 里的 GBK 解码例随 Windows 支持删除。
 > 101 → 93 的差额（8 例）全部来自这两处，没有覆盖率损失。（93 是**那次删除之后**的
 > 数量，不是当前总数；之后陆续补了认证审计、`X-Forwarded-For`、沙箱资源限额与
-> 策略回归，现在见上表 267 例。）
+> 策略回归，现在见上表 528 例。）
 
 **测试约定**：
 

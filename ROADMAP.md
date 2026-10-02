@@ -16,7 +16,7 @@
 
 | 能力 | 位置 | 验证 |
 |---|---|---|
-| Agent loop + 12 内置工具 + 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 267 单测 |
+| Agent loop + 12 内置工具（+ rag_search 可选）+ 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 528 单测 |
 | **能力授权（P0-1）**：allow/deny_capabilities 策略键（allow 子集语义、未声明能力的 MCP/skill 工具 fail-closed） | `security/policy.py` `tools/base.py` | 7 单测（TestCapabilities） |
 | **幂等重放（P0-2）**：checkpoint 带 completed_tools 账本，resume 重放已完成工具而非重执行副作用 | `agent/loop.py` | 2 单测（test_durable） |
 | LLM 接入层（openai/anthropic/fake）+ 降级链 + 退避重试 | `src/pi/llm/` | 单测 + 真实模型（qwen3.8-flash/max） |
@@ -40,11 +40,11 @@
 | **沙箱生产化**（CubeSandbox microVM + GNU timeout + 退出码透传 + 10MB 装载上限 + 三层 VM 泄漏防线 + **懒加载/复用池/内存自适应回收生命周期**） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 |
 | **会话闭环归档**（turn 基线快照 + 结束 tar.gz + 差异元数据 + MinIO 惰性接口） | `server/archive.py` | 9 turns 实测 diff 精确 |
 | **沙箱健康指标**（创建失败/命令超时/close 失败/创建耗时 4 系列） | `observability/metrics.py` | 真实任务实测 |
-| **文件管线 P0/P1/P2**（MinIO 预签名直连 + sha256 用户级去重 + files 表 + list_files/fetch_file 工具 + 沙箱能力镜像） | `server/storage.py` `server/db.py` `tools/files.py` | 267 单测 |
+| **文件管线 P0/P1/P2**（MinIO 预签名直连 + sha256 用户级去重 + files 表 + list_files/fetch_file 工具 + 沙箱能力镜像） | `server/storage.py` `server/db.py` `tools/files.py` | 528 单测 |
 | **轨迹结构化落库**（runs 表 + `/v1/trajectory/{run_id}` 回放 + `/v1/admin/trajectory/{run_id}` 跨用户） | `server/db.py` `server/app.py` | 单测 + 实测 |
 | **审计结构化查询**（audit_events 表双写，jsonl 仍是合规底稿） | `server/db.py` `security/audit.py` | 单测 + 实测 |
 | **官方 SDK**（异步客户端：SSE 流式解析、PiError 语义、trust_env=False） | `src/pi/client.py` | 单测 + 真实模型实测 |
-| **企业 RAG 知识库**（零耦合内核 + 解析/语义切块 + 向量×BM25→RRF→rerank 三级降级 + 引用溯源 + user 级 ACL + `rag_search` 工具 + `pi-py rag` CLI） | `src/pi/rag/` `src/pi/tools/rag.py` `src/pi/rag/integration.py` | 236 RAG 单测 + 真栈 integration（真实云 embedding+rerank） |
+| **企业 RAG 知识库**（零耦合内核 + 解析/语义切块 + 向量×BM25→RRF→rerank 三级降级 + 引用溯源 + user 级 ACL + `rag_search` 工具 + `pi-py rag` CLI） | `src/pi/rag/` `src/pi/tools/rag.py` `src/pi/rag/integration.py` | 260 RAG 单测 + 真栈 integration（真实云 embedding+rerank） |
 
 **环境（2026-09-27 起统一，不再有 demo 环境）**：
 - 基础设施三件套：**MySQL 8 + Redis + Milvus**（本地 Docker/native，生产云端托管），测试与生产同构。
@@ -99,7 +99,7 @@
 | M2 | ingest 管道 + rebuild-index + **生产真后端**（MySQL 真相源 / Milvus 可重建投影） | 真栈 integration |
 | M3 | 检索：向量 + BM25 → RRF(k=60) → rerank；四级降级 hybrid→bm25→sql_like，每级发噪音不静默 | recall@5 0.833 / mrr 0.900，+rerank 拉到 1.000 |
 | M4 | 真栈 A/B 归因（390 chunk / 60 golden / 13 档） | BM25 唯一覆盖 0/60 → 推翻了「BM25 必要」假设；**cross-encoder rerank 才是决定性增益** |
-| M5 | pi 对接：`adapters.py` + `RagTool` + `rag/cli.py` + server 接线（`PI_RAG_ENABLED`、rerank 独立 model tag 计量） | 236 RAG 单测 + 真栈 integration 2 passed |
+| M5 | pi 对接：`adapters.py` + `RagTool` + `rag/cli.py` + server 接线（`PI_RAG_ENABLED`、rerank 独立 model tag 计量） | 260 RAG 单测 + 真栈 integration 2 passed |
 
 **对接形态（与"设计浓缩"不同之处）**：`rag_search` 不是塞进 `all_tools()`，而是作为**独立
 `ToolProvider`**（`pi.rag.integration.RagToolProvider`）注册——`ToolRegistry` 会合并去重所有

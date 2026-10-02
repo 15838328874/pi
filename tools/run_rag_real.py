@@ -33,7 +33,6 @@ _map = {
     "PI_ITEST_EMBEDDING_URL": os.environ.get("PI_EMBEDDING_URL", ""),
     "PI_ITEST_EMBEDDING_API_KEY": os.environ.get("PI_EMBEDDING_API_KEY", ""),
     "PI_ITEST_EMBEDDING_MODEL": os.environ.get("PI_EMBEDDING_MODEL", ""),
-    "PI_ITEST_EMBED_STYLE": os.environ.get("PI_RAG_EMBED_STYLE", "auto"),
 }
 # --- real rerank creds: copy from the .env-loaded PI_RAG_RERANK_* ------------
 # Optional: the retrieval test skips its rerank phase when these are absent.
@@ -48,13 +47,13 @@ for k, v in _map.items():
 
 # sanity: report readiness WITHOUT printing the key
 missing = [k for k, v in _map.items() if not v and k not in
-           ("PI_ITEST_EMBED_STYLE", "PI_ITEST_RERANK_URL",
+           ("PI_ITEST_RERANK_URL",
             "PI_ITEST_RERANK_API_KEY", "PI_ITEST_RERANK_MODEL")]
 key_len = len(os.environ.get("PI_ITEST_EMBEDDING_API_KEY", ""))
 print(f"infra: MySQL={os.environ['PI_ITEST_DATABASE_URL'].split('@')[-1]} "
       f"Milvus={os.environ['PI_ITEST_MILVUS_URI']}")
 print(f"embedding: model={os.environ.get('PI_ITEST_EMBEDDING_MODEL')} "
-      f"style={os.environ.get('PI_ITEST_EMBED_STYLE')} api_key_len={key_len}")
+      f"api_key_len={key_len}")
 print(f"rerank: model={os.environ.get('PI_ITEST_RERANK_MODEL') or '(off)'} "
       f"url={'set' if os.environ.get('PI_ITEST_RERANK_URL') else '(off)'}")
 if missing:

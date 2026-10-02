@@ -138,7 +138,7 @@ def test_rag_real_retrieval():
         url=os.environ["PI_ITEST_EMBEDDING_URL"],
         api_key=os.environ["PI_ITEST_EMBEDDING_API_KEY"],
         model=os.environ["PI_ITEST_EMBEDDING_MODEL"],
-        style=os.environ.get("PI_ITEST_EMBED_STYLE", "auto"),
+        
     )
     rerank_url = os.environ.get("PI_ITEST_RERANK_URL", "")
     rerank_key = os.environ.get("PI_ITEST_RERANK_API_KEY", "")
@@ -151,7 +151,7 @@ def test_rag_real_retrieval():
         vec = MilvusRagVectorStore(uri=milvus_uri, collection=_ITEST_COLLECTION)
         lexical = MemoryBM25Index(store)
         emb = HttpEmbedder(
-            url=emb_cfg.url, api_key=emb_cfg.api_key, model=emb_cfg.model, style=emb_cfg.style
+            url=emb_cfg.url, api_key=emb_cfg.api_key, model=emb_cfg.model
         )
         cfg = RagConfig(
             chunking=ChunkingConfig(max_chars=600, min_chars=60),

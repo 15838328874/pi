@@ -190,9 +190,6 @@ class EmbeddingConfig:
     # retry is much cheaper than that. 0 disables retries (one attempt).
     retries: int = 2
     retry_backoff_s: float = 0.5
-    # Wire format: "auto" (probe URL for /compatible-mode), "openai", or
-    # "dashscope". Aliyun MaaS exposes both; pi.llm.embedding speaks native.
-    style: str = "auto"
 
 
 @dataclass
@@ -274,7 +271,6 @@ class RagConfig:
                 timeout_s=_env_float("PI_RAG_EMBED_TIMEOUT", 30.0),
                 retries=_env_int("PI_RAG_EMBED_RETRIES", 2),
                 retry_backoff_s=_env_float("PI_RAG_HTTP_RETRY_BACKOFF", 0.5),
-                style=os.environ.get("PI_RAG_EMBED_STYLE", "auto").strip().lower() or "auto",
             ),
             milvus_uri=_inherited("PI_RAG_MILVUS_URI", "PI_MILVUS_URI", borrowed=borrowed),
             collection=os.environ.get("PI_RAG_COLLECTION", "pi_rag_chunks"),

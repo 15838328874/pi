@@ -58,7 +58,7 @@ async def main() -> None:
     assert cfg.vector_enabled(), "embedding endpoint not configured in .env"
     emb = HttpEmbedder(
         url=cfg.embedding.url, api_key=cfg.embedding.api_key,
-        model=cfg.embedding.model, style=cfg.embedding.style,
+        model=cfg.embedding.model,
         batch_size=cfg.embedding.batch_size, timeout=cfg.embedding.timeout_s,
     )
     _cleanup()  # start from a clean slate (pid-scoped, so usually a no-op)

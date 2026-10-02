@@ -66,8 +66,7 @@ async def main() -> int:
 
     store = MysqlChunkStore(DB_URL, create_schema=True)
     vec = MilvusRagVectorStore(uri=MILVUS_URI, collection=COLLECTION)
-    emb = HttpEmbedder(cfg.embedding.url, cfg.embedding.api_key, cfg.embedding.model,
-                       style=cfg.embedding.style)
+    emb = HttpEmbedder(cfg.embedding.url, cfg.embedding.api_key, cfg.embedding.model)
     lex = MemoryBM25Index(store)
 
     rows = await store.list_chunks_for_user(EVAL_USER)

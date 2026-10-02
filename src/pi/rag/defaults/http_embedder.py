@@ -1,22 +1,24 @@
-"""HTTP embedder - supports BOTH DashScope-native and OpenAI-compatible wires.
+"""HTTP embedder for any OpenAI-compatible ``/embeddings`` endpoint.
 
-Two shapes exist in the wild for the same vendor (Aliyun MaaS):
+One wire only - the OpenAI shape:
 
-  dashscope (native)                      openai (compatible-mode)
-  POST .../api/v1/services/embeddings     POST .../compatible-mode/v1/embeddings
-  {"model": m, "input": {"texts": [...]}} {"model": m, "input": [...]}
-  -> {"output":{"embeddings":[             -> {"data":[{"index":i,
-       {"text_index":i,"embedding":[..]}],       "embedding":[..]}],
-     "usage":{"total_tokens":N}}             "usage":{"prompt_tokens":N,
-                                                     "total_tokens":N}}
+  POST {url}   {"model": m, "input": ["...", ...]}
+  -> {"data": [{"index": i, "embedding": [..]}, ...],
+      "usage": {"prompt_tokens": N, "total_tokens": N}}
 
-pi.llm.embedding.EmbeddingClient implements the native shape; this module
-covers both so standalone users can point at either endpoint. The pi
-integration keeps using pi's own client via adapters.py - the kernel never
-imports it (portability rule).
+**Why only one.** 早先这里同时支持 DashScope 原生线与 OpenAI 兼容线，用
+``style="openai"|"dashscope"|"auto"`` 选择（auto 靠 URL 里有没有
+``/compatible-mode`` 推断）。那套设计换来的是"配错不报错"：style 与实际端点
+形态不一致时，请求照样发出去、响应照样解析，只是向量语义悄悄漂移——检索质量
+下降而日志干净，属于最难查的一类问题。原生线也没有带来任何本模块用得到的
+能力（没用它的 ``text_type``/``dimension`` 等参数）。
 
-Style selection: ``style="openai"|"dashscope"|"auto"``. auto probes by URL
-(`/compatible-mode/` -> openai, else dashscope) - explicit config wins.
+OpenAI 的 ``/embeddings`` 是事实标准，阿里云 MaaS 的 ``/compatible-mode/v1``、
+OpenAI 官方、DeepSeek、vLLM、Ollama、TEI 等都提供同一形状。所以这里只实现它：
+**换 embedding 模型只需要改 URL + model 两个配置**，不涉及代码。
+
+``pi.llm.embedding.EmbeddingClient``（pi 集成走的那条，经 adapters.py）同样只认
+这一种形状，两边一致。
 
 trust_env=False: dead http(s)_proxy env vars must not hijack outbound calls
 (same house rule as EmbeddingClient / MilvusStore grpc proxy kill).
@@ -45,17 +47,9 @@ TIMEOUT = 30.0
 RETRIES = 2
 RETRY_BACKOFF_S = 0.5
 
-STYLE_OPENAI = "openai"
-STYLE_DASHSCOPE = "dashscope"
-
 
 class EmbeddingError(Exception):
     """Raised on any embedding failure; the retriever logs-and-degrades."""
-
-
-def _infer_style(url: str) -> str:
-    """auto: /compatible-mode/ in the path means the OpenAI wire."""
-    return STYLE_OPENAI if "/compatible-mode" in url else STYLE_DASHSCOPE
 
 
 class HttpEmbedder:
@@ -66,13 +60,10 @@ class HttpEmbedder:
         model: str,
         timeout: float = TIMEOUT,
         batch_size: int = 16,
-        style: str = "auto",
         retries: int = RETRIES,
         retry_backoff_s: float = RETRY_BACKOFF_S,
         transport: httpx.AsyncBaseTransport | None = None,  # test seam (mock transport)
     ) -> None:
-        if style not in ("auto", STYLE_OPENAI, STYLE_DASHSCOPE):
-            raise ValueError(f"unknown embedding style {style!r}")
         self.url = url.rstrip("/")
         self.api_key = api_key
         self.model = model
@@ -80,7 +71,6 @@ class HttpEmbedder:
         self.batch_size = max(1, batch_size)
         self.attempts = 1 + max(0, int(retries))
         self.retry_backoff_s = max(0.0, float(retry_backoff_s))
-        self.style = _infer_style(self.url) if style == "auto" else style
         self._transport = transport
         # Shared connection pool (R8): one AsyncClient for the embedder's
         # lifetime instead of a fresh TCP+TLS handshake per batch. Created
@@ -125,10 +115,7 @@ class HttpEmbedder:
             self._pool = None
 
     async def _embed_batch(self, texts: list[str]) -> EmbedResult:
-        if self.style == STYLE_OPENAI:
-            body: dict = {"model": self.model, "input": texts}
-        else:
-            body = {"model": self.model, "input": {"texts": texts}}
+        body: dict = {"model": self.model, "input": texts}
         try:
             client = self._client()
             resp = await post_json_with_retries(
@@ -155,9 +142,7 @@ class HttpEmbedder:
         except ValueError as exc:
             raise EmbeddingError(f"embedding response is not JSON: {exc}") from exc
 
-        if self.style == STYLE_OPENAI:
-            return self._parse_openai(payload, len(texts))
-        return self._parse_dashscope(payload, len(texts))
+        return self._parse(payload, len(texts))
 
     @staticmethod
     def _validate_vec(vec: object) -> None:
@@ -166,14 +151,14 @@ class HttpEmbedder:
         if not all(isinstance(x, (int, float)) for x in vec):
             raise EmbeddingError("embedding entry is not a list of floats")
 
-    def _parse_openai(self, payload: dict, n: int) -> EmbedResult:
+    def _parse(self, payload: dict, n: int) -> EmbedResult:
         try:
             entries = payload["data"]
         except (KeyError, TypeError) as exc:
             # OpenAI-compatible endpoints put auth/model errors under "error".
             err = payload.get("error") if isinstance(payload, dict) else None
             msg = err.get("message") if isinstance(err, dict) else str(payload)[:300]
-            raise EmbeddingError(f"malformed openai embedding response: {msg}") from exc
+            raise EmbeddingError(f"malformed embedding response: {msg}") from exc
         if not isinstance(entries, list) or len(entries) != n:
             raise EmbeddingError(
                 f"embedding count mismatch: asked {n}, got {len(entries) if isinstance(entries, list) else '?'}"
@@ -185,32 +170,11 @@ class HttpEmbedder:
                 vec = entry["embedding"]
                 idx = entry.get("index", len(by_index))
             except (KeyError, TypeError) as exc:
-                raise EmbeddingError(f"malformed openai embedding entry: {exc}") from exc
-            self._validate_vec(vec)
-            by_index[int(idx)] = list(vec)
-        if len(by_index) != n:
-            raise EmbeddingError("openai embedding response has duplicate/missing indices")
-        usage = payload.get("usage") or {}
-        tokens = usage.get("total_tokens") or usage.get("prompt_tokens") or 0
-        return EmbedResult(vectors=[by_index[i] for i in range(n)], usage_tokens=int(tokens))
-
-    def _parse_dashscope(self, payload: dict, n: int) -> EmbedResult:
-        try:
-            entries = payload["output"]["embeddings"]
-        except (KeyError, TypeError) as exc:
-            raise EmbeddingError(f"malformed dashscope embedding response: {payload}") from exc
-        if len(entries) != n:
-            raise EmbeddingError(f"embedding count mismatch: asked {n}, got {len(entries)}")
-        by_index: dict[int, list[float]] = {}
-        for entry in entries:
-            try:
-                vec = entry["embedding"]
-                idx = entry.get("text_index", len(by_index))
-            except (KeyError, TypeError) as exc:
                 raise EmbeddingError(f"malformed embedding entry: {exc}") from exc
             self._validate_vec(vec)
             by_index[int(idx)] = list(vec)
         if len(by_index) != n:
-            raise EmbeddingError("dashscope embedding response missing text_index entries")
-        usage = (payload.get("usage") or {}).get("total_tokens", 0)
-        return EmbedResult(vectors=[by_index[i] for i in range(n)], usage_tokens=int(usage or 0))
+            raise EmbeddingError("embedding response has duplicate/missing indices")
+        usage = payload.get("usage") or {}
+        tokens = usage.get("total_tokens") or usage.get("prompt_tokens") or 0
+        return EmbedResult(vectors=[by_index[i] for i in range(n)], usage_tokens=int(tokens))

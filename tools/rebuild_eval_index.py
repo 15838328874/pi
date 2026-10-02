@@ -144,15 +144,14 @@ async def main() -> int:
     print(f"[drift-check] corpus={args.corpus} user={user_id} collection={collection}")
     print(f"  mysql  = {db_url.split('@')[-1]}")
     print(f"  milvus = {milvus_uri}")
-    print(f"  model  = {cfg.embedding.model} (style={cfg.embedding.style}, "
-          f"key_len={len(cfg.embedding.api_key)})")
+    print(f"  model  = {cfg.embedding.model} key_len={len(cfg.embedding.api_key)}")
 
     store = MysqlChunkStore(db_url, create_schema=False)
     vector_store = MilvusRagVectorStore(milvus_uri, collection=collection)
     embedder = HttpEmbedder(
         cfg.embedding.url, cfg.embedding.api_key, cfg.embedding.model,
         timeout=cfg.embedding.timeout_s, batch_size=cfg.embedding.batch_size,
-        style=cfg.embedding.style, retries=cfg.embedding.retries,
+        retries=cfg.embedding.retries,
         retry_backoff_s=cfg.embedding.retry_backoff_s,
     )
 

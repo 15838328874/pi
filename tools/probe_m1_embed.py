@@ -37,7 +37,6 @@ async def main() -> None:
         url=cfg.embedding.url,
         api_key=cfg.embedding.api_key,
         model=cfg.embedding.model,
-        style=cfg.embedding.style,
         batch_size=cfg.embedding.batch_size,
         timeout=cfg.embedding.timeout_s,
     )

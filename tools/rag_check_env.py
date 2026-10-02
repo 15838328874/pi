@@ -81,7 +81,6 @@ async def main() -> int:
     emb = HttpEmbedder(
         cfg.embedding.url, cfg.embedding.api_key, cfg.embedding.model,
         timeout=cfg.embedding.timeout_s, batch_size=cfg.embedding.batch_size,
-        style=cfg.embedding.style,
     )
     t0 = time.perf_counter()
     try:

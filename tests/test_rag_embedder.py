@@ -17,15 +17,11 @@ import json
 import httpx
 
 from pi.rag.defaults.http_embedder import (
-    STYLE_DASHSCOPE,
-    STYLE_OPENAI,
     EmbeddingError,
     HttpEmbedder,
-    _infer_style,
 )
 
 OPENAI_URL = "https://example.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/embeddings"
-DASHSCOPE_URL = "https://example.cn-beijing.maas.aliyuncs.com/api/v1/services/embeddings"
 KEY = "***"
 
 seen: dict[str, object] = {}
@@ -46,24 +42,6 @@ def _openai_handler(request: httpx.Request) -> httpx.Response:
         200,
         json={"object": "list", "model": body.get("model"), "data": data,
               "usage": {"prompt_tokens": 7, "total_tokens": 7}},
-    )
-
-
-def _dashscope_handler(request: httpx.Request) -> httpx.Response:
-    body = json.loads(request.content)
-    seen["auth"] = request.headers.get("Authorization")
-    seen["body"] = body
-    texts = body.get("input", {}).get("texts")
-    if not isinstance(texts, list):
-        return httpx.Response(400, json={"message": "input.texts must be a list"})
-    # Deliberately return OUT OF ORDER to prove we re-sort by text_index.
-    entries = [
-        {"text_index": i, "embedding": [float(i) / 10, 0.5, -1.0]} for i in range(len(texts))
-    ]
-    entries.reverse()
-    return httpx.Response(
-        200,
-        json={"output": {"embeddings": entries}, "usage": {"total_tokens": 12}},
     )
 
 
@@ -90,18 +68,6 @@ def _dup_index_handler(request: httpx.Request) -> httpx.Response:
     )
 
 
-def test_style_inference_from_url():
-    assert _infer_style(OPENAI_URL) == STYLE_OPENAI
-    assert _infer_style(DASHSCOPE_URL) == STYLE_DASHSCOPE
-    # explicit style wins over URL inference
-    e = HttpEmbedder(OPENAI_URL, KEY, "m", style="dashscope")
-    assert e.style == STYLE_DASHSCOPE
-    e2 = HttpEmbedder(DASHSCOPE_URL, KEY, "m", style="openai")
-    assert e2.style == STYLE_OPENAI
-    # auto resolves at construction, not per-call
-    assert HttpEmbedder(OPENAI_URL, KEY, "m").style == STYLE_OPENAI
-
-
 def test_openai_wire_request_and_response():
     async def main():
         seen.clear()
@@ -118,23 +84,6 @@ def test_openai_wire_request_and_response():
         assert len(res.vectors) == 2
         assert res.vectors[0][0] == 0.0 and res.vectors[1][0] == 0.1
         assert res.usage_tokens == 7
-
-    asyncio.run(main())
-
-
-def test_dashscope_wire_resorts_by_text_index():
-    async def main():
-        seen.clear()
-        emb = HttpEmbedder(
-            DASHSCOPE_URL, KEY, "m", style="dashscope",
-            transport=httpx.MockTransport(_dashscope_handler),
-        )
-        res = await emb.embed(["a", "b", "c"])
-        # request shape: {"model":..., "input": {"texts": [...]}}
-        assert seen["body"]["input"] == {"texts": ["a", "b", "c"]}
-        # handler returned entries reversed; we must re-sort by text_index
-        assert [v[0] for v in res.vectors] == [0.0, 0.1, 0.2]
-        assert res.usage_tokens == 12
 
     asyncio.run(main())
 
@@ -407,9 +356,3 @@ def test_retries_zero_means_single_attempt():
     asyncio.run(main())
 
 
-def test_unknown_style_rejected_at_construction():
-    try:
-        HttpEmbedder(OPENAI_URL, KEY, "m", style="bert")
-        raise AssertionError("expected ValueError")
-    except ValueError:
-        pass

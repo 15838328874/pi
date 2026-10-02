@@ -514,7 +514,7 @@ def test_build_runtime_enables_vector_channel_only_with_full_embedding_config(tm
 
 
 def test_build_runtime_builds_http_embedder_and_reranker_when_configured(tmp_path, monkeypatch):
-    """Production path: HttpEmbedder (OpenAI-compatible style auto-detected) +
+    """Production path: HttpEmbedder (OpenAI-compatible endpoint) +
     HttpReranker. This is why adapters does NOT reuse pi.llm.embedding's client:
     that one speaks the DashScope-native wire, while the configured endpoint is
     /compatible-mode (OpenAI). Wrong wire format = every call 400s."""
@@ -530,7 +530,7 @@ def test_build_runtime_builds_http_embedder_and_reranker_when_configured(tmp_pat
 
     runtime = build_runtime(cfg, allow_memory_vector=True)
     assert type(runtime.embedder).__name__ == "HttpEmbedder"
-    assert runtime.embedder.style == "openai"  # inferred from /compatible-mode
+    # 不再断言 wire style：端点形态已统一为 OpenAI，HttpEmbedder 没有 style 了
     assert type(runtime.reranker).__name__ == "HttpReranker"
     assert cfg.rerank_enabled() is True
 

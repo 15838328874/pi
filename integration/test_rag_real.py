@@ -78,7 +78,7 @@ def test_rag_real_stack_chain():
         url=os.environ["PI_ITEST_EMBEDDING_URL"],
         api_key=os.environ["PI_ITEST_EMBEDDING_API_KEY"],
         model=os.environ["PI_ITEST_EMBEDDING_MODEL"],
-        style=os.environ.get("PI_ITEST_EMBED_STYLE", "auto"),
+        
     )
     stamp = int(time.time())
     uid = 990000 + (stamp % 90000)  # throwaway user id (no FK on rag_* tables)
@@ -88,7 +88,7 @@ def test_rag_real_stack_chain():
         vec = MilvusRagVectorStore(uri=milvus_uri, collection=_ITEST_COLLECTION)
         lexical = MemoryBM25Index(store)
         emb = HttpEmbedder(
-            url=emb_cfg.url, api_key=emb_cfg.api_key, model=emb_cfg.model, style=emb_cfg.style
+            url=emb_cfg.url, api_key=emb_cfg.api_key, model=emb_cfg.model
         )
         cfg = RagConfig(chunking=ChunkingConfig(max_chars=600, min_chars=60), embedding=emb_cfg)
         pipe = IngestPipeline(

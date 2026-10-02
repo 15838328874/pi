@@ -471,14 +471,14 @@ async def main() -> None:
         url=os.environ["PI_EMBEDDING_URL"],
         api_key=os.environ["PI_EMBEDDING_API_KEY"],
         model=os.environ["PI_EMBEDDING_MODEL"],
-        style=os.environ.get("PI_RAG_EMBED_STYLE", "auto"),
+        
     )
     cfg = RagConfig(chunking=ChunkingConfig(max_chars=800, min_chars=100), embedding=emb_cfg)
 
     store = MysqlChunkStore(db_url, create_schema=True)
     vec = MilvusRagVectorStore(uri=milvus_uri, collection=collection)
     emb = HttpEmbedder(url=emb_cfg.url, api_key=emb_cfg.api_key,
-                       model=emb_cfg.model, style=emb_cfg.style)
+                       model=emb_cfg.model)
     lex = MemoryBM25Index(store)
     pipe = IngestPipeline(store=store, embedder=emb, vector_store=vec,
                           config=cfg, lexical_index=lex)

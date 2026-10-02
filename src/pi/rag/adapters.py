@@ -287,7 +287,6 @@ def build_runtime(
             cfg.embedding.model,
             timeout=cfg.embedding.timeout_s,
             batch_size=cfg.embedding.batch_size,
-            style=cfg.embedding.style,
             retries=cfg.embedding.retries,
             retry_backoff_s=cfg.embedding.retry_backoff_s,
         )

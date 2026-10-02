@@ -97,7 +97,7 @@ async def main() -> None:
 
     emb_cfg = EmbeddingConfig(
         url=os.environ["PI_EMBEDDING_URL"], api_key=os.environ["PI_EMBEDDING_API_KEY"],
-        model=os.environ["PI_EMBEDDING_MODEL"], style=os.environ.get("PI_RAG_EMBED_STYLE", "auto"),
+        model=os.environ["PI_EMBEDDING_MODEL"], 
     )
 
     gs_path = ROOT / "evals" / "tasks" / "rag" / golden_file
@@ -105,7 +105,7 @@ async def main() -> None:
 
     store = MysqlChunkStore(db_url)
     vec = MilvusRagVectorStore(uri=milvus_uri, collection=collection)
-    emb = HttpEmbedder(url=emb_cfg.url, api_key=emb_cfg.api_key, model=emb_cfg.model, style=emb_cfg.style)
+    emb = HttpEmbedder(url=emb_cfg.url, api_key=emb_cfg.api_key, model=emb_cfg.model)
     lexical = MemoryBM25Index(store)
 
     try:

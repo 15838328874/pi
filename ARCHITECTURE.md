@@ -296,6 +296,9 @@ LLMProvider.stream(system, messages, tools) -> AsyncIterator[StreamEvent]
 - 内容流经 `ThinkFilter`（§5.5）；
 - `finish_reason == "tool_calls"` 归一为 `"tool_use"`。
 - 兼容任何 OpenAI 协议端点（`OPENAI_BASE_URL`），这是接国产模型的方式。
+  生产部署推荐前置**聚合网关**（cloud compose 内置 `llm-gateway` = new-api）：
+  pi-py 只指向网关一个端点，网关按渠道把流量分给多家厂商、QPS 打满自动切换
+  （配置与演练见 `deploy/cloud-deploy.md` §2.5）。
 
 **AnthropicProvider 要点**：
 - `MAX_TOKENS = 8192`（Anthropic 必填参数）；
@@ -940,7 +943,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 |---|---|---|
 | `PI_MODEL` | `openai/gpt-4o` | 默认模型（`provider/model` 格式） |
 | `PI_FALLBACK_CHAIN` | 空 | 逗号分隔降级链 |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | — | OpenAI 兼容端点凭据 |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | — | OpenAI 兼容端点凭据；cloud compose 默认把 base_url 指向内置聚合网关 `llm-gateway`（显式设置则直连厂商，见 §14.2） |
 | `ANTHROPIC_API_KEY` | — | Anthropic 凭据 |
 | `PI_DATABASE_URL` | **无（必填）** | `mysql+aiomysql://...` 或 `postgresql+asyncpg://...`；缺失则服务拒绝启动 |
 | `PI_REDIS_URL` / `PI_REDIS_NS` | 空 / `pi` | Redis（锁/限流/撤销）；空=进程内退化 |
@@ -1003,7 +1006,9 @@ pi-py serve --port 8398                   # 别占用生产的 8300
   app 跑在宿主机 python；环境变量模板 `deploy/env.local.example`，见 `deploy/local-dev.md`。
 - `docker-compose.cloud.yml`：云变体——不含数据库容器，指向火山引擎托管
   MySQL/Redis 的**内网**域名；密钥全部来自 `.env`（`deploy/env.cloud.example` 模板）；
-  可选 `--profile tls` 加 Caddy（`deploy/Caddyfile.cloud`，`{$DOMAIN}` 注入，
+  内置 `llm-gateway`（new-api）聚合网关服务：`OPENAI_BASE_URL` 留空即默认走网关
+  （compose 内 `http://llm-gateway:3000/v1`），管理 UI 只绑 `127.0.0.1:3000`、
+  经 SSH 隧道访问；可选 `--profile tls` 加 Caddy（`deploy/Caddyfile.cloud`，`{$DOMAIN}` 注入，
   `flush_interval -1` + `encode off` 保证 SSE 不被缓冲）。
 - **完整云端 runbook**（安全组核对、上传、验证清单、调优、故障排查）：
   `deploy/cloud-deploy.md`。

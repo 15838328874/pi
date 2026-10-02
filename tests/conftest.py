@@ -17,13 +17,71 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-TEST_DB_URL = "mysql+aiomysql://pi:pi_py_local@127.0.0.1:3306/pi_py_test"
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _read_env_file(path: Path) -> dict[str, str]:
+    """解析 KEY=VALUE 的 env 文件（跳过注释/空行，去掉成对引号）。"""
+    out: dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        out[key.strip()] = val.strip().strip('"').strip("'")
+    return out
+
+
+def _derive_test_targets() -> tuple[str, str]:
+    """测试用的 DB / Redis 地址：**复用 .env.local 的连接信息**，只换库名与 db 序号。
+
+    为什么要这样：与 CubeSandbox 同机部署时 3306/6379 已被平台占用，本地栈端口
+    必须上移（见 deploy/.env）。若测试再自带一份默认端口，就会出现"应用连 13306、
+    测试连 3306"这类错位——实测踩过：清表连到了**另一个库**且不报错，测试库永远
+    不清，用例随机失败（注册类 409、redis 认证错误、单跑正常连跑才挂）。
+
+    现在端口只在配置文件里写一次（.env.local），测试自动跟上，不必每次手工传环境变量。
+    优先级：PI_TEST_DB_URL / PI_TEST_REDIS_URL（显式覆盖）> .env.local > 内置默认。
+    测试刻意用**独立库名**（pi_py_test）与 Redis db1，避免污染开发数据。
+    """
+    override_db = os.environ.get("PI_TEST_DB_URL", "").strip()
+    override_redis = os.environ.get("PI_TEST_REDIS_URL", "").strip()
+
+    app_env = _read_env_file(_REPO_ROOT / ".env.local")
+
+    db_url = override_db or app_env.get("PI_DATABASE_URL", "").strip()
+    if db_url:
+        from sqlalchemy.engine import make_url
+
+        # 注意用 render_as_string(hide_password=False)：URL.__str__ 会把密码渲染成
+        # "***"（防日志泄漏），直接 str() 会让测试拿着字面量 "***" 去连库。
+        test_db_url = make_url(db_url).set(database="pi_py_test").render_as_string(
+            hide_password=False
+        )
+    else:
+        test_db_url = "mysql+aiomysql://pi:pi_py_local@127.0.0.1:3306/pi_py_test"
+
+    redis_url = override_redis or app_env.get("PI_REDIS_URL", "").strip()
+    if redis_url:
+        # redis://host:port/<db> → 换成测试库 db1；保留 query（如 ?ssl=...）
+        head, _, tail = redis_url.partition("?")
+        base = head.rstrip("/").rsplit("/", 1)[0]
+        test_redis_url = f"{base}/1" + (f"?{tail}" if tail else "")
+    else:
+        test_redis_url = "redis://127.0.0.1:6379/1"
+
+    return test_db_url, test_redis_url
+
+
+TEST_DB_URL, TEST_REDIS_URL = _derive_test_targets()
 
 # pi/__init__.py auto-loads ./.env on import, and existing environment variables
 # win. Pin these before any test module imports pi so a production .env sitting in
 # the repo root cannot point the suite at real Redis/Docker or write outside tmp.
 os.environ["PI_DATABASE_URL"] = TEST_DB_URL
-os.environ["PI_REDIS_URL"] = "redis://127.0.0.1:6379/1"
+os.environ["PI_REDIS_URL"] = TEST_REDIS_URL
 os.environ["PI_REDIS_NS"] = ""
 os.environ["PI_JWT_SECRET"] = "test-secret-key"
 os.environ["PI_SANDBOX"] = ""
@@ -47,16 +105,26 @@ os.environ["PI_METRICS_TOKEN"] = ""
 
 def _clean_tables() -> None:
     """清空共享 MySQL 测试库（测试间隔离）。连接失败时直接报错——按新纪律，
-    基础设施没起就是测试环境错误，不静默跳过。"""
+    基础设施没起就是测试环境错误，不静默跳过。
+
+    连接信息**从 TEST_DB_URL 解析**，不再单写一份 host/port/user/password：
+    原先这里硬编码 port=3306，而建表走的是 TEST_DB_URL 的端口。一旦两者不一致
+    （例如本机 3306 已被别的服务占用、测试库挪到 13306），清表就连到了**另一个
+    库**且不报错——测试库永远不清，残留数据让后续用例随机失败（表现为注册类
+    测试 409 "username already exists"，且单跑正常、连跑才挂）。
+    """
     import aiomysql
+    from sqlalchemy.engine import make_url
+
+    url = make_url(TEST_DB_URL)
 
     async def clean() -> None:
         conn = await aiomysql.connect(
-            host="127.0.0.1",
-            port=3306,
-            user="pi",
-            password="pi_py_local",
-            db="pi_py_test",
+            host=url.host or "127.0.0.1",
+            port=url.port or 3306,
+            user=url.username or "pi",
+            password=url.password or "",
+            db=url.database or "pi_py_test",
             charset="utf8mb4",
         )
         try:

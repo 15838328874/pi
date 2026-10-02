@@ -12,6 +12,29 @@
 name: pi-py
 
 services:
+  # LLM aggregation gateway (new-api): the single front door for every model
+  # provider. pi-py sees ONE OpenAI-compatible endpoint; the gateway routes to
+  # multiple vendors (Aliyun/DeepSeek/...), spreads load across keys per vendor,
+  # and fails over to the next channel when one hits its QPS cap or errors.
+  # Admin UI: http://127.0.0.1:3000 — bound to loopback on purpose; reach it via
+  # ssh -L 3000:127.0.0.1:3000 <host>, never expose this port publicly.
+  # Setup steps (channels / model mapping / tokens): deploy/cloud-deploy.md.
+  llm-gateway:
+    image: calciumion/new-api:latest
+    container_name: pi-py-llm-gateway
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - llm-gateway-data:/data        # channels / tokens / usage logs (SQLite)
+    environment:
+      TZ: Asia/Shanghai
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/api/status || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
   # One-shot schema migration: applies alembic revisions to the cloud MySQL
   # before the app starts. Safe to re-run (alembic tracks applied versions).
   migrate:
@@ -31,10 +54,16 @@ services:
       PI_JWT_SECRET: ${PI_JWT_SECRET:?set PI_JWT_SECRET in .env}
       PI_REDIS_NS: ${PI_REDIS_NS:-prod}
       PI_MODEL: ${PI_MODEL:-openai/qwen3.8-max}
+      # Model access: by default everything routes through the bundled
+      # llm-gateway (new-api). OPENAI_API_KEY is then a gateway token created
+      # in its admin UI, and OPENAI_BASE_URL can stay empty (compose defaults
+      # it to http://llm-gateway:3000/v1). To bypass the gateway (direct vendor
+      # access), set OPENAI_BASE_URL explicitly in .env.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://llm-gateway:3000/v1}
       PI_FALLBACK_CHAIN: ${PI_FALLBACK_CHAIN:-}
-      # Vector semantic memory: unset = lexical retrieval only.
+      # Vector semantic memory: unset = lexical retrieval only. The embedding
+      # endpoint may also route through the gateway (see cloud-deploy.md).
       PI_EMBEDDING_URL: ${PI_EMBEDDING_URL:-}
       PI_EMBEDDING_API_KEY: ${PI_EMBEDDING_API_KEY:-}
       PI_EMBEDDING_MODEL: ${PI_EMBEDDING_MODEL:-}
@@ -86,6 +115,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      llm-gateway:
+        condition: service_started
     restart: unless-stopped
     deploy:
       replicas: ${PI_REPLICAS:-1}  # >1 on one host is fine (Redis-backed locks);
@@ -113,3 +144,4 @@ volumes:
   workspaces:
   audits:
   caddy_data:
+  llm-gateway-data:

@@ -552,7 +552,8 @@ systemd `EnvironmentFile` 引用。
 | `PI_CUBE_API_URL` | `http://127.0.0.1:3000` | CubeAPI 地址 |
 | `PI_CUBE_API_KEY` | `e2b_000000` | 换强随机 ★ |
 | `PI_CUBE_DOMAIN` | `cube.app` | 沙箱数据面域名后缀 |
-| `SSL_CERT_FILE` | — | 平台自签 CA + 系统 CA 合并文件（**是 `SSL_CERT_FILE`，httpx 标准变量**）★ |
+| `PI_SANDBOX_CA_FILE` | `/root/.local/share/mkcert/rootCA.pem` | 平台自签 CA **+ 系统 CA 合并**文件；服务非 root 运行时必须改到可读路径（§12）★ |
+| `SSL_CERT_FILE` | — | 同上内容的另一入口（**httpx 标准变量**）。由 `PI_SANDBOX_CA_FILE` 自动 setdefault ★ |
 
 ### 7.2 沙箱池（会话级复用，内存压力自适应）
 
@@ -957,6 +958,7 @@ docker exec cube-sandbox-mysql mysql -ucube -pcube_pass cube_mvp \
 - [ ] **`PI_MAX_CONCURRENT_RUNS` 对齐物理核数**（8 核→12），不是按配额密度上限设（§10.6）
 - [ ] **若做过压测**：`mcpu_limit` 已还原为 `0`、`tap_init_num` 已还原为 `500`（§10.8）
 - [ ] `/metrics` 四个沙箱系列在（create/close/health/trace failures）
+- [ ] **`/readyz` 的 `checks.sandbox` 是 `ok`** —— 平台不可用时它会翻 **503**（含数据面 `*.cube.app` 解析检查）。这是目前**唯一能自动发现"沙箱平台整体挂掉"的信号**：没有它时 `/readyz` 照样返回 200 ready，只能等用户报错或人工翻日志（见 §12 的 coredns 两条）。指标虽已就位，但**尚无采集与告警**，待办见 `ROADMAP.md` §3
 - [ ] 归档目录可写；配 MinIO 后归档 json 的 `s3` 字段 non-null
 - [ ] 备份：MySQL 每日 dump；归档同步异机/对象存储
 
@@ -990,6 +992,16 @@ docker exec cube-sandbox-mysql mysql -ucube -pcube_pass cube_mvp \
 | **重启 docker 打断镜像构建** | 构建中途 `exit code: 137`，日志停在某个 `apk add` / `pip install` | 137=SIGKILL，**先确认是不是自己 `systemctl restart docker` 杀的**。改 `daemon.json` 请避开构建期间，或构建完再重启 |
 | **集群外客户端解析不了 `*.cube.app`** | `DNS error: no records found` | 用官方 `cubesandbox` SDK 时设 `CUBE_PROXY_NODE_IP`（内置 `IPOverrideTransport`，直连节点 IP 并保留 Host 头，同时免掉 DNS 与自签证书） |
 | **pi-py 侧 `*.cube.app` 解析不了** | 服务日志 `Name or service not known`；e2b SDK 建完沙箱连不上数据面 | pi-py 用的是裸 e2b SDK（无 IP 覆盖），必须让**宿主机**能解析 `*.cube.app`。**不要手改 `/etc/resolv.conf`**——systemd-resolved 会重新生成覆盖掉。正确做法是按域路由（持久，且不影响其他域名解析）：<br>`/etc/systemd/resolved.conf.d/cube-app.conf`：<br>`[Resolve]`<br>`DNS=169.254.254.53`<br>`Domains=~cube.app`<br>然后 `systemctl restart systemd-resolved` |
+| **coredns 没跑 → `*.cube.app` 整个解析不了** | 与上一行同样的 `Name or service not known`，但**根因不同**：`cube-sandbox-coredns` 未运行 | `systemctl status cube-sandbox-coredns cube-sandbox-dns`，**两个都要 active**：前者答 `*.cube.app → 节点IP`（Corefile 里写死 10.0.0.8），后者把 `~cube.app` 路由到 169.254.254.53。⚠️ **coredns 是 cubesandbox 模式的必需组件**，不是"可选/闲置"——只有不启用 cubesandbox 时才可不管它。`cube-sandbox-dns` 因 `Requires=coredns` 会连带起不来 |
+| **coredns 起不来：`bind: permission denied`** | `Listen: listen tcp 169.254.254.53:53: bind: permission denied`，容器反复重启 | 镜像自带 `USER nonroot`，非 root 无 `CAP_NET_BIND_SERVICE` 绑不了 53；vendor 脚本又没留 `--cap-add` 口子。加 `/etc/sysctl.d/99-cube-coredns.conf`：`net.ipv4.ip_unprivileged_port_start = 53`（容器用 `--network host`，故对其生效），`sysctl --system` 后重启服务。**回滚时别忘了显式设回 1024**——删配置文件不会回退运行时值 |
+| **`PI_SANDBOX_CA_FILE` 指向 `/root/...` 读不到** | 非 root 服务沙箱连接/TLS 失败，或 CA 静默缺失 | 默认值 `/root/.local/share/mkcert/rootCA.pem` 位于 `/root`（700），非 root 服务读不了。复制到可读路径再设 `PI_SANDBOX_CA_FILE`。**必须是「平台 CA + 系统 CA 合并」**：只放平台 CA 会让 `SSL_CERT_FILE` 覆盖系统信任链，**直接打断模型与 embedding 的 HTTPS**。<br>`cat /root/.local/share/mkcert/rootCA.pem /etc/ssl/certs/ca-certificates.crt > <可读路径>/cube-ca-bundle.pem` |
+| **embedding 端点必须是原生格式，不能用 OpenAI 兼容** | 日志 `vector memory search failed (embed); falling back to lexical`，栈里 `KeyError: 'output'` | `EmbeddingClient` 只认 DashScope 原生契约（请求 `{"input":{"texts":[...]}}`、应答 `{"output":{"embeddings":[...]}}`）。填 `/compatible-mode/v1/embeddings`（OpenAI 形状）必挂。用 `https://<host>/api/v1/services/embeddings/text-embedding/text-embedding`。**失败是静默降级**，只在日志留一行，表现为"记忆检索时而好用时而不好用" |
+| **向量召回"有命中反而失败"（`KeyError: 'id'`）** | 记忆条数从 0 变 1 后，向量检索开始恒抛错并被降级吞掉 | pymilvus 3.x 主键挂在 `Hit.id` 属性上，`Hit.entity` 只含请求的 `output_fields`；旧写法 `h["id"]` 在**空结果时不触发**（列表推导式不执行）故长期潜伏。改用 `h.id` |
+| **`docker-compose` v1 管不了已存在的容器** | `docker compose up -d` 报 `KeyError: 'ContainerConfig'`（`compose/service.py: get_container_data_volumes`）| v1 (1.29.2) 与 Docker 29 不兼容，**只能在从零创建时用**。装 compose v2：apt 无 `docker-compose-plugin` 时从镜像源取 `.deb`，或把二进制放到 `/usr/local/lib/docker/cli-plugins/docker-compose` |
+| **本地栈 milvus 容器反复 Restarting** | `tini` 打印 usage 后退出（exit 1）| `milvusdb/milvus` 镜像 **`Cmd=null`**，compose 不显式给命令就无程序可执行。补 `command: ["milvus","run","standalone"]`；embedded etcd 还需 `ETCD_DATA_DIR` 与 `ETCD_CONFIG_PATH=/milvus/configs/advanced/etcd.yaml` |
+| **同机跑 CubeSandbox 后本地栈端口冲突** | `pi-py-mysql` / `pi-py-redis` 起不来（3306/6379 被平台组件占用）| `docker-compose.local.yml` 端口已参数化：在 `deploy/.env`（不纳入版本控制）里设 `PI_MYSQL_PORT` / `PI_REDIS_PORT` 覆盖即可，默认值保持不变 |
+| **换目录后 `ModuleNotFoundError: No module named 'pi'`** | venv 里 `pi-py` 能用，代码一挪就不能 | editable 安装把源码路径**焊死**进 venv（`.pth` 指向构建时的目录）。别依赖它：在服务定义里显式 `Environment=PYTHONPATH=<repo>/src` + `WorkingDirectory=<repo>`，位置只声明一处，迁移只改这两行 |
+| **`traces-*.jsonl` 写不进去（PermissionError）** | 服务日志 `PermissionError: .../.pi-py/traces-YYYY-MM-DD.jsonl` | `~/.pi-py` 被早先用 root 跑过的进程创建成 root 属主，非 root 服务写不进。`chown -R <运行用户>:<组> ~/.pi-py` |
 | **服务起不来：`requires greenlet`** | `ImportError: The SQLAlchemy asyncio module requires that the Python 'greenlet' library is installed` | `pip install greenlet`（`pyproject.toml` 缺这个依赖，`[production]` 不会带上，见 §7） |
 | **归档 `s3` 字段一直是 null** | 归档 json 里 `s3: null` 且 `s3_error: null`（**无任何报错**） | 归档用 `PI_ARCHIVE_S3_*` 而**不是** `PI_S3_*`，两套独立；配齐并先建好归档 bucket（见 §7.4）。另注意归档只在"该回合真用过沙箱"时触发 |
 

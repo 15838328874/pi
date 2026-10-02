@@ -4,6 +4,10 @@ __pycache__/
 .venv/
 .env
 .env.test
+.env.local
+.env.local.bak-*
+# 本地 compose 覆盖（端口等），默认值在 docker-compose.local.yml 里
+deploy/.env
 dist/
 build/
 .pytest_cache/
@@ -18,6 +22,7 @@ build/
 .sse.txt
 audit*.jsonl
 traces*.jsonl
+trajectories*.jsonl
 pi-real.env
 # RAG eval scratch output (reports/ and the golden-set JSONs under
 # evals/tasks/rag/ are tracked; these are per-run and regenerable)

@@ -66,7 +66,8 @@ vi .env    # 填 MYSQL_PASSWORD / REDIS_PASSWORD / PI_JWT_SECRET / OPENAI_API_KE
 
 - `PI_JWT_SECRET` 用 `openssl rand -hex 32` 生成，**换了它所有已发 token 立即失效**，保持稳定；
 - 密码里若有 `@ : / # ? %` 等 URL 特殊字符，需 percent-encode（如 `@` → `%40`）；
-- `PI_MODEL` / `OPENAI_API_KEY` / `OPENAI_BASE_URL` 决定模型走哪，`PI_FALLBACK_CHAIN` 可选。
+- `PI_MODEL` / `OPENAI_API_KEY` / `OPENAI_BASE_URL` 决定模型走哪：默认走内置聚合网关
+  （`OPENAI_BASE_URL` 留空即可，见 §2.5），`PI_FALLBACK_CHAIN` 可选。
 
 ### 2.3 构建并启动
 
@@ -126,6 +127,89 @@ PBKDF2 现在跑在线程池里而不是事件循环上（见 ARCHITECTURE §17 
 注册和登录的每次尝试（成功与各种失败原因）现在都进审计日志，带客户端 IP 和 User-Agent，
 这是事后封号和追责的唯一依据。**但只有 `PI_FORWARDED_ALLOW_IPS` 设对了，IP 才是真的**
 （见下表与 §17 第 16 条）——走 Caddy 时不设，日志里所有请求都是同一个容器 IP。
+
+### 2.5 LLM 聚合网关（new-api）
+
+**为什么需要**：单一厂商账号的 QPS/并发上限远低于多人规模的需求（1000 人峰值约
+150-200 在飞请求 + 20 QPS，见 ARCHITECTURE §5 规划账）。`llm-gateway`（new-api 容器）
+是模型流量的统一前门：pi-py 只看到**一个** OpenAI 兼容端点，网关按渠道把流量分给
+阿里云/DeepSeek/SiliconFlow 等多家，某渠道 QPS 打满或故障时自动切下一家。
+
+**首次配置**（一次性，全部在网关 Web UI 完成）：
+
+```bash
+# 0) 管理 UI 只绑了 127.0.0.1:3000，经 SSH 隧道访问（绝不把 3000 暴露公网）：
+ssh -L 3000:127.0.0.1:3000 root@<ECS公网IP>
+# 浏览器打开 http://127.0.0.1:3000，默认管理员 root / 123456 登录，
+# 立刻到「个人设置」改密码。顺手在「设置 → 运营设置」把日志保存天数设为 30-90 天。
+```
+
+**① 添加渠道（每家厂商一个）**：「渠道 → 新建渠道」，类型选 **OpenAI**，分组留
+**default**，字段如下：
+
+| 字段 | 阿里云百炼（示例） | DeepSeek（示例） | 说明 |
+|---|---|---|---|
+| 名称 | 阿里云-主力 | DeepSeek-备用 | 自定，好认即可 |
+| 类型 | OpenAI | OpenAI | 两家都是 OpenAI 兼容协议 |
+| 模型 | `qwen-max,qwen-plus,text-embedding-v3` | `deepseek-chat,deepseek-reasoner` | **渠道实际支持的模型**（厂商真实模型名），逗号分隔；不建议填 `*` |
+| 模型重定向 | `qwen3.8-max:qwen-max` | `deepseek-chat:deepseek-chat` | `pi-py 请求名:渠道真实名`，逗号分隔多条。pi-py 发 `qwen3.8-max`，网关改发给厂商 `qwen-max` |
+| 密钥 | 百炼 API-KEY（sk-...） | DeepSeek API key | 每家各自的 key |
+| base_url | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `https://api.deepseek.com/v1` | 渠道的「代理」/base_url 字段（不同版本 UI 位置略异） |
+| 优先级 | 10 | 5 | **数字越大越先走**——主力厂商设高，QPS 打满/故障时自动落下一家 |
+
+前置条件：阿里云需在**百炼控制台开通**要用的模型（否则渠道配好也报"模型不可用"）；
+DeepSeek 是**预付费**，未充值直接余额不足。
+
+**② 令牌（pi-py 的入口凭据）**：「令牌 → 新建令牌」：
+
+- 名称如 `pi-py-prod`；分组留 **default**（必须与渠道分组一致，否则请求不可达）；
+- **额度填 -1（不限）**；过期时间设长或永不过期（换令牌要重启 app 生效）；
+- 模型范围留空（不限）；
+- 生成的 `sk-xxx` 写进 `.env` 的 `OPENAI_API_KEY`。
+
+**③ embedding 渠道（建议走网关）**：embedding 同样是 OpenAI 类型渠道——阿里云
+模型 `text-embedding-v3`（百炼控制台开通），`.env` 里
+`PI_EMBEDDING_URL=http://llm-gateway:3000/v1` + `PI_EMBEDDING_API_KEY=sk-<令牌>`，
+`PI_EMBEDDING_MODEL` 填 pi-py 侧名字并经重定向映射。
+
+**验证与演练**：
+
+```bash
+# 1) 网关冒烟（在 ECS 上直接打）
+curl -s http://127.0.0.1:3000/v1/models -H "Authorization: Bearer sk-<令牌>"
+
+# 2) 跑一轮真实对话（§2.4 第 5 步），确认流式正常
+# 3) 断渠道演练：网关 UI 禁用阿里云渠道 → 再跑一轮 →
+#    应自动切到下一优先级渠道，用户无感；结束后重新启用
+```
+
+**常见坑**：
+
+- **404"模型不存在"**：pi-py 请求的模型名既不在渠道「模型」列表、也没有「模型
+  重定向」条目——把 `PI_FALLBACK_CHAIN` 里的每个名字都映射好再跑
+- **请求全部失败**：令牌和渠道的分组不一致（一边 default 一边自定义）——统一用
+  default 分组最省事
+- **倍率没配**：不影响功能，只影响网关用量报表的金额数字——想按厂商成本归集就
+  顺手把各家倍率填上
+- **优先级都相同**：多厂商流量分配不可控——主力厂商优先级设高（如 10 vs 5）
+
+**注意**：
+
+- **存储用 SQLite（有意为之，不是偷懒）**：网关数据不是真相源——用户 token 账在
+  pi-py 的 `usage_records` 表（MySQL），网关日志只是"每家厂商各花了多少"的对账单，
+  丢了可用真相源重建；渠道/令牌十几行数据，几分钟可重录。SQLite 单文件 + docker
+  volume，零运维。两条约定：① 网关 UI 设置里把**日志保存天数**设为 30-90 天，
+  防文件无限增长；② `llm-gateway-data` 卷纳入备份范围。只有当需要**多网关实例 HA**
+  或对网关日志做 SQL/BI 分析时才切 MySQL（`SQL_DSN` 环境变量，需先建独立库并授权）
+- **流式透传**：new-api 默认透传 SSE，pi-py 的流式协议不受影响；网关的用量日志
+  建议用采样/摘要模式，别把长流全量入库
+- **双重退避**：pi-py 的 fallback.py 会重试 429/5xx，网关也会切渠道重试——网关侧
+  渠道重试次数设 1 次即可，重试策略以 pi-py 侧为准，避免延迟叠加放大
+- **模型名必须映射**：`PI_FALLBACK_CHAIN` 里的每个模型名都要在网关映射表里有条目，
+  否则请求直接 404（网关报错明确，好排查）
+- **兜底**：网关容器挂 = 模型不可用（app 不崩溃，run 报错）。可靠性要求更高时，
+  可后续给 `PI_FALLBACK_CHAIN` 加"每入口独立 base_url/key"支持直连厂商兜底
+  （`llm/registry.py` 小改，暂未实现）
 
 ## 3. 4 vCPU / 16 GiB 调优
 

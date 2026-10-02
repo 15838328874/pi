@@ -39,7 +39,7 @@ from pi.security.audit import AuditLogger
 from pi.security.redact import mask_url
 from pi.tools.mcp import McpToolProvider
 from pi.tools.registry import BuiltinToolProvider, ToolProvider, ToolRegistry
-from pi.tools.sandbox import shutdown_docker_pool, validate_sandbox_mode
+from pi.tools.sandbox import sandbox_health, shutdown_docker_pool, validate_sandbox_mode
 from pi.tools.skill import SkillToolProvider
 
 log = logging.getLogger("pi.server")
@@ -392,6 +392,14 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             # The value set is closed to {"ok", "degraded"} because the check
             # below treats anything else as not-ready (pi.rag.integration.health).
             checks["rag"] = await rag_health(rag_runtime)
+        # Sandbox is a HARD check, not "degraded": with the platform down every
+        # code-execution turn fails, so this must flip the status to 503 or no
+        # probe/monitor/load-balancer can tell the difference. Blocking I/O
+        # (HTTP + DNS) runs in a thread - house precedent (PBKDF2 in app.py).
+        try:
+            checks["sandbox"] = await asyncio.to_thread(sandbox_health, settings.sandbox)
+        except Exception as exc:  # noqa: BLE001
+            checks["sandbox"] = f"unavailable: {exc.__class__.__name__}"
         healthy = all(v in ("ok", "degraded") for v in checks.values())
         status = 200 if healthy else 503
         return JSONResponse({"status": "ready" if healthy else "not-ready", "checks": checks}, status_code=status)

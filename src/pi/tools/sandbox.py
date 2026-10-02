@@ -32,11 +32,14 @@ import logging
 import os
 import shlex
 import shutil
+import socket
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol
+
+import httpx
 
 from pi.tools.base import SKIP_DIRS as _SKIP_DIRS  # noqa: PLC0415 - avoid import cycle
 
@@ -1390,6 +1393,65 @@ def _describe_limits(limits: SandboxLimits) -> str:
         f"mem={limits.memory or 'none'} pids={limits.pids or 'none'} "
         f"cpus={limits.cpus or 'none'} user={limits.effective_user}"
     )
+
+
+def sandbox_health(mode: str, timeout: float = 2.0) -> str:
+    """探测**当前配置的沙箱后端**是否可用，供 /readyz 使用。
+
+    返回 ``"ok"`` 或 ``"unavailable: <原因>"``。
+
+    刻意不返回 "degraded"：/readyz 里 "degraded" 属于"不影响 status"的那一档
+    （见 app.py 里 milvus 的用法）。但沙箱不可用会让**所有**代码执行任务失败，
+    必须让 /readyz 返回 503 —— 否则监控、探活、负载均衡全都发现不了平台已经挂了。
+    这个缺口实测存在过：CubeSandbox 整体不可用时 /readyz 照样 200 ready。
+
+    cubesandbox 模式查两项，**缺一不可**：
+
+    1. 控制面 ``{PI_CUBE_API_URL}/health`` 返回 200
+    2. 数据面 ``*.{PI_CUBE_DOMAIN}`` 能解析
+
+    第 2 项不能省。实测最常坏的**不是** API 挂了，而是数据面 DNS 解析失败
+    （coredns 未运行 / systemd-resolved 未配 ``~cube.app``）。此时控制面
+    ``/health`` 照样 200，只有真正创建沙箱才炸
+    ``ConnectError: Name or service not known`` —— 只探 API 会给出虚假的
+    "ready"，正是这个健康检查要防的事。
+    """
+    if mode == "cubesandbox":
+        api_url = os.environ.get("PI_CUBE_API_URL", "http://127.0.0.1:3000")
+        domain = os.environ.get("PI_CUBE_DOMAIN", "cube.app").strip() or "cube.app"
+        try:
+            with httpx.Client(timeout=timeout, trust_env=False) as client:
+                code = client.get(f"{api_url.rstrip('/')}/health").status_code
+        except Exception as exc:  # noqa: BLE001 - 探活失败即不可用
+            return f"unavailable: CubeAPI unreachable ({exc.__class__.__name__})"
+        if code != 200:
+            return f"unavailable: CubeAPI /health returned HTTP {code}"
+        try:
+            # 数据面形如 {port}-{sandbox_id}.{domain}；探一个典型名即可
+            socket.gethostbyname(f"49983-probe.{domain}")
+        except Exception as exc:  # noqa: BLE001
+            return f"unavailable: data-plane *.{domain} does not resolve ({exc.__class__.__name__})"
+        return "ok"
+    if mode == "docker":
+        # 只探 unix socket 可连，不起子进程（/readyz 会被监控高频调用）
+        sock_path = os.environ.get("PI_DOCKER_HOST", "").removeprefix("unix://") or "/var/run/docker.sock"
+        if sock_path.startswith("tcp://"):
+            host_port = sock_path.removeprefix("tcp://")
+            host, _, port = host_port.partition(":")
+            try:
+                with socket.create_connection((host, int(port or 2375)), timeout=timeout):
+                    return "ok"
+            except Exception as exc:  # noqa: BLE001
+                return f"unavailable: docker daemon unreachable ({exc.__class__.__name__})"
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                s.settimeout(timeout)
+                s.connect(sock_path)
+            return "ok"
+        except Exception as exc:  # noqa: BLE001
+            return f"unavailable: docker socket {sock_path} ({exc.__class__.__name__})"
+    # ''/local：bash 跑在应用进程内，无外部依赖可探
+    return "ok"
 
 
 def get_runner(mode: str, image: str = "python:3.12-slim", allow_network: bool = False) -> CommandRunner:

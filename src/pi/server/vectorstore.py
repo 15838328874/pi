@@ -116,7 +116,10 @@ class MilvusStore:
         hits = res[0] if res else []
         # COSINE: distance is similarity (higher = closer) and hits arrive
         # best-first - do not re-sort.
-        return [int(h["id"]) for h in hits]  # pk == Postgres memory id
+        # pymilvus 3.x: 主键挂在 Hit 的属性 `id` 上，`Hit.entity` 只包含请求的
+        # output_fields。旧写法 h["id"] 在**有命中时**必抛 KeyError（空结果不会
+        # 进入推导式，所以这个 bug 能长期潜伏），向量召回反而在最该生效时失败。
+        return [int(h.id) for h in hits]  # pk == Postgres memory id
 
     async def ping(self) -> bool:
         try:

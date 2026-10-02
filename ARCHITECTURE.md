@@ -251,9 +251,13 @@ pi-python/
 │   │   └── compaction.py    上下文压缩（LLM 摘要 + 保留尾部）
 │   ├── tools/
 │   │   ├── base.py          Tool 抽象 + ToolContext + 公共工具函数
-│   │   ├── bash.py read.py write.py edit.py grep.py find.py ls.py web.py
+│   │   ├── bash.py read.py write.py edit.py grep.py find.py ls.py
+│   │   ├── files.py memory.py mcp.py skill.py subagent.py rag.py registry.py
 │   │   └── sandbox.py       命令执行隔离：LocalRunner / Docker 冷路径/预热池 / CubeSandboxRunner（microVM）；
 │   │                        SandboxLimits（内存/pids/cpu/user）在四处建容器路径统一生效
+│   ├── rag/                 企业知识库（§21）：parser（多格式 + heavy-parser OCR）/chunker/
+│   │                        ingest/retriever（向量×BM25→RRF→rerank）/eval/integration
+│   │                        （rag_search 工具接线）；内核零依赖 pi.*
 │   ├── security/
 │   │   ├── policy.py        策略引擎（拒绝清单/命令模式/路径沙箱）
 │   │   ├── redact.py        出站脱敏（发给模型前遮蔽密钥）

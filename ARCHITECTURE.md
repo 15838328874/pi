@@ -5,13 +5,12 @@
 >
 > 最后更新：2026-10-02 · 代码规模约 10,000 行源码 + 267 个测试
 >
-> **文档地图**（四个文档各管一段，知识点不重复）：
+> **文档地图**（三个文档各管一段，知识点不重复）：
 >
 > | 文档 | 定位 | 什么问题看它 |
 |---|---|---|
 | `README.md` | 门面 | 这是什么、怎么装、怎么跑（快速上手入口） |
-| `PROJECT_GUIDE.md` | 叙事与价值 | 为什么这么设计（取舍）、踩过什么坑（故事版）、测试样例与实测数据 |
-| `ARCHITECTURE.md` | 技术手册 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19） |
+| `ARCHITECTURE.md` | 技术手册 + 叙事 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19）；设计取舍、测试样例、术语表、实测数据（原 `PROJECT_GUIDE.md` 已并入） |
 | `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
 | `docs/`（三件） | CubeSandbox 专项 | 沙箱设计笔记 / 生产部署手册 / 生产就绪审计——专项文档，不重复核心四文档内容 |
 
@@ -27,6 +26,16 @@ pi-py 是 **earendol-works/pi**（TypeScript 版编码智能体外壳）的 **Py
 定位（与 §20 战略定位一致）：**可自托管、可扩展工具、可评估、可沉淀训练数据的 AI 智能体平台**——
 编码智能体是第一个深度打磨的场景，MCP/Skills/ToolProvider 让工具能力不受场景限制。
 
+**它解决了什么问题**（"让模型聊天"成熟了，"让模型干活"是另一回事）：
+
+| 痛点 | 普通聊天产品 | pi-py 的答案 |
+|---|---|---|
+| 模型只会说不会做 | 网页版 ChatGPT 只能生成代码文本 | 模型调用**工具**（bash/读写文件/搜索），在沙箱里真实执行 |
+| 执行有风险 | 没有隔离，模型跑 `rm -rf` 就是真删 | **microVM 沙箱**：每回合独立 VM、用完即销毁，断网/限额/白名单路径 |
+| 单人玩具 | 插件/客户端每人各玩各的 | **多用户服务**：注册/登录/配额/限流/审计，企业级多租户 |
+| 无法判断好坏 | 没有评估标准 | **eval 评测闭环**：任务集 + 自动判分 + A/B 对比 |
+| 数据浪费 | 执行记录用完即弃 | **统一轨迹**落库 + **RL 数据飞轮**导出 JSONL 喂 veRL/TRL |
+
 它只有**一个运行形态**：多用户服务（`pi-py serve` + HTTP/SSE API）。内核
 （`pi.agent` + `pi.llm` + `pi.tools`）与运行形态无关，可以单独 import 使用，
 但仓库里不再有本地单人入口。
@@ -38,6 +47,22 @@ pi-py 是 **earendol-works/pi**（TypeScript 版编码智能体外壳）的 **Py
 > 历史上还有"本地单人"形态（`pi-py chat / tui / run`，SQLite 存会话）。它已连同
 > `pi/tui/`、`pi/session/`、`pi/env.py` 一起删除；`pi.cli` 只剩 `serve` / `migrate`。
 
+**纵向演进（这个项目怎么长出来的）：**
+
+1. **pi（TypeScript 原版）**：上游编码智能体，思路源头，但类型系统复杂、生态偏前端。
+2. **pi-py（Python 重写）**：AI 生态全在 Python（模型 SDK、评估库、训练框架 veRL/TRL
+   的对接方都是 Python）；异步模型天然适合 I/O 密集的 agent 场景；开发速度快。
+   代价：放弃上游 TS 复用，换来与 AI 工具链的无缝对接。
+3. **生产化改造（本仓库核心）**：单机脚本 → 多用户服务（JWT/配额/限流/审计/Docker 沙箱/
+   Redis 多实例/可观测四件套）。每项都"看起来简单、上线才见真章"（PBKDF2 移出事件循环
+   453ms→40ms、限流要分布式、沙箱要限额、审计字段要截断防塞满）。
+4. **四轮能力爬坡（P1→P4）**：P1 统一轨迹（三条平行流合成一份 canonical 事件日志）、
+   P2 durable execution（断点续传 + 已完成工具幂等重放）、P3 分层记忆（episodic 压缩摘要
+   + semantic 向量召回）、P4 eval harness（任务集/判分/报告/A-B）。
+5. **生态扩展**：MCP + Skills（标准协议接工具 + 技能包沉淀能力）、RL 数据飞轮
+   （rollout→reward→filter→JSONL）、Web 前端三件套（零构建单文件）、测试与生产统一
+   （SQLite→MySQL+Redis 同构，18 个被 SQLite 掩盖的问题现形）。
+
 设计上的北极星原则（理解所有代码的钥匙）：
 
 1. **用户见过的必落库，用户没见过的绝不落库**：write-ahead 先存用户消息、工具轮边界增量续存，一次事务一段，崩溃最多丢当前轮（细节与取舍见 `docs/run-durability-design.md`）。
@@ -47,6 +72,29 @@ pi-py 是 **earendol-works/pi**（TypeScript 版编码智能体外壳）的 **Py
 5. **能不依赖就不依赖**：不配 Redis 退化为进程内实现（单实例语义不变）；
    不配 API key 可用 `fake/demo` 跑通全流程。**但数据库是硬依赖**——
    `PI_DATABASE_URL` 缺失时服务直接拒绝启动，不再有 SQLite 兜底。
+
+**关键取舍记录（A/B 对比）：**
+
+| 决策点 | 备选方案 | 选了谁 | 为什么 |
+|---|---|---|---|
+| 语言 | TypeScript（沿用上游）| **Python** | AI 生态、异步模型、开发速度 |
+| 数据库 | PostgreSQL / SQLite | **MySQL**（生产）+ 测试同库 | 生产实际云端 MySQL；测试与生产统一，消除"SQLite 与 MySQL 行为不一致"的整类问题（SQLite 不强制外键、日期格式差异真踩过坑） |
+| 缓存 | 无/进程内存 | **Redis**（多实例必配）| 锁/限流/撤销要跨实例一致；单实例内存降级可跑 |
+| 沙箱 | 进程内直接执行 | **microVM（生产）+ Docker 预热池（本地）** | 进程内执行 = 模型能读应用环境变量（含密钥）；microVM 每回合独立 VM、崩溃天然隔离 |
+| 前端 | React/Vue 工程 | **零构建单文件 + vanilla JS** | 三页不需要工程链；改动即生效；无 node 依赖 |
+| 工具扩展 | 每种来源写一套 | **统一 ToolProvider + ToolRegistry** | MCP/Skills/内置本质都是"工具来源"，统一后自动获得 policy/审计/沙箱/配额 |
+| RL 飞轮 | 自己训模型 | **只做数据侧**（rollout→reward→filter→JSONL） | 训练是 veRL/TRL 的活，项目停在数据生产 |
+| 记忆检索 | 直接上 Milvus | **词法先行，向量后补** | 零依赖先跑通；`MemoryRepo.search()` 接口不变，升级只动一处 |
+| 压缩 | 重写 messages 表 | **独立 compactions 表** | 非破坏优先 |
+| 管理端提权 | 页面按钮 | **只能直接写库** | 没有自助提权口子 = 没有提权攻击面 |
+
+**轨迹是唯一事实源，其余全是投影**：审计 = 轨迹的脱敏投影；指标 = 轨迹的聚合投影；
+评估 = 轨迹的判分消费。边界清晰：**轨迹存原始值（不脱敏），审计存脱敏值**——
+评估/回放要原始数据，审计要合规。落地是"四条流合成一条"：早期 SSE 事件、审计、
+tracer span 三条平行流各自记一部分、互相对不上（工具被拒了 SSE 里没有、审计里参数被
+脱敏、tracer 只包"解析+放行"路径）；现在 loop 内只记一份轨迹，其余全部从轨迹投影——
+指标里的 `tool_call` 计数器就是 run 结束时从轨迹事件逐条投影出来的（所以能统计到
+被拒/未知/无效参数的调用——旧 span 路径做不到）。
 
 ---
 
@@ -422,6 +470,13 @@ finally 里 fail-soft（runner.py:344-353），**原始消息表只增不减**�
 **为什么保留尾部 8 条原文？** 最近上下文是模型当前任务的工作记忆，摘要必有损，
 混合方案（纪要+原文）在成本与连贯性之间取平衡。
 
+**`message_idx` 并行数组（P3 最微妙处，改压缩前必读）**：压缩按**列表下标**切
+（`messages[:-keep_last]`），但落库按 **DB idx**。所以 loop 维护
+`self.message_idx: list[int | None]`，每追加一条消息同步追加下标，压缩时同步截断——
+这样"摘要覆盖到第几条"才能报得准。改压缩逻辑漏掉这个数组就会出幽灵 bug
+（摘要声称覆盖到 idx 10，实际只到 7，下一轮加载历史会丢三条消息）。
+交接纪律：**动压缩逻辑前先读 `message_idx` 的注释**。
+
 ---
 
 ## 7. 工具层 `src/pi/tools/`
@@ -516,7 +571,21 @@ create→start→销毁"的延迟。设计：
 **语义变化须知**：预热池下同 workspace 的多次调用共享进程态（pip 装的包、env 变量
 会保留），冷路径每次清零。文件不受影响（本来就在挂载卷里）。
 
-### 7.3 `base.py` — 工具契约与 WorkspaceFS（2026-09 沙箱生产化后）
+**④ CubeSandbox**（`PI_SANDBOX=cubesandbox`，方案 B）：**每回合新建独立 microVM
+（71ms 冷启）、用完即销毁**——零常驻、崩溃天然隔离，内存模型 = 并发回合数 × 256Mi
+而非会话数（E2B 兼容 SDK，宿主需 KVM）；工作区每回合进出 VM、结束回传归档；命令用
+GNU `timeout` 包装（退出码 124 → `timed_out`，沙箱内收尸零残留）；非零退出码透传
+（模型能区分"exit 1 失败"和"超时"）；工作区 >10MB 装载拒绝并给可操作提示；close 有
+总超时（默认 90s），三层 VM 泄漏防线。生产化审计见 `docs/cube-sandbox-design-notes.md` /
+`docs/production-readiness.md`。
+
+**CubeSandbox 生命周期管理**（2026-09 重构）：**懒加载**——聊天回合（无工具）不建 VM
+（实测平台 VM=0），工具回合才建、用完**留池复用**（同会话复用 `pool_hits` 命中，create
+不增）；回收三档自适应——空闲 TTL（默认 900s，内存紧张 300s）+ LRU 淘汰（池上限默认 4）+
+**宿主内存压力双阈值**（可用内存 <1.5GiB 收紧、<512MiB 激进回收）；服务关闭清池。
+实测：size=1 双会话 LRU 淘汰 ✓、TTL 回收 ✓、真实模型 eval 回归 PASS、SandboxFS 11/11。
+
+### 7.4 `base.py` — 工具契约与 WorkspaceFS（2026-09 沙箱生产化后）
 
 `ToolContext` 收敛为 `cwd / max_output / runner / fs` 四个字段；`provider/policy/audit/
 tracer/session_id/user_id/memory/user_db_id` 由 loop/runner **运行时动态赋值**——
@@ -527,7 +596,7 @@ tracer/session_id/user_id/memory/user_db_id` 由 loop/runner **运行时动态�
 LocalFS 直接操作宿主文件；CubeSandbox 模式 SandboxFS 走 VM 内路径。**数据通路与
 policy 声明式路径沙箱构成两层越界防护**（详见 `docs/cube-sandbox-design-notes.md` §3）。
 
-### 7.4 `registry.py` / `mcp.py` / `skill.py` — 工具来源聚合（MCP + Skills）
+### 7.5 `registry.py` / `mcp.py` / `skill.py` — 工具来源聚合（MCP + Skills）
 
 `ToolProvider`（`tools() -> list[Tool]`，可抛异常）+ `ToolRegistry` 聚合：
 
@@ -552,7 +621,7 @@ policy 声明式路径沙箱构成两层越界防护**（详见 `docs/cube-sandb
 - 取舍:v1 无自动重连(server 死了=工具调用报错);子代理不拿 MCP/Skill 工具(递归仍
   builtin);HTTP transport 用 streamable HTTP,SSE 未单独验证。
 
-### 7.5 `evals/` — 评估与 RL 数据飞轮（rollout / reward / filter / export）
+### 7.6 `evals/` — 评估与 RL 数据飞轮（rollout / reward / filter / export）
 
 `evals/`(P4)是 eval harness:声明式任务(`schema.py`:env.files 播种 + setup 命令 +
 file/command/tests/judge 判分器)→ `runner.py` 跑 AgentLoop 抓 P1 轨迹 → `scorers.py`
@@ -566,6 +635,12 @@ RL 数据飞轮(数据侧,训练交给 veRL/TRL,本项目停在 JSONL):
 | `reward.py` | verdict → reward:可验证判分 0/1,judge 分标 `source="judge"`;partial credit 时 tests 判分 = `passed_count/total_count`(Verdict 的**加性字段**,`score` 语义不变) |
 | `filter.py` | 去重(规范化轨迹哈希——**必须剥掉 run_id/started_at/latency**,否则永不重复)→ 噪声剔除(无工具且 reward<1;工具全错且 reward<1)→ 每任务 rejection sampling:recovery 样本(reward=1 且中途有工具报错)无条件保留 + top_k + 每任务上限 |
 | `export.py` | `sft.jsonl`(reward==1 高质量轨迹,带 system prompt)、`rlvr.jsonl`(**只含可验证样本**)、`rlvr_judge.jsonl`(judge 样本分文件,防 RLVR 奖励纯度被污染) |
+
+**export 的关键转换——block 模型 → OpenAI chat 格式**：
+assistant `TextBlock` → `{"role":"assistant","content":...}`；
+assistant `ToolCallBlock` → 同消息加 `tool_calls` 数组；
+user `ToolResultBlock` → `{"role":"tool","tool_call_id":...}`。
+`sft.jsonl` 只导 reward==1.0 的样本（冷启动教格式），`rlvr.jsonl` 导全部样本+reward。
 
 **沙箱接线(加性缝)**:`run_task(task, *, runner=None)` 与 `score(task, result, *, runner=None)`
 ——默认 None = 宿主执行(开发工具原行为);rollout 传 `get_runner("docker")` 后,bash 工具、
@@ -1054,6 +1129,15 @@ pip install -e ".[dev]"
 python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis（db1）；外部服务用测试替身
 ```
 
+**四层测试金字塔：**
+
+| 层 | 内容 | 规模 | 依赖 | 命令 |
+|---|---|---|---|---|
+| **单测** | 逻辑/协议/安全/降级/契约，共 267 例 | 20 秒 | 本地 MySQL（pi_py_test）+ Redis；LLM/embedding/Milvus 用替身 | `python -m pytest -q` |
+| **真实栈集成** | 真 MySQL+Redis+Milvus+云 embedding | 2 例 | 完整本地栈 + 云 API | `PI_INTEGRATION=1 pytest integration/ -q` |
+| **浏览器** | Playwright 无头 Chromium：登录/流式/布局/联动/缓存头 | 脚本 | 运行中的服务 | `/tmp/*.py` 脚本或未来 `tests/browser/` |
+| **压测** | 沙箱容量、并发锁 | 2 工具 | Docker 沙箱 | `tools/sandbox_bench.py` `tools/loadtest.py` |
+
 **2026-09-27 起测试与生产同构**（MySQL + Redis + Milvus，不再有 SQLite 测试库和 demo 环境）：
 - 单元测试：DB 走本地 MySQL `pi_py_test`（每测试清表隔离），缓存走本地 Redis（随机 namespace）。
   LLM/embedding/Milvus 用测试替身（FakeProvider/FakeEmbedder/FakeVectorStore）——这是测试分层，
@@ -1106,6 +1190,120 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
   被自动加载后把测试引到真 docker / 写盘（原理见 §12.2）；DB/Redis 连接则从
   `.env.local` **推导**（换 `pi_py_test` 库 / Redis db1，端口单一来源）；
 - `aiosqlite` 只是**测试依赖**（`[dev]` extra），生产路径不含 SQLite。
+
+**代表性测试样例**（全部真实代码，可直接读 `tests/`）：
+
+**样例 1：契约测试（防"流式回复流结束就消失"复发）** —— `tests/test_server.py`
+```python
+def test_messages_blocks_contract_is_an_array(self, server):
+    """API 契约："blocks" 是块数组，不是存储的整个 Message 对象。
+    聊天页曾因对象形状在每次 run 后崩溃——流式文本闪现后消失。"""
+    _register(server, "alice", "password123")
+    token = _login(server, "alice", "password123")
+    h = {"Authorization": f"Bearer {token}"}
+    sid = server.post("/v1/sessions", json={"model": "fake/demo"}, headers=h).json()["id"]
+    with server.stream(
+        "POST", f"/v1/sessions/{sid}/runs", json={"prompt": "hello"}, headers=h
+    ) as resp:
+        list(resp.iter_lines())
+    msgs = server.get(f"/v1/sessions/{sid}/messages", headers=h).json()["messages"]
+    assert msgs, "run should persist messages"
+    for m in msgs:
+        assert isinstance(m["blocks"], list), m
+        for b in m["blocks"]:
+            assert isinstance(b, dict) and "type" in b, b
+```
+要点：**把接口形状钉进测试**。
+
+**样例 2：降级与兜底（向量记忆三档回退）** —— `tests/test_memory_vector.py`
+```python
+def test_search_falls_back_lexical_on_store_error(tmp_path):
+    store = FakeVectorStore(scripted=RuntimeError("milvus down"))
+    db, repo = _repo(str(tmp_path / "v.db"), store, FakeEmbedder())
+
+    async def main():
+        await db.init()
+        await repo.add(1, "the API uses snake_case naming")
+        hits = await repo.search(1, "api naming", k=2)
+        assert hits and "snake_case" in hits[0].text   # Milvus 挂了用户无感
+        await db.dispose()
+
+    asyncio.run(main())
+```
+同类还有：embedding 失败回退、空命中回退、跨用户命中过滤、DB 缺失行跳过——
+"依赖挂了，功能降级不消失"是这一组测试的主题。
+
+**样例 3：安全回归（对仓库真实 policy.json）** —— `tests/test_security.py`
+对**实际生效的那份 `policy.json`** 做回归：危险命令必须拦、日常命令必须放行
+（完整 `MUST_DENY`/`MUST_ALLOW` 命令清单见 §17.18，两处同源、以测试为准）。
+要点：**误杀比漏杀更伤**（一条日常命令被拦 = agent 干活被静默打断），所以两个方向都测。
+
+**样例 4：附属系统失败不挂主流程** —— `tests/test_trajectory_view.py`
+```python
+def test_persistence_failure_does_not_fail_run(self, tmp_path, monkeypatch):
+    # "logs" 是个文件，mkdir(parents=True) 必然失败：落轨迹被堵死
+    (tmp_path / "logs").write_text("blocking", encoding="utf-8")
+    with _make_app(monkeypatch, tmp_path, str(tmp_path / "logs" / "traj.jsonl")) as client:
+        h, sid = _register_and_session(client, "alice")
+        with client.stream(
+            "POST", f"/v1/sessions/{sid}/runs", json={"prompt": "hi"}, headers=h
+        ) as resp:
+            assert resp.status_code == 200
+            lines = list(resp.iter_lines())
+        assert "event: done" in lines          # SSE 正常结束
+        msgs = client.get(f"/v1/sessions/{sid}/messages", headers=h).json()["messages"]
+        assert len(msgs) >= 2                  # 消息照常落库
+```
+要点：用**真实的可失败路径**（父目录是文件）而不是 mock，验证 fail-soft 哲学。
+
+**样例 5：轨迹时序增强的语义** —— `tests/test_trajectory_view.py`
+```python
+def test_llm_and_tool_ts_are_start_times(self, tmp_path):
+    """ts 必须是调用起始时刻（时序图 time 模式依赖），不是记录时刻。"""
+    provider = FakeProvider(model="demo", responses=[
+        [ToolCallBlock(id="t1", name="write", arguments=json.dumps({"path": "a", "content": "x"}))],
+        [TextBlock(text="done")],
+    ])
+    agent = AgentLoop(provider=provider, tools=all_tools(), system_prompt="sys", cwd=tmp_path)
+    async def main():
+        async for _ in agent.run("write a file"):
+            pass
+    asyncio.run(main())
+    events = agent.trajectory.to_dict()["events"]
+    llm1 = next(e for e in events if e["type"] == "LlmCall")
+    tool = next(e for e in events if e["type"] == "ToolCall")
+    llm2 = [e for e in events if e["type"] == "LlmCall"][1]
+    assert llm1["ts"] <= tool["ts"] <= llm2["ts"]   # 单调：第1轮模型 → 工具 → 第2轮模型
+    assert llm2["ts"] <= time.time() + 5            # 墙钟 sane
+```
+要点：把"微妙语义"（起始时刻 vs 记录时刻）变成可回归的断言。
+
+**样例 6：连续拒绝熔断** —— `tests/test_trajectory.py`
+```python
+def test_five_consecutive_denials_abort_the_run(self, tmp_path):
+    # 脚本 2 倍于熔断阈值：熔断必须发生在脚本耗尽之前
+    responses = [[ToolCallBlock(id=f"c{i}", name="bash", arguments="{}")]
+                 for i in range(MAX_CONSECUTIVE_DENIALS * 2)]
+    agent = AgentLoop(
+        provider=FakeProvider(responses=responses),
+        tools=[BashTool()],                      # 工具必须存在才能到达策略门
+        policy=Policy(deny_tools={"bash"}),      # 未知工具在策略前就报错，不算 denied
+        max_turns=40,
+    )
+    ...
+    tool_calls = [e for e in agent.trajectory.to_dict()["events"] if e["type"] == "ToolCall"]
+    assert len(tool_calls) == MAX_CONSECUTIVE_DENIALS   # 恰好在阈值处停
+    assert all(e["denied"] for e in tool_calls)
+```
+要点：**只有策略拒绝计数**（工具报错是学习信号，策略拒绝是死路）——这条语义也钉在测试里。
+
+**如何加一个新测试**：
+1. 明确测的是**契约**（接口形状）还是**行为**（逻辑结果）还是**回归**（已知坑不再犯）；
+2. 单测放 `tests/`，用服务替身；需要真实链路的放 `integration/`（PI_INTEGRATION=1）；
+3. 涉及 app 的测试用 `TestClient(create_app(...))` fixture 模式，参考 `tests/test_server.py`；
+4. 涉及 MySQL 数据断言：每个测试开始前库是干净的（conftest 自动清表 + 播种 u1..u20/s1..s9）；
+5. 前端改动：跑 node 语法检查 + Playwright 脚本（布局断言）；
+6. 全套 `python -m pytest -q` 必须全绿——267 例是底线不是上限。
 
 ---
 
@@ -1325,6 +1523,25 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
     ...")→ 照常 TurnEndEvent;runner 的 `except TimeoutError` 只在超时落在 compaction
     阶段才触发。所以 run 状态判定不能只看 runner 的 except——要看 ErrorEvent 消息里
     有没有 "TimeoutError"(`run_status` 启发式),并且这两种路径**都**要计 status。
+29. **前端"流式有回复，流一结束就消失"（三天悬案）**：`GET /messages` 返回的 `blocks`
+    字段曾是整个 Message 对象而非数组，前端 `for (const b of m.blocks)` 抛异常又被
+    `.catch(()=>{})` **静默吞掉**——页面先清空再遍历，空了、错误没声。解法：服务端返回
+    真数组（契约测试钉死，见 §15 样例 1）+ 前端所有异步错误显示为页面横幅，禁止静默 catch。
+30. **登录成功但所有请求 401（"Not enough segments"）**：一行 JS 少了 `await`，
+    `token = r.json().access_token` 拿到 Promise 上的 `undefined`，localStorage 存进
+    "undefined" → 每次请求 `Bearer undefined`。预防：**协议层 curl 全通 ≠ 页面没问题**，
+    页面必须有 Playwright 验证 + 未捕获错误可见化兜底。
+31. **修好了但用户看不到**：静态 HTML 被浏览器缓存（304）。解法：`/ui/*.html` 统一
+    `Cache-Control: no-cache`。
+32. **LLM 对模糊输入乱调工具**：用户发"en ?"，模型先跑 `pwd; ls; git status` 再回答。
+    解法：系统提示词加硬约束——**闲聊/模糊短输入直接回答，不跑任何命令**；真实模型回归
+    复测（同 prompt 断言工具调用数 0）。
+33. **浏览器 EventSource 不支持 POST**：run 端点是 POST，EventSource 只支持 GET。解法：
+    `fetch` + `ReadableStream` 手动解析 SSE 帧（`event:`/`data:` 行协议），处理跨 chunk
+    帧切分与 UTF-8 多字节字符。
+34. **页面布局"丑"的度量**：视觉问题靠肉眼+文字反馈迭代，三轮都对不准。解法：Playwright
+    **程序化断言**（气泡与头像间距 10px、justify-content 对齐、内容列宽度集合单一值）——
+    每项可测、可回归。
 
 ---
 
@@ -1408,6 +1625,23 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 **一句话定位**：可自托管、可扩展工具、可评估、可沉淀训练数据的 agent 平台后端。
 竞争对手不是"带 UI 的 coding agent"，而是"没有评估闭环、没有飞轮、没有沙箱隔离"
 的那批开源 agent 服务。
+
+**价值主张：横向对比**
+
+| 维度 | 网页版 ChatGPT/Claude | Cursor/Codex 插件 | LangChain 教程项目 | **pi-py** |
+|---|---|---|---|---|
+| 能执行代码吗 | 只生成文本 | 能（单机） | 能（demo 级） | 能，**沙箱隔离**执行 |
+| 多用户 | 个人账号 | 个人工具 | 无 | **注册/配额/限流/审计/撤销** |
+| 自托管 | 不可 | 不可 | 可 | **可**（数据不出内网） |
+| 评估体系 | 无 | 无 | 无 | **任务集+判分+A/B** |
+| 训练数据产出 | 不公开 | 不公开 | 无 | **RL 数据飞轮**（SFT/RLVR JSONL） |
+| 工具扩展 | 封闭 | 封闭 | 手写 | **MCP 标准协议 + Skills 技能包** |
+| 长任务恢复 | 无 | 有限 | 无 | **断点续传**（checkpoint） |
+| 跨会话记忆 | 有（封闭） | 有 | 无 | **分层记忆**（压缩摘要 + 向量检索） |
+| 可观测 | 黑盒 | 黑盒 | 无 | **轨迹/审计/指标/计量**四件套 |
+
+**组合优势**：单看每一项都有产品做到，但同时拥有"沙箱执行 + 多租户 + 评估闭环 +
+训练飞轮 + 标准协议扩展"的**自托管**项目很少——这正是它的定位。
 
 ### 20.1 三层能力模型
 
@@ -1821,6 +2055,71 @@ rerank 后仍排不到第一」这一失效模式的修复方向（同轮定性�
 任务书 §4.9 描述的 `--file-id`（走 `tools/files.py` / `FileRepo` / `ctx.files`）在**本分支不存在**，
 `ToolContext` 也没有 `fs` / `ensure_runner`。故走 §4.7 的 `--path`（文件或目录递归），
 已在 `cli.py` docstring 记录此偏差与理由——**以代码为准，不以任务书为准**。
+
+---
+
+## 附录：术语表
+
+| 术语 | 白话解释 |
+|---|---|
+| Agent | 能自己决定"下一步做什么"的 AI 程序（想→做→看结果→再想） |
+| 工具（Tool） | 给模型用的"手"：bash/读写文件/搜索等，有名字、参数、返回结果 |
+| 沙箱（Sandbox） | 隔离的执行环境（生产 CubeSandbox microVM / 本地 Docker 容器），模型在里面随便折腾，出不了边界 |
+| 轨迹（Trajectory） | 一次运行的完整事件日志：模型每轮想了什么、每个工具怎么调、耗时多少 |
+| 上下文压缩（Compaction） | 对话太长时，把旧历史总结成一段摘要，省 token |
+| 向量检索 | 把文字变成数字向量，按"语义相近"找内容（能搜到"意思相近但用词不同"的） |
+| MCP | 模型上下文协议：给 AI 接外部工具的标准接口（像 USB-C） |
+| Skills | 技能包：一份指令文档教模型"怎么干某类活"（可复用、可积累） |
+| eval | 评测：用任务集+判分器量化模型/系统"干得好不好" |
+| RL / RLVR | 强化学习 / 可验证奖励：用"任务过没过"当奖励信号训模型 |
+| SFT | 监督微调：拿高质量问答对教模型格式和基础能力 |
+| rollout | 批量跑 N 遍任务，采集轨迹和得分（训练数据的原料） |
+| SSE | 服务器推送事件：一条连接上持续推送流式输出 |
+| 多租户 | 一套系统服务多个用户，互相隔离（配额/限流/审计） |
+| fail-soft | 附属功能失败不拖垮主功能（记账失败 ≠ 任务失败） |
+| 投影 | 同一份数据的不同视角：审计=脱敏视角，指标=聚合视角，轨迹=原始视角 |
+
+## 附录：轨迹 JSON 样例（真实落盘的一行）
+
+```json
+{"run_id": "0d260d973ba1", "started_at": 1790517200.8,
+ "session_id": "e3d4046d61a4", "user_id": 1,
+ "events": [
+   {"type": "RunStarted", "run_id": "0d260d973ba1", "session_id": "e3d4046d61a4",
+    "user_id": "zhu", "model": "openai/qwen3.8-max", "cwd": ".../workspaces/zhu",
+    "tools": ["bash","edit","find","grep","ls","read","recall","remember",
+              "spawn_subagents","write"],
+    "prompt": "只回复：布局测试完成", "ts": 1790517200.8},
+   {"type": "LlmCall", "turn": 1, "model": "openai/qwen3.8-max",
+    "input_tokens": 2103, "output_tokens": 147, "stop_reason": "end_turn",
+    "latency_ms": 4312, "text": "布局测试完成", "tool_calls": [],
+    "ts": 1790517200.9},
+   {"type": "RunFinished", "input_tokens": 2103, "output_tokens": 147,
+    "turns": 1, "latency_ms": 4420, "ts": 1790517205.2}
+ ]}
+```
+
+读法：run 开头记录上下文（谁、什么模型、什么提示词、有哪些工具）；
+每个 LlmCall 记录模型一轮的完整输入输出和耗时；ToolCall 记录每个工具的参数/结果/成败；
+结尾汇总。这一行 JSON 就是前端时序图、评估判分、RL 数据导出的**全部原料**。
+
+## 附录：实测数据速查
+
+| 指标 | 数值 | 来源/条件 |
+|---|---|---|
+| 测试规模 | **267 单测 + 2 真实栈集成**，20 秒跑完 | 本地 MySQL+Redis 统一栈 |
+| 沙箱吞吐（Docker 形态基准） | **~52 exec/s 饱和、零失败**（p50 44ms@N=1 → 1162ms@N=64） | `tools/sandbox_bench.py`，4 vCPU/16GiB，Docker 预热池 |
+| 沙箱内存（Docker 形态） | 每预热容器 ~26 MiB；64 容器冷启动 3.0s | 同上 |
+| 登录哈希 | **PBKDF2 453ms → 40ms**（CPU 52.7% → 99.7%） | `asyncio.to_thread` 优化 |
+| 真实模型一轮 | ~2,103 tokens in / 147 out（qwen3.8-max，一次短任务） | 本地 E2E 实测落库 |
+| 记忆向量 | 一次召回 embedding 15~28 tokens（qwen3.7-text-embedding） | 计量记录实测 |
+| 轨迹落盘 | 每 run 一行 JSON（含全部事件 + ts），按天滚动 | 本地实测 |
+| 端到端延迟 | 服务端 0.7s 出首个 token（fake）；真实模型由云 API 决定 | 实测 |
+| CubeSandbox 超时 | `sleep 30` timeout=3 → 3.2s 返回 `timed_out=True`，`pgrep -c sleep`=0（零残留） | 真机故障注入探针 |
+| 企业 eval | 真实模型端到端冒烟 29s / 4 工具 / 断言全过；eval 5/5 | docs/production-readiness.md |
+
+**成本提示**：真实模型每次调用花钱（token 计费）。UI 调试期不要用真实模型反复回归——
+布局/流式验证优先用 fake 模型脚本 + Playwright，验收时用真实模型跑一遍即可。
 
 ---
 

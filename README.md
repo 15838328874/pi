@@ -19,28 +19,27 @@ tools, and sandboxing (CubeSandbox microVMs in production, Docker locally). Mirr
 
 ## Highlights
 
-精选亮点（完整叙事、设计取舍与踩坑实录都在 [PROJECT_GUIDE.md](PROJECT_GUIDE.md)）：
+精选亮点（完整叙事、设计取舍与踩坑实录都在 [ARCHITECTURE.md](ARCHITECTURE.md)）：
 
 | 亮点 | 一句话 | 详情 |
 |---|---|---|
-| 🏜️ **会话级沙箱（方案 B）** | 每个回合**新建独立 VM**（71ms 冷启）、用完即销毁：零常驻、崩溃隔离、内存模型 = 并发回合数 × 256Mi 而非会话数 | [功能全景](PROJECT_GUIDE.md#第三部分-功能全景) · [设计笔记](docs/cube-sandbox-design-notes.md) |
-| 🛡️ **SSRF 防线** | 进程内抓取工具（web_fetch/web_search）已**移除**，抓取一律降级到沙箱内执行——宿主内网（MySQL/Redis/云元数据）对模型不可达 | [坑 4.12（已解决）](PROJECT_GUIDE.md#412-web-工具的-ssrf-隐患已解决移除方案) |
-| 🗂️ **工作区闭环归档** | 每回合基线快照 → 结束 tar.gz + 差异元数据（added/modified/deleted），MinIO 惰性接口就绪 | [数据与实测](PROJECT_GUIDE.md#第六部分-数据与实测) |
-| 🧪 **自治验证** | 真实模型跑企业任务：数据分析/日志解析/GitHub 情报/文档摘要/数据清洗 **5/5 PASS**；安全回归 **40/40**；沙箱组合 **11/11** | [测试体系](PROJECT_GUIDE.md#第五部分-测试体系) |
+| 🏜️ **会话级沙箱（方案 B）** | 每个回合**新建独立 VM**（71ms 冷启）、用完即销毁：零常驻、崩溃隔离、内存模型 = 并发回合数 × 256Mi 而非会话数 | [架构总览](ARCHITECTURE.md#3-整体架构) · [设计笔记](docs/cube-sandbox-design-notes.md) |
+| 🛡️ **SSRF 防线** | 进程内抓取工具（web_fetch/web_search）已**移除**，抓取一律降级到沙箱内执行——宿主内网（MySQL/Redis/云元数据）对模型不可达 | [坑 20（已解决）](ARCHITECTURE.md#17-注意事项与坑前人踩过的) |
+| 🗂️ **工作区闭环归档** | 每回合基线快照 → 结束 tar.gz + 差异元数据（added/modified/deleted），MinIO 惰性接口就绪 | [实测数据](ARCHITECTURE.md#附录实测数据速查) |
+| 🧪 **自治验证** | 真实模型跑企业任务：数据分析/日志解析/GitHub 情报/文档摘要/数据清洗 **5/5 PASS**；安全回归 **40/40**；沙箱组合 **11/11** | [测试体系](ARCHITECTURE.md#15-测试) |
 | ☁️ **生产就绪** | 部署手册（10 节）+ 生产就绪审计（7 项修复、剩余清单全部闭环） | [部署手册](docs/production-deployment.md) · [审计](docs/production-readiness.md) |
-| 🔐 **多租户治理** | JWT / 配额 / 限流 / 审计 / 会话级分布式锁（同会话并发直接拒绝，跨会话独立沙箱并行） | [功能全景](PROJECT_GUIDE.md#第三部分-功能全景) · [架构手册](ARCHITECTURE.md#13-配置速查表) |
+| 🔐 **多租户治理** | JWT / 配额 / 限流 / 审计 / 会话级分布式锁（同会话并发直接拒绝，跨会话独立沙箱并行） | [架构总览](ARCHITECTURE.md#3-整体架构) · [架构手册](ARCHITECTURE.md#13-配置速查表) |
 
-> **文档地图**（四个文档各管一段，知识点不重复）：
+> **文档地图**（三个文档各管一段，知识点不重复）：
 >
 > | 文档 | 定位 | 什么问题看它 |
 > |---|---|---|
 > | `README.md` | 门面 | 这是什么、怎么装、怎么跑（快速上手入口） |
-> | `PROJECT_GUIDE.md` | 叙事与价值 | 为什么这么设计（取舍）、踩过什么坑（故事版）、测试样例与实测数据 |
-> | `ARCHITECTURE.md` | 技术手册 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19） |
+> | `ARCHITECTURE.md` | 技术手册 + 叙事 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19）；设计取舍、测试样例、术语表、实测数据 |
 > | `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
-> | `docs/`（三件） | CubeSandbox 专项 | 沙箱设计笔记 / 生产部署手册 / 生产就绪审计——专项文档，不重复核心四文档内容 |
+> | `docs/`（三件） | CubeSandbox 专项 | 沙箱设计笔记 / 生产部署手册 / 生产就绪审计——专项文档，不重复核心文档内容 |
 >
-> **推荐阅读路径**：先看本页 `## Highlights` 建立全局印象 → 想深入了解设计取舍、踩坑故事、实测细节 → [**PROJECT_GUIDE.md**](PROJECT_GUIDE.md)（完整"项目全解"）；对照代码逐模块 → [ARCHITECTURE.md](ARCHITECTURE.md)；做没做、下一步 → [ROADMAP.md](ROADMAP.md)。
+> **推荐阅读路径**：先看本页 `## Highlights` 建立全局印象 → 想深入了解设计取舍、踩坑故事、实测细节 → 直接读 [**ARCHITECTURE.md**](ARCHITECTURE.md)（技术手册 + 叙事）；对照代码逐模块也看它；做没做、下一步 → [ROADMAP.md](ROADMAP.md)。
 
 
 Linux only. The former single-user CLI/TUI mode, the local SQLite session store, and

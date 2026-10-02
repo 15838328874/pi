@@ -100,6 +100,27 @@
   .file-row .sz { color: var(--muted); font-size: 12px; min-width: 56px; text-align: right; }
   .file-row button { padding: 3px 8px; font-size: 12px; }
   .file-row button.danger { color: var(--error); border-color: var(--error); }
+
+  /* ---- rag 知识库 ---- */
+  #ragPanel {
+    position: absolute; right: 80px; top: 48px; width: 440px; z-index: 30;
+    background: var(--card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px 16px; box-shadow: 0 10px 30px rgba(0,0,0,.15);
+    max-height: 70vh; display: none; flex-direction: column;
+  }
+  #ragPanel.on { display: flex; }
+  #ragPanel h3 { margin: 0; font-size: 14px; }
+  #ragPanel .head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  #ragPanel .head .spacer { flex: 1; }
+  #ragPanel .head button { font-size: 13px; }
+  #ragPanel .hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  .rag-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .rag-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rag-row .rag-status { font-size: 12px; min-width: 78px; text-align: right; }
+  .rag-row .rag-status.ready { color: #2e9e44; }
+  .rag-row .rag-status.pending, .rag-row .rag-status.index_pending { color: var(--muted); }
+  .rag-row .rag-status.failed { color: var(--error); }
+  .rag-row button.danger { color: var(--error); border-color: var(--error); }
   #fileList { overflow-y: auto; }
   #fileList .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
   #fileMsg { color: var(--muted); font-size: 12px; margin-top: 8px; min-height: 16px; word-break: break-all; }
@@ -272,6 +293,7 @@
     <div class="spacer"></div>
     <span id="whoami" style="color:var(--muted)"></span>
     <button id="openFiles" title="文件上传/下载">📁 文件</button>
+    <button id="openRag" title="企业知识库">📚 知识库</button>
     <button id="logout">退出</button>
   </header>
   <div id="usagePanel">
@@ -287,6 +309,18 @@
     </div>
     <div id="fileList"><div class="empty">加载中…</div></div>
     <div id="fileMsg"></div>
+  </div>
+  <div id="ragPanel">
+    <div class="head">
+      <h3>知识库</h3>
+      <span class="spacer"></span>
+      <input type="file" id="ragFileInput" style="display:none"
+             accept=".pdf,.docx,.xlsx,.md,.txt,.csv,.html,.htm">
+      <button id="ragUploadBtn">上传文档</button>
+    </div>
+    <div class="hint">上传后自动解析入库，处理完成后即可在对话中提问（回答会附来源引用）</div>
+    <div id="ragList"><div class="empty">加载中…</div></div>
+    <div id="ragMsg"></div>
   </div>
 
   <div class="layout">
@@ -956,6 +990,84 @@ async function deleteFile(id) {
   try {
     await api(`/v1/files/${id}`, { method: "DELETE" });
     await refreshFiles();
+  } catch (err) {
+    showBanner("删除失败：" + err.message);
+  }
+}
+
+// ---- 知识库（企业文档 RAG）-------------------------------------------------
+const RAG_STATUS = {
+  ready: "就绪", pending: "处理中", index_pending: "待补向量",
+  needs_heavy_parser: "需重解析", failed: "失败",
+};
+$("openRag").onclick = () => {
+  const p = $("ragPanel");
+  p.classList.toggle("on");
+  $("filePanel").classList.remove("on");   // 与文件面板互斥，避免叠在一起
+  if (p.classList.contains("on")) refreshRagDocs();
+};
+$("ragUploadBtn").onclick = () => $("ragFileInput").click();
+$("ragFileInput").onchange = async (e) => {
+  const files = [...e.target.files];
+  e.target.value = "";
+  for (const f of files) await uploadRagDoc(f);
+};
+async function uploadRagDoc(file) {
+  const msg = $("ragMsg");
+  msg.textContent = `上传 ${file.name} …`;
+  try {
+    const fd = new FormData();
+    fd.append("file", file);
+    const resp = await api("/v1/rag/ingest", { method: "POST", body: fd });
+    if (!resp.ok) {
+      let detail = resp.statusText;
+      try { detail = (await resp.json()).detail || detail; } catch (_) {}
+      throw new Error(`${resp.status}: ${detail}`);
+    }
+    msg.textContent = `⏳ ${file.name} 已提交，正在解析入库…`;
+    await refreshRagDocs();
+    pollRagStatus(file.name, 0);
+  } catch (err) {
+    msg.textContent = "❌ " + err.message;
+  }
+}
+function pollRagStatus(docKey, tries) {
+  if (tries > 20) { $("ragMsg").textContent = "⏳ 处理较慢，稍后点击列表刷新查看状态"; return; }
+  setTimeout(async () => {
+    try {
+      const data = await apiJson("/v1/rag/docs");
+      const d = (data.docs || []).find((x) => x.doc_key === docKey || x.doc_key.endsWith("/" + docKey));
+      if (d && d.status === "ready") { $("ragMsg").textContent = `✅ ${docKey} 已就绪，现在可以在对话里提问了`; }
+      else if (d && d.status === "failed") { $("ragMsg").textContent = `❌ ${docKey} 处理失败：${d.error || "未知原因"}`; }
+      else { pollRagStatus(docKey, tries + 1); }
+      await refreshRagDocs();
+    } catch (_) { pollRagStatus(docKey, tries + 1); }
+  }, 2000);
+}
+async function refreshRagDocs() {
+  const list = $("ragList");
+  try {
+    const data = await apiJson("/v1/rag/docs");
+    const docs = data.docs || [];
+    if (!docs.length) { list.innerHTML = '<div class="empty">还没有文档，上传一个开始</div>'; return; }
+    list.innerHTML = docs.map((d) => {
+      const name = (d.doc_key || "").split("/").pop();
+      const st = RAG_STATUS[d.status] || d.status;
+      return `<div class="rag-row">
+        <span class="name" title="${esc(d.doc_key)}">${esc(name)}</span>
+        <span class="rag-status ${esc(d.status)}">${esc(st)}</span>
+        <button class="danger" data-key="${esc(d.doc_key)}" onclick="deleteRagDoc(this.dataset.key)">删</button>
+      </div>`;
+    }).join("");
+  } catch (err) {
+    list.innerHTML = `<div class="empty">加载失败：${esc(err.message)}</div>`;
+  }
+}
+async function deleteRagDoc(docKey) {
+  if (!confirm(`确定从知识库删除「${docKey.split("/").pop()}」？`)) return;
+  try {
+    await api(`/v1/rag/docs/${encodeURIComponent(docKey)}`, { method: "DELETE" });
+    await refreshRagDocs();
   } catch (err) {
     showBanner("删除失败：" + err.message);
   }

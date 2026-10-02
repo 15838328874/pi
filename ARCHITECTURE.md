@@ -80,7 +80,7 @@ pi-py 是 **earendol-works/pi**（TypeScript 版编码智能体外壳）的 **Py
 | 语言 | TypeScript（沿用上游）| **Python** | AI 生态、异步模型、开发速度 |
 | 数据库 | PostgreSQL / SQLite | **MySQL**（生产）+ 测试同库 | 生产实际云端 MySQL；测试与生产统一，消除"SQLite 与 MySQL 行为不一致"的整类问题（SQLite 不强制外键、日期格式差异真踩过坑） |
 | 缓存 | 无/进程内存 | **Redis**（多实例必配）| 锁/限流/撤销要跨实例一致；单实例内存降级可跑 |
-| 沙箱 | 进程内直接执行 | **microVM（生产）+ Docker 预热池（本地）** | 进程内执行 = 模型能读应用环境变量（含密钥）；microVM 每回合独立 VM、崩溃天然隔离 |
+| 沙箱 | 进程内直接执行 | **microVM（生产）+ Docker 池（本地，惰性）** | 进程内执行 = 模型能读应用环境变量（含密钥）；microVM 每回合独立 VM、崩溃天然隔离 |
 | 前端 | React/Vue 工程 | **零构建单文件 + vanilla JS** | 三页不需要工程链；改动即生效；无 node 依赖 |
 | 工具扩展 | 每种来源写一套 | **统一 ToolProvider + ToolRegistry** | MCP/Skills/内置本质都是"工具来源"，统一后自动获得 policy/审计/沙箱/配额 |
 | RL 飞轮 | 自己训模型 | **只做数据侧**（rollout→reward→filter→JSONL） | 训练是 veRL/TRL 的活，项目停在数据生产 |
@@ -217,7 +217,7 @@ RunManager.run_turn
   ├─ semaphore.acquire()                     ← 全局并发上限（背压）
   ├─ 加载历史消息（MessageRepo）
   ├─ 装配 AgentLoop（工具 + 策略 + 审计 + tracer）
-  ├─ sandbox 预热（docker 池模式下与 LLM 首响应并行）
+  ├─ 沙箱惰性获取：首次 bash 调用时创建/复用会话级 VM（纯聊天回合零 VM）
   ├─ 用户消息 write-ahead 落库（首个 SSE 事件发出前，流内触发）
   ├─ async with asyncio.timeout(600s):
   │    AgentLoop.run(prompt):
@@ -253,7 +253,7 @@ pi-python/
 │   │   ├── base.py          Tool 抽象 + ToolContext + 公共工具函数
 │   │   ├── bash.py read.py write.py edit.py grep.py find.py ls.py
 │   │   ├── files.py memory.py mcp.py skill.py subagent.py rag.py registry.py
-│   │   └── sandbox.py       命令执行隔离：LocalRunner / Docker 冷路径/预热池 / CubeSandboxRunner（microVM）；
+│   │   └── sandbox.py       命令执行隔离：LocalRunner / Docker 冷路径/池（惰性 create） / CubeSandboxRunner（microVM）；
 │   │                        SandboxLimits（内存/pids/cpu/user）在四处建容器路径统一生效
 │   ├── rag/                 企业知识库（§21）：parser（多格式 + heavy-parser OCR）/chunker/
 │   │                        ingest/retriever（向量×BM25→RRF→rerank）/eval/integration
@@ -283,7 +283,7 @@ pi-python/
 ├── docs/                    CubeSandbox 设计笔记 / 生产部署手册 / 生产就绪审计（专项文档）
 ├── tools/loadtest.py        SSE 压测工具
 ├── tools/seed_testdb.py     给 *_test 库灌可复用的测试数据（幂等，拒绝跑在生产库上）
-├── tools/sandbox_bench.py   docker 预热池容量压测（直打 sandbox 层，扫并发用户数）
+├── tools/sandbox_bench.py   docker 池容量压测（直打 sandbox 层，扫并发用户数）
 ├── deploy/                  Caddyfile（SSE 友好 TLS）、云端部署手册、.env 模板
 ├── policy.json              服务端安全策略（`PI_POLICY` 指向它；两个 compose 也挂这一份）
 ├── Dockerfile               多阶段镜像（含 alembic，支持 `pi-py migrate`）
@@ -640,7 +640,7 @@ create→start→销毁"的延迟。设计：
 
 | 机制 | 实现 |
 |---|---|
-| 预热 | `prewarm(cwd)` 在 turn 开始时被调用（与 LLM 首响应并行），提前建好该 workspace 的温容器 |
+| 预热 | `prewarm(cwd)` 预热钩子（pool 级 API，test_sandbox_pool 直测；server 已不再在 turn 开始调用——现在是惰性 `ensure_runner`：首次 bash 调用才 create/复用，见 §11.5） |
 | 分配 | `acquire()` 等容器就绪；并发请求同一容器只建一次（task 去重） |
 | 执行 | 每次命令 = `docker exec`（CLI）或 `POST /exec`（API），无容器生命周期开销 |
 | 即时回收 | 命令超时 → 容器判脏立即销毁重建；容器意外消失（daemon 重启等）→ 透明重建一次，两次都失败才报错 |
@@ -650,9 +650,9 @@ create→start→销毁"的延迟。设计：
 | 创建限流 | `PI_SANDBOX_CREATE_CONCURRENCY`（默认 4）信号量，防止突发大量建容器打爆 daemon |
 
 `get_runner(mode)` 是选择入口：`""/"local"` → LocalRunner；`"docker"` →
-默认预热池（`PI_SANDBOX_POOL=0` 退回冷路径）。池是进程级单例，跨 turn 复用。
+默认池（`PI_SANDBOX_POOL=0` 退回冷路径）。池是进程级单例，跨 turn 复用。
 
-**语义变化须知**：预热池下同 workspace 的多次调用共享进程态（pip 装的包、env 变量
+**语义变化须知**：池模式下同 workspace 的多次调用共享进程态（pip 装的包、env 变量
 会保留），冷路径每次清零。文件不受影响（本来就在挂载卷里）。
 
 **④ CubeSandbox**（`PI_SANDBOX=cubesandbox`，方案 B）：**每回合新建独立 microVM
@@ -1432,7 +1432,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 7. **沙箱启用前提**：仓库 `.env` 已按裸跑（`pi-py serve`）打开 `PI_SANDBOX=docker`。
    两个 compose **仍然没开**——app 容器里要能访问宿主 Docker（挂 socket = 等同宿主机
    root 权限，或配 `PI_DOCKER_HOST` TCP+TLS），开启前读 `deploy/cloud-deploy.md`。
-8. **预热池改变进程态语义**：同 workspace 连续调用共享容器内状态（装的包还在）；
+8. **池模式改变进程态语义**：同 workspace 连续调用共享容器内状态（装的包还在）；
    需要干净环境就用 `PI_SANDBOX_POOL=0`。
 9. **计量失败不回滚对话**：这是刻意设计（原则 4）——记账问题不应让用户的工作丢失。
 10. **不要删 `migrations/` 或 `.dockerignore` 里放行它**：Dockerfile 要把它打进镜像，

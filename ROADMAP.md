@@ -76,6 +76,9 @@
 | run 持久化生产级改造 | write-ahead + 逐轮落库 + checkpoint 接 server + runs 状态机 + resume 端点 + 多实例锁心跳（TTL 120s 续期）。loop 侧已就绪（checkpoint + completed_tools 幂等重放账本），设计与取舍记录已归档 [`docs/run-durability-design.md`](docs/run-durability-design.md)，**暂缓实施**（改动面大，9 步清单见设计文档） | 中 |
 | 交互式 run（中途提问确认 + 计划目录产品化） | 模型中途发 questions 事件挂起、用户经 answer 端点回复后从断点续跑（对齐 Claude Code 式协作体验）；plan 文件渲染计划卡。**依赖** run 持久化改造（checkpoint/resume 是前置，挂起=暂停的 run）。设计见 [`docs/run-durability-design.md`](docs/run-durability-design.md) §11，暂缓实施 | 低 |
 | 媒体输出（图片/视频生成 + 知识库视频检索） | media payload 通道（toolcall_end 加 images 字段 + 前端 fetch→blob 渲染）；视频生成走异步 job 模式（提交即返回 + 后台轮询）；知识库视频走文本代理向量化（ASR 转写分段 + show_media 工具）。设计见 [`docs/media-output-design.md`](docs/media-output-design.md)，暂缓实施。实施顺序：共用 payload 通道 → 视频生成 → 知识库检索（摄取管线最重） | 低 |
+| 沙箱平台告警规则 + 推送通道 | `/readyz` 已带 `sandbox` 硬检查（平台挂 → 503，已完成），但**没有任何东西在消费它**：机器上未部署 Prometheus/Alertmanager，`deploy/prometheus.yml` 只是示例且 targets 写的是 compose 网络里的 `app:8300`（本机部署对不上），也**没有任何告警规则文件**。要补：① 起 Prometheus 抓 `/metrics`（targets 按实际部署改）+ 告警规则（如 `rate(pi_sandbox_create_failures_total[5m]) > 0`、`up == 0`、`readyz != 200`）；② Alertmanager 接推送（微信/钉钉/邮件）。指标已现成：`pi_sandbox_create_failures_total` / `_command_timeouts_total` / `_close_failures_total` / `_create_duration_seconds` | 中 |
+| 管理台平台健康卡片 | `/v1/admin/stats` 目前只返回 `today/users/sessions`，运维看不到平台状态。补：cubelet 是否在线、模板是否 READY、近期建沙箱失败数、`/readyz` 各项，做成 `admin.html` 上的状态卡片 | 中 |
+| `/metrics` 加访问 token | 当前 `PI_METRICS_TOKEN` 为空 → `/metrics` 完全开放（启动日志已明确告警："Fine behind a private network, a leak on a published port"）。本机只绑 127.0.0.1 暂时无碍，但一旦挂反代就可能泄漏用量/并发等运行数据。同时改 `prometheus.yml` 的 `authorization.credentials_file` 配套 | 中 |
 
 ## 4. 后续阶段开发
 

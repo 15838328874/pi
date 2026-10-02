@@ -30,9 +30,18 @@ redis = ["redis>=5.0"]
 migrations = ["alembic>=1.13"]
 milvus = ["pymilvus>=3.0.2"]
 mcp = ["mcp>=2.0"]
+# 企业知识库 RAG 的**文档解析器**（pi/rag/parser.py 懒导入，缺了只影响对应格式）。
+# 不装也能跑：纯文本/Markdown/CSV 走标准库，只是 PDF/Word/Excel/HTML 会报缺依赖。
+# 内核本身（检索/切块/融合）零额外依赖，BM25 是自实现的。
+rag = [
+    "pdfplumber>=0.11",      # PDF
+    "python-docx>=1.1",      # .docx（导入名 docx）
+    "openpyxl>=3.1",         # .xlsx
+    "beautifulsoup4>=4.12",  # HTML（导入名 bs4）
+]
 storage = ["boto3>=1.34"]  # 文件管线：S3/MinIO 预签名直连（PI_S3_* 启用才需要；懒导入）
 observability = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20", "prometheus-client>=0.20"]
-production = ["pi-py[postgres,mysql,redis,migrations,milvus,mcp,observability,storage]"]
+production = ["pi-py[postgres,mysql,redis,migrations,milvus,mcp,observability,storage,rag]"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

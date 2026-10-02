@@ -64,6 +64,7 @@ from pi.rag.defaults.http_embedder import HttpEmbedder  # noqa: E402
 from pi.rag.defaults.http_reranker import HttpReranker  # noqa: E402
 from pi.rag.defaults.milvus_vector import MilvusRagVectorStore  # noqa: E402
 from pi.rag.defaults.mysql_store import MysqlChunkStore  # noqa: E402
+from pi.rag.heavy import build_heavy_parser  # noqa: E402
 from pi.rag.eval.harness import (  # noqa: E402
     GoldenSet,
     ab_markdown,
@@ -501,8 +502,12 @@ async def main() -> None:
             print(f"[ingest] --reuse: {len(existing)} chunks already present, skipping ingest")
             chunks = existing
         else:
+            # 装配 heavy parser（复杂 PDF 双栏路由到 PaddleOCR/MinerU）——
+            # 否则双栏 PDF 会被标 needs_heavy_parser 跳过，评测测不到解析改进。
+            heavy_parser = build_heavy_parser(RagConfig.from_env())
             pipe = IngestPipeline(store=store, embedder=emb, vector_store=vec,
-                                  config=cfg, lexical_index=lexical_full)
+                                  config=cfg, lexical_index=lexical_full,
+                                  heavy_parser=heavy_parser)
             await vec.drop()
             for key, _, _ in CORPUS:
                 await store.delete_doc(EVAL_USER, key)

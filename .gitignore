@@ -35,3 +35,4 @@ evals/**/*.orig.json
 # 这些文件，不在版本控制内。
 evals/reports/*
 !evals/reports/README.md
+待测试文档

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import jwt as pyjwt
 from fastapi import Depends, FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
 
@@ -236,6 +236,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         pool_pressure_low=settings.sandbox_pool_pressure_low,
         files_repo=files_repo,
         store=store,
+        workspace_max_bytes=settings.workspace_max_bytes,
     )
     runs.sandbox_network = settings.sandbox_net
 
@@ -609,6 +610,67 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             await store.delete(row.object_key, row.bucket)
         await files_repo.remove(file_id)
         return {"deleted": file_id}
+
+    # ---- 会话工作区产物（模型写出来的文件）--------------------------------
+    # 与上面 /v1/files 是两条**不同的存储**，别混：
+    #   /v1/files         用户上传 → 对象存储（MinIO），需要 PI_S3_* 才启用
+    #   /v1/sessions/*/files  模型产出 → 会话的 workspace 目录，零依赖
+    # 缺口背景：模型 write 出来的文件原本**没有任何用户可见的出口**——前端「文件」
+    # 面板走的是对象存储那条（未配置时是空的），于是用户看到 "Wrote N chars to
+    # <path>" 却拿不到文件。这条通道就是补这个缺口。
+    _WS_SKIP_DIRS = {".git", "__pycache__", "node_modules", ".venv", ".pytest_cache"}
+    _WS_MAX_FILES = 500
+
+    @app.get("/v1/sessions/{session_id}/files")
+    async def list_session_files(session_id: str, username: str = Depends(current_user)) -> dict:
+        """列出该会话工作区里的文件（模型生成的产物）。ACL：仅属主可见。"""
+        row = await _owned_session(session_id, username)
+        base = Path(row.cwd).resolve()
+        files: list[dict] = []
+        if base.is_dir():
+            for p in base.rglob("*"):
+                # 跳过符号链接（可指向工作区之外）与非普通文件
+                if p.is_symlink() or not p.is_file():
+                    continue
+                rel = p.relative_to(base)
+                if _WS_SKIP_DIRS & set(rel.parts[:-1]):
+                    continue
+                try:
+                    st = p.stat()
+                except OSError:  # 竞态：列表期间被删
+                    continue
+                files.append({"path": str(rel), "size": st.st_size, "mtime": int(st.st_mtime)})
+        files.sort(key=lambda f: -f["mtime"])  # 最新的在前（用户通常要刚产出的那个）
+        return {
+            "files": files[:_WS_MAX_FILES],
+            "truncated": len(files) > _WS_MAX_FILES,
+            "cwd": str(base),
+        }
+
+    @app.get("/v1/sessions/{session_id}/files/{path:path}")
+    async def download_session_file(
+        session_id: str, path: str, username: str = Depends(current_user)
+    ) -> FileResponse:
+        """下载会话工作区里的单个文件。"""
+        row = await _owned_session(session_id, username)
+        base = Path(row.cwd).resolve()
+        target = (base / path).resolve()
+        # 路径沙箱：解析（含符号链接展开）后必须仍落在工作区内 —— 与 policy 的
+        # path_sandbox 同一条纪律，`../` 与 symlink 逃逸一并挡住。缺失这层的话，
+        # 一个带 `..` 的请求就能读走服务器上任意文件。
+        try:
+            target.relative_to(base)
+        except ValueError:
+            raise HTTPException(
+                status_code=403, detail="path escapes the session workspace"
+            ) from None
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="file not found")
+        # FileResponse 流式发送（不把整个文件读进内存），并带 Content-Disposition
+        # 让浏览器按原名下载。
+        return FileResponse(
+            target, filename=target.name, media_type="application/octet-stream"
+        )
 
     # ---- 企业知识库文档管理（上传 → 异步入库 → 列表/删除）----------------
     # 主流的"上传即入库"体验：POST 立刻返回 pending，后台线程跑解析→切块→

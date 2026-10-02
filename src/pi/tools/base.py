@@ -147,6 +147,8 @@ class ToolContext:
     memory: Any = None  # MemoryRepo, injected by the server runner
     files: Any = None  # FileRepo, injected by the server runner (list_files/fetch_file)
     store: Any = None  # ObjectStore, presigned URLs for the file pipeline
+    # 每会话 workspace 磁盘配额（字节）。0 = 不限制。write 写前硬拦。
+    workspace_max_bytes: int = 0
 
 
 class Tool(ABC):
@@ -204,3 +206,23 @@ SKIP_DIRS = {
     ".idea",
     ".vscode",
 }
+
+
+def workspace_size(root: Path) -> int:
+    """Total bytes of regular files under ``root``, skipping build dirs.
+
+    Used for the per-session workspace quota. Best-effort: a stat race (file
+    deleted mid-scan) is ignored, never raised.
+    """
+    total = 0
+    for p in root.rglob("*"):
+        if p.is_symlink() or not p.is_file():
+            continue
+        rel = p.relative_to(root)
+        if SKIP_DIRS & set(rel.parts[:-1]):
+            continue
+        try:
+            total += p.stat().st_size
+        except OSError:  # deleted mid-scan
+            continue
+    return total

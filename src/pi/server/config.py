@@ -20,6 +20,9 @@ class ServerSettings:
     # 空 = 只有 default_model。PI_MODEL_LIST 只是「可选清单」，不改变默认模型。
     model_list: str = ""
     workspace_root: Path = field(default_factory=lambda: Path.home() / ".pi-py" / "workspaces")
+    # 每会话 workspace 磁盘配额（草稿纸，非产物仓库）。write 写前硬拦、bash 事后
+    # 警告。0 = 不限制。见 docs/artifact-delivery-design.md。
+    workspace_max_bytes: int = 100 * 1024 * 1024
     max_concurrent_runs: int = 8
     run_timeout_seconds: int = 600
     rate_limit_runs_per_min: int = 20
@@ -123,6 +126,9 @@ class ServerSettings:
             default_model=os.environ.get("PI_MODEL", "openai/gpt-4o"),
             model_list=os.environ.get("PI_MODEL_LIST", ""),
             workspace_root=Path(os.environ.get("PI_WORKSPACE_ROOT", base / "workspaces")),
+            workspace_max_bytes=int(
+                os.environ.get("PI_WORKSPACE_MAX_BYTES", 100 * 1024 * 1024)
+            ),
             max_concurrent_runs=int(os.environ.get("PI_MAX_CONCURRENT_RUNS", 8)),
             run_timeout_seconds=int(os.environ.get("PI_RUN_TIMEOUT_SECONDS", 600)),
             rate_limit_runs_per_min=int(os.environ.get("PI_RATE_LIMIT_RUNS_PER_MIN", 20)),

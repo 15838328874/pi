@@ -43,6 +43,7 @@ from pi.server.archive import (
 )
 from pi.server.db import MemoryRepo, MessageRepo, RunRepo, SessionRow
 from pi.server.trajectory_store import append_trajectory
+from pi.tools.base import workspace_size
 from pi.tools.registry import ToolRegistry
 from pi.tools.sandbox import get_runner
 
@@ -103,6 +104,7 @@ class RunManager:
         pool_pressure_low: int = 512 * 1024 * 1024,
         files_repo: Any = None,  # FileRepo (files table), injected to tools
         store: Any = None,  # ObjectStore (presigned URLs), injected to tools
+        workspace_max_bytes: int = 0,  # per-session workspace disk quota (0 = off)
     ):
         self.policy = policy
         self.audit = audit
@@ -129,6 +131,7 @@ class RunManager:
         self._pool_sweep_interval_s = 30.0
         self.files_repo = files_repo
         self.store = store
+        self.workspace_max_bytes = workspace_max_bytes
 
     async def run_turn(
         self,
@@ -272,6 +275,8 @@ class RunManager:
                 # 文件管线工具依赖（list_files/fetch_file 走工具结果，不碰 system_prompt）
                 agent.ctx.files = self.files_repo
                 agent.ctx.store = self.store
+                # 每会话 workspace 磁盘配额（write 写前硬拦）
+                agent.ctx.workspace_max_bytes = self.workspace_max_bytes
                 if self.sandbox:
                     # 惰性沙箱：回合以本地模式起步，第一次 bash 调用（或显式
                     # 工具）通过 ensure_runner 现场创建/复用 VM。纯聊天回合
@@ -508,6 +513,19 @@ class RunManager:
                     await asyncio.to_thread(runner.save_workspace)
                 except Exception:  # noqa: BLE001 - best-effort
                     log.debug("sandbox workspace save failed", exc_info=True)
+                # 1.5) workspace 磁盘配额：bash 在沙箱里自由执行、写前无法精确拦，
+                # 这里 turn 结束后检查，超了只记 warning 不删文件（删用户文件比
+                # 超限更糟；收敛靠「下次 write 被拦 + 这条 warning」）。
+                if self.workspace_max_bytes > 0:
+                    try:
+                        size = await asyncio.to_thread(workspace_size, Path(session.cwd))
+                        if size > self.workspace_max_bytes:
+                            log.warning(
+                                "workspace quota exceeded session=%s: %d bytes > %d",
+                                session.id, size, self.workspace_max_bytes,
+                            )
+                    except Exception:  # noqa: BLE001 - quota probe is best-effort
+                        log.debug("workspace quota probe failed", exc_info=True)
                 # 2) 回合级归档（只在真用过沙箱时；聊天回合跳过分文不取）
                 if baseline is not None:
                     try:

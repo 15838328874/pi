@@ -133,6 +133,9 @@ provider，工具照样走 policy / audit / tracing / 配额，但宿主工具�
 - **v2 才考虑**：多模态（VLM+OCR）、图搜图、GraphRAG。
 - 文件管线已落地（MinIO 预签名直连 + sha256 去重 + files 表 + list_files/fetch_file 工具）；
   剩余：磁盘配额（每用户/单文件上限 + 解压炸弹防护）、闲置清理策略、与 RAG 解析层共用 parser。
+- **文件产物交付**（模型产出 → 用户下载）：实时下载（workspace 直读）+ workspace 100MB 配额
+  已落地；MinIO 持久化、闲置清理、生命周期列为后续方向，完整设计见
+  `docs/artifact-delivery-design.md`。
 
 ### 4.2 产品化
 

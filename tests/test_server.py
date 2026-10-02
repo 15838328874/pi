@@ -15,7 +15,28 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from pi.server.app import create_app
 from pi.server.config import ServerSettings
-from pi.llm.base import LLMProvider, TextDelta
+from pi.llm.base import LLMProvider, StreamEnd, TextDelta, ToolCallDelta, Usage
+
+
+class _BoomAfterToolProvider(LLMProvider):
+    """First call emits one tool call (write), second call crashes: the completed
+    round's messages must already be in the DB when the crash lands."""
+
+    name = "fake"
+
+    def __init__(self) -> None:
+        self.model = "demo"
+        self._calls = 0
+
+    async def stream(self, system, messages, tools):
+        self._calls += 1
+        if self._calls == 1:
+            yield ToolCallDelta(
+                id="c1", name="write", arguments='{"path":"a.txt","content":"hi"}'
+            )
+            yield StreamEnd("tool_use", Usage(input_tokens=1, output_tokens=1))
+        else:
+            raise RuntimeError("boom")
 
 
 class _BoomMidStreamProvider(LLMProvider):
@@ -317,6 +338,38 @@ class TestRuns:
             (1, "user"),   # healthy run: write-ahead prompt
             (2, "assistant"),
         ]
+
+    def test_completed_round_messages_survive_crash(self, server, monkeypatch):
+        """run-durability step 2: messages finalized at a tool round boundary are
+        persisted before the round executes - a later crash loses at most the
+        in-flight round, never the earlier conversation."""
+        import pi.server.runner as runner_mod
+
+        monkeypatch.setattr(
+            runner_mod,
+            "resolve_chain",
+            lambda model, on_fallback=None: _BoomAfterToolProvider(),
+        )
+        _register(server, "alice", "password123")
+        token = _login(server, "alice", "password123")
+        h = {"Authorization": f"Bearer {token}"}
+        sid = server.post("/v1/sessions", json={"model": "fake/demo"}, headers=h).json()["id"]
+
+        events = []
+        with server.stream(
+            "POST", f"/v1/sessions/{sid}/runs", json={"prompt": "write it"}, headers=h
+        ) as resp:
+            for line in resp.iter_lines():
+                if line.startswith("event: "):
+                    events.append(line.removeprefix("event: "))
+
+        assert "toolcall_start" in events
+        assert "error" in events
+        msgs = server.get(f"/v1/sessions/{sid}/messages", headers=h).json()["messages"]
+        # prompt / assistant tool-call / tool result - the completed round survives
+        assert [m["role"] for m in msgs] == ["user", "assistant", "user"]
+        blocks = msgs[2]["blocks"]
+        assert blocks and blocks[0]["type"] == "tool_result"
 
     def test_run_unknown_session_404(self, server):
         _register(server, "alice", "password123")

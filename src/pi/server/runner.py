@@ -143,7 +143,7 @@ class RunManager:
         run_repo: RunRepo | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Execute one user turn; the user message is persisted up-front (write-ahead),
-        the remaining messages on completion."""
+        the rest incrementally at each tool round boundary and on completion."""
         # distributed session lock: correct across instances when Redis-backed
         lock_key = f"session:{session.id}"
         runner = None  # owned by this turn; closed (workspace saved, VM dead) in finally
@@ -312,6 +312,27 @@ class RunManager:
                     )
                     write_ahead_flushed = True
 
+                async def _flush_buffer() -> None:
+                    """Incremental durability (run-durability step 2): persist
+                    finalized messages at each tool round boundary. Everything
+                    up to the previous round is in the DB before the model is
+                    allowed to start the next one, so a hard crash loses at
+                    most the in-flight round. Same task as the producer - no
+                    queue needed."""
+                    if not buffer:
+                        return
+                    base_idx = await message_repo.count_for_session(session.id)
+                    entries = [
+                        {
+                            "idx": base_idx + i,
+                            "role": m.role.value,
+                            "blocks": m.model_dump_json(),
+                        }
+                        for i, m in enumerate(buffer)
+                    ]
+                    await message_repo.append_many(session.id, entries)
+                    buffer.clear()
+
                 try:
                     async with self.metrics.in_flight():
                         first_event = True
@@ -342,6 +363,24 @@ class RunManager:
                                 run_status = (
                                     "timeout" if "TimeoutError" in ev.message else "error"
                                 )
+                            elif isinstance(ev, ToolCallStartEvent):
+                                # Tool round boundary, flushed BEFORE executing:
+                                # everything the client has seen so far (assistant
+                                # message + earlier rounds' results) reaches the DB
+                                # first. A crash mid-tool loses at most the current
+                                # tool's result - the same truncated history a
+                                # user would see in the stream.
+                                try:
+                                    await _flush_buffer()
+                                except Exception as exc:  # noqa: BLE001
+                                    run_status = "error"
+                                    yield ErrorEvent(
+                                        message=(
+                                            "persisting messages failed: "
+                                            f"{type(exc).__name__}: {exc}"
+                                        )
+                                    )
+                                    break
                             yield ev
                 except TimeoutError:
                     run_status = "timeout"

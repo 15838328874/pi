@@ -2,7 +2,8 @@
 
 Minimal and dependency-light (httpx only, already a server dependency): wraps
 auth, sessions, messages, trajectories, usage and the SSE run stream into a
-typed async interface. See README / PROJECT_GUIDE for usage samples.
+typed async interface. See README for usage samples (the former PROJECT_GUIDE
+was merged into ARCHITECTURE.md).
 
     async with PiClient("http://localhost:8300") as pi:
         await pi.login("zhu", "...")

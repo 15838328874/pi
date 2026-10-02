@@ -899,7 +899,7 @@ migrations/        Alembic 迁移（0001~0007）
 | `PI_REDIS_URL` | Redis（锁/限流/撤销） | 多实例必配；单实例可内存降级 |
 | `PI_MODEL` | 默认模型 | 本地用 openai/qwen3.8-flash |
 | `PI_FALLBACK_CHAIN` | 降级链（逗号分隔） | 主模型挂了自动切 |
-| `PI_SANDBOX` | 沙箱模式（docker / 空=进程内） | 非法值启动即拒绝 |
+| `PI_SANDBOX` | 沙箱模式（空=进程内 / docker / cubesandbox） | 非法值启动即拒绝 |
 | `PI_SANDBOX_MEMORY/PIDS/CPUS` | 容器限额（Docker 形态） | 1g / 256 / 1.0 |
 | `PI_SANDBOX_NET` | `host` 才开网络 | 默认断网 |
 | `PI_POLICY` | 策略文件路径 | server 模式只加不减 |
@@ -910,7 +910,7 @@ migrations/        Alembic 迁移（0001~0007）
 | `PI_JWT_SECRET` | 令牌签名密钥 | 多实例必须一致，轮换=全员登出 |
 | `PI_MAX_CONCURRENT_RUNS` | 全局并发信号量 | 默认 8 |
 | `PI_METRICS_TOKEN` | /metrics 访问令牌 | 错误令牌答 404（不暴露存在性） |
-| `PI_CUBE_API_KEY` | CubeSandbox（E2B 兼容 API）密钥 | `PI_SANDBOX=cubesandbox` 时必配 |
+| `PI_CUBE_API_URL` / `PI_CUBE_API_KEY` / `PI_CUBE_DOMAIN` / `PI_SANDBOX_TEMPLATE` / `PI_SANDBOX_CA_FILE` | CubeSandbox 控制面（E2B 兼容 API）/ 密钥 / 数据面域名 / 模板 id / CA 合并包 | `PI_SANDBOX=cubesandbox` 时必配 |
 | `PI_SANDBOX_CLOSE_TIMEOUT_SECONDS` | 沙箱 close/save 总超时 | 默认 90s，超时 turn 先走、清理线程收尾 |
 | `PI_ARCHIVE` / `PI_ARCHIVE_DIR` / `PI_ARCHIVE_S3_*` | 会话归档开关/目录/MinIO 上传 | 默认开启，落 `~/.pi-py/archives` |
 | `PI_S3_ENDPOINT` / `PI_S3_ACCESS_KEY` / `PI_S3_SECRET_KEY` / `PI_S3_BUCKET_FILES` / `PI_S3_BUCKET_ARTIFACTS` | MinIO/S3 文件管线（预签名直连） | 未配置 = 文件管线关闭 |

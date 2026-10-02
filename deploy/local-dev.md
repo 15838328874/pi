@@ -16,7 +16,7 @@
 | 沙箱 | CubeSandbox microVM（`PI_SANDBOX=cubesandbox`，见 `docs/production-deployment.md`）；Docker 亦可 | 本机 Docker（`PI_SANDBOX=docker`） |
 | 配置文件 | `.env`（生产，gitignored） | `deploy/env.local.example` → 复制为 `.env.local` |
 | 基础设施编排 | `docker-compose.cloud.yml`（app+caddy，DB/Redis 外部） | `docker-compose.local.yml`（mysql+redis+milvus，app 跑宿主机） |
-| 数据文件 | 服务器磁盘（`/root/...`） | 本机：`workspaces/`、`audit.jsonl`、`trajectories.jsonl` 都在项目目录下 |
+| 数据文件 | 服务器磁盘（`/root/...`） | 本机：`workspaces/`、`audit.jsonl`、`trajectories.jsonl` 默认都在 `~/.pi-py/` 下（代码默认值，home 相关；除非 `.env.local` 显式覆盖 `PI_WORKSPACE_ROOT`/`PI_AUDIT_PATH`/`PI_TRAJECTORY_PATH`） |
 
 **铁律**：两个环境唯一的交集是**云模型/embedding 的 API 调用**（无状态）。任何状态数据
 （用户、会话、消息、用量、向量、轨迹、审计）都不跨环境。

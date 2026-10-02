@@ -955,7 +955,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_DEFAULT_QUOTA_TOKENS` | 1,000,000 | 新用户默认月配额 |
 | `PI_TRACER` | jsonl | noop / jsonl / otel |
 | `PI_POLICY` | 空 | 策略 JSON 文件路径；**只能加规则**，`path_sandbox`/`redact` 被 `server_policy` 强制打开 |
-| `PI_SANDBOX` | 空 | 空/`local`=本机执行（启动时打 `warning`）；`docker`=容器隔离；**其它值启动即报错**，不再静默降级 |
+| `PI_SANDBOX` | 空 | 空/`local`=本机执行（启动时打 `warning`）；`docker`=容器隔离；`cubesandbox`=CubeSandbox microVM（生产方案）；**其它值启动即报错**，不再静默降级 |
 | `PI_SANDBOX_IMAGE` | python:3.12-slim | 沙箱镜像 |
 | `PI_SANDBOX_NET` | 关 | `host` 才允许容器联网 |
 | `PI_SANDBOX_MEMORY` | 1g | 单容器内存上限；同时设等值 `--memory-swap` 关掉 swap（docker 默认允许 2 倍） |
@@ -976,7 +976,11 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_SKILLS_DIR` | 空 | 技能根目录（`<skill>/SKILL.md` + `scripts/`）；空=不加载技能 |
 | `PI_METRICS` | 1 | Prometheus 指标开关；0=关（`/metrics` 回 503） |
 | `PI_METRICS_TOKEN` | 空 | `/metrics` 门控 token；空=开放（启动打 warning），错 token 回 404 |
+| `PI_CUBE_API_URL` | `http://127.0.0.1:3000` | CubeSandbox 控制面（E2B 兼容 API）；`PI_SANDBOX=cubesandbox` 时使用 |
 | `PI_CUBE_API_KEY` | 空 | CubeSandbox（E2B 兼容 API）密钥；`PI_SANDBOX=cubesandbox` 必配 |
+| `PI_CUBE_DOMAIN` | `cube.app` | 沙箱数据面域名后缀（`{port}-{id}.cube.app`，解析到 `10.0.0.8`） |
+| `PI_SANDBOX_TEMPLATE` | 空 | CubeSandbox 模板 id；`PI_SANDBOX=cubesandbox` 必配（如 `cube-lite-py`） |
+| `PI_SANDBOX_CA_FILE` | `~/.pi-py/cube-ca-bundle.pem` | 平台自签 CA + 系统 CA 的合并包（设为 `SSL_CERT_FILE`）；单放平台 CA 会覆盖系统信任链 |
 | `PI_SANDBOX_CLOSE_TIMEOUT_SECONDS` | 90 | 沙箱 close/save 总超时；超时 turn 先走、清理线程收尾（VM 必死） |
 | `PI_SANDBOX_POOL_SIZE` | 4 | 常驻 VM 池上限，超出 LRU 淘汰 |
 | `PI_SANDBOX_POOL_TTL` / `PI_SANDBOX_POOL_TTL_TIGHT` | 900 / 300 | 空闲 VM 回收阈值（内存宽裕 / 紧张两档） |
@@ -1525,9 +1529,16 @@ Milvus collection `pi_rag_chunks` 只是**投影**——PK = `chunk_id`，可以
 入口 B：CLI（运维/批量）         pi-py rag ingest --path <文件或目录>
 
   → parser.parse_file()      7 后端路由（md/txt/html/csv/tsv/xlsx/docx + pdf）
-                             质量门：扫描版 PDF / 图片 → needs_heavy_parser
-  → [扫描件/图片] heavy_parser.parse()   外部 OCR（PI_RAG_HEAVY_PARSER，默认 PaddleOCR）
-                              识别成 Markdown 后重新 parse，继续走正常链路；
+                             质量门（三个通用信号，均与文档内容/语言无关）：
+                               ① 扫描版：text density < 阈值（无文本层）
+                               ② 乱码：garbled-char 占比 > 30%
+                               ③ 双栏/表格：行内最大字符间隙中位数 > 20pt（中缝）
+                              任一命中 → needs_heavy_parser
+  → [needs_heavy_parser] heavy_parser.parse()   外部 layout 解析（PI_RAG_HEAVY_PARSER，
+                              默认 PaddleOCR-VL；MinerU 换配置即迁移）
+  → clean_ocr_markdown()     vendor 中立清洗：行内 LaTeX→文本、HTML 表格→pipe 表格、
+                              标签剥除（PaddleOCR/MinerU 输出同形状，共用）
+  → 重新 parse（markdown）    清洗后的干净 Markdown 继续走正常 chunk/embed/index 链路；
                               未配 OCR 服务或 OCR 失败 → 落 NEEDS_HEAVY_PARSER
   → chunker                  语义切块（max_chars=800，overlap=120）+ contextual retrieval
                              embed_text = "文档标题 > 章节 > 小节\n\n" + text

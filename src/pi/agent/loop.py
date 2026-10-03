@@ -69,7 +69,6 @@ class _ToolOutcome:
     usage: Usage | None = None  # token usage a tool incurred (sub-agents)
     arguments: dict | None = None  # parsed tool args (None if malformed)
     denied: bool = False  # rejected by the security policy
-    server_executed: bool = False  # executed by the model gateway, not locally
 
 
 @dataclass
@@ -121,7 +120,6 @@ class AgentLoop:
         compact_threshold: int = 80_000,
         compact_keep: int = 8,
         max_cost_usd: float = 0.0,
-        server_tools: list[str] | None = None,
         policy: Policy | None = None,
         audit: AuditLogger | None = None,
         session_id: str = "",
@@ -156,9 +154,6 @@ class AgentLoop:
         self.compact_threshold = compact_threshold
         self.compact_keep = compact_keep
         self.max_cost_usd = max_cost_usd
-        # Gateway-executed tools (web_search/web_extractor/code_interpreter) are
-        # answered with an empty result, never routed through local execution.
-        self.server_tools: set[str] = set(server_tools or [])
         self.policy = policy
         self.audit = audit
         self.session_id = session_id
@@ -359,13 +354,7 @@ class AgentLoop:
                 for call in calls:
                     tool_t0 = time.perf_counter()
                     tool_ts0 = time.time()  # wall clock at execution START
-                    if call.name in self.server_tools:
-                        # Gateway-executed tool: no local execution, no policy
-                        # gate, no sandbox - the endpoint runs it on receipt of
-                        # the empty tool result.
-                        outcome = self._server_tool(call)
-                    else:
-                        outcome = await self._run_tool(call)
+                    outcome = await self._run_tool(call)
                     outcomes.append(outcome)
                     if outcome.usage is not None:
                         total = total.add(outcome.usage)
@@ -382,10 +371,6 @@ class AgentLoop:
                         )
                     )
                     preview = outcome.block.content[:PREVIEW_LEN].replace("\n", " ")
-                    if not preview and outcome.server_executed:
-                        # the wire result is empty by design (the gateway executes
-                        # the tool on receipt); the UI deserves to know that.
-                        preview = "(executed by the model gateway)"
                     yield ToolCallEndEvent(
                         id=call.id,
                         name=outcome.name,
@@ -480,28 +465,6 @@ class AgentLoop:
             chars_after=after,
         )
 
-    def _server_tool(self, call: ToolCallBlock) -> _ToolOutcome:
-        """Answer a gateway-executed tool call with an EMPTY result.
-
-        The OpenAI-compatible endpoint runs these tools itself once it receives
-        the empty tool result, so there is nothing local to execute, gate or
-        sandbox - which is why this never routes through _run_tool. The call is
-        still audited: it names a capability and carries model-chosen arguments.
-        """
-        try:
-            args = json.loads(call.arguments or "{}")
-            if not isinstance(args, dict):
-                args = {}
-        except (json.JSONDecodeError, ValueError):
-            args = {}
-        self._audit(call.name, args, ok=None, preview="(executed by the model gateway)")
-        return _ToolOutcome(
-            block=ToolResultBlock(tool_use_id=call.id, content="", is_error=False),
-            name=call.name,
-            arguments=args,
-            server_executed=True,
-        )
-
     async def _run_tool(self, call: ToolCallBlock) -> _ToolOutcome:
         tool = self.tools.get(call.name)
         if tool is None:
@@ -587,7 +550,7 @@ class AgentLoop:
             self._audit(call.name, args, ok=not result.is_error, preview=result.content)
             return _ToolOutcome(block=block, name=call.name, usage=result.usage, arguments=args)
 
-    def _audit(self, tool: str, args: dict, ok: bool | None, preview: str) -> None:
+    def _audit(self, tool: str, args: dict, ok: bool, preview: str) -> None:
         if self.audit is None:
             return
         if self.policy is not None and self.policy.redact:

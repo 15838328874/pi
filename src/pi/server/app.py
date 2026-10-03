@@ -82,16 +82,6 @@ class UserUpdateIn(BaseModel):
 class RunIn(BaseModel):
     prompt: str = Field(min_length=1, max_length=32_000)
     model: str | None = None
-    enable_search: bool = Field(
-        default=False,
-        description="Endpoint-side web search woven into the answer (extra_body.enable_search).",
-    )
-    builtin_tools: list[str] = Field(
-        default_factory=list,
-        max_length=3,
-        description="Gateway-executed tools to offer the model this run "
-        "(web_search / web_extractor / code_interpreter).",
-    )
 
 
 class FileUploadIn(BaseModel):
@@ -1001,8 +991,6 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 message_repo=messages,
                 memory_repo=memories,
                 run_repo=runs_repo,
-                enable_search=body.enable_search,
-                builtin_tools=list(body.builtin_tools),
             ):
                 yield event_to_sse(ev)
             yield "event: done\ndata: {}\n\n"

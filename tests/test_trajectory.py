@@ -143,28 +143,6 @@ def test_no_cost_budget_runs_normally():
     assert finished["type"] == "RunFinished"
 
 
-def test_server_tool_routes_to_empty_result(tmp_path):
-    """Gateway-executed tools (web_search etc.) get an empty result, never the
-    'unknown tool' error, and the run completes normally."""
-    provider = FakeProvider(
-        responses=[
-            [ToolCallBlock(id="t1", name="web_search", arguments=json.dumps({"query": "x"}))],
-            [TextBlock(text="answer")],
-        ],
-    )
-    agent = AgentLoop(
-        provider=provider, tools=all_tools(), server_tools=["web_search"], cwd=tmp_path
-    )
-    _run(agent, "search x")
-
-    d = agent.trajectory.to_dict()
-    assert all(e["type"] != "RunError" for e in d["events"]), "must not error as unknown tool"
-    tc = next(e for e in d["events"] if e["type"] == "ToolCall")
-    assert tc["name"] == "web_search"
-    assert tc["is_error"] is False
-    assert tc["result"] == ""  # empty wire result by design
-
-
 class TestDenialCircuitBreaker:
     """A model stuck retrying policy-denied calls aborts loudly instead of
     burning turns into max_turns/the run timeout (load-test observation:

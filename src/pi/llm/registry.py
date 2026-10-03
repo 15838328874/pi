@@ -27,8 +27,6 @@ def resolve(model: str, **kwargs) -> LLMProvider:
             model=model_id,
             api_key=kwargs.get("api_key") or os.environ.get("OPENAI_API_KEY"),
             base_url=kwargs.get("base_url") or os.environ.get("OPENAI_BASE_URL"),
-            enable_search=bool(kwargs.get("enable_search")),
-            builtin_tools=kwargs.get("builtin_tools"),
         )
     if provider_name == "anthropic":
         from pi.llm.anthropic_provider import AnthropicProvider

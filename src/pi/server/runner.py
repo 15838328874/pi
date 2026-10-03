@@ -152,8 +152,6 @@ class RunManager:
         message_repo: MessageRepo,
         memory_repo: MemoryRepo | None = None,
         run_repo: RunRepo | None = None,
-        enable_search: bool = False,
-        builtin_tools: list[str] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """Execute one user turn; the user message is persisted up-front (write-ahead),
         the rest incrementally at each tool round boundary and on completion."""
@@ -263,8 +261,6 @@ class RunManager:
                     on_fallback=lambda frm, to, reason: self.metrics.fallback(
                         from_model=frm, to_model=to
                     ),
-                    enable_search=enable_search,
-                    builtin_tools=builtin_tools,
                 )
                 agent = AgentLoop(
                     provider=provider,
@@ -279,7 +275,6 @@ class RunManager:
                     compact_threshold=self.compact_threshold,
                     compact_keep=self.compact_keep,
                     max_cost_usd=self.max_cost_usd,
-                    server_tools=builtin_tools,
                     policy=self.policy,
                     audit=self.audit,
                     session_id=session.id,

@@ -35,9 +35,9 @@ class FakeEmbedder:
 
 
 class FakeVectorStore:
-    """Records adds; search results are scripted per test."""
+    """Records adds; search results are scripted per test as (id, cosine)."""
 
-    def __init__(self, scripted: list[int] | Exception | None = None) -> None:
+    def __init__(self, scripted: list[tuple[int, float]] | Exception | None = None) -> None:
         self.adds: list[tuple[int, int, str, list[float]]] = []
         self.scripted = scripted
         self.last_search: tuple[int, list[float], int] | None = None
@@ -45,7 +45,7 @@ class FakeVectorStore:
     async def add(self, memory_id: int, user_id: int, text: str, vector: list[float]) -> None:
         self.adds.append((memory_id, user_id, text, vector))
 
-    async def search(self, user_id: int, vector: list[float], k: int) -> list[int]:
+    async def search(self, user_id: int, vector: list[float], k: int) -> list[tuple[int, float]]:
         self.last_search = (user_id, vector, k)
         if isinstance(self.scripted, Exception):
             raise self.scripted
@@ -91,10 +91,13 @@ def test_search_uses_vector_order_not_lexical(tmp_path):
         rows = await repo.list_for_user(1)
         by_text = {r.text: r.id for r in rows}
         # lexically only "snake_case" should match; script the vector order as
-        # [async-row, api-row] and prove the result follows the vector order.
-        store.scripted = [by_text["prefer async"], by_text["the API uses snake_case naming"]]
+        # [(async-row, .9), (api-row, .8)] and prove the result follows it.
+        store.scripted = [
+            (by_text["prefer async"], 0.9),
+            (by_text["the API uses snake_case naming"], 0.8),
+        ]
         hits = await repo.search(1, "api naming convention", k=2)
-        assert [h.id for h in hits] == store.scripted
+        assert [h.id for h in hits] == [mid for mid, _ in store.scripted]
         await db.dispose()
 
     asyncio.run(main())
@@ -195,7 +198,7 @@ def test_vector_hits_missing_in_db_are_skipped(tmp_path):
         await db.init()
         await repo.add(1, "the API uses snake_case naming")
         row = (await repo.list_for_user(1))[0]
-        store.scripted = [9999, row.id]  # 9999 not in DB -> skipped
+        store.scripted = [(9999, 0.9), (row.id, 0.8)]  # 9999 not in DB -> skipped
         hits = await repo.search(1, "api naming", k=2)
         assert [h.id for h in hits] == [row.id]
         await db.dispose()
@@ -212,10 +215,60 @@ def test_vector_hits_from_other_user_are_skipped(tmp_path):
         await repo.add(1, "user one note")
         await repo.add(2, "user two note")
         other = (await repo.list_for_user(2))[0]
-        store.scripted = [other.id]  # belongs to user 2, not user 1
+        store.scripted = [(other.id, 0.9)]  # belongs to user 2, not user 1
         hits = await repo.search(1, "note", k=2)
         # foreign hit dropped, then lexical fallback returns the owned row
         assert [h.text for h in hits] == ["user one note"]
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_add_semantic_dedup_wording_differs(tmp_path):
+    """措辞不同但语义相同 → 向量相似度 ≥ 阈值 → 去重（词法 Jaccard 会漏）。"""
+    store = FakeVectorStore()
+    db, repo = _repo(str(tmp_path / "v.db"), store, FakeEmbedder())
+
+    async def main():
+        await db.init()
+        assert await repo.add(1, "用户偏好中文回答") is True
+        row = (await repo.list_for_user(1))[0]
+        # 措辞完全不同，但向量命中原记忆且相似度 0.96 ≥ 0.92
+        store.scripted = [(row.id, 0.96)]
+        assert await repo.add(1, "回答请用中文") is False
+        assert len(await repo.list_for_user(1)) == 1
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_add_keeps_distinct_below_similarity_threshold(tmp_path):
+    """共享词但语义不同 → 相似度 0.5 < 0.92 → 不去重（词法会误杀）。"""
+    store = FakeVectorStore()
+    db, repo = _repo(str(tmp_path / "v.db"), store, FakeEmbedder())
+
+    async def main():
+        await db.init()
+        assert await repo.add(1, "项目 A 的代号是 Orion") is True
+        row = (await repo.list_for_user(1))[0]
+        store.scripted = [(row.id, 0.5)]  # 相似但不够 → 视为新事实
+        assert await repo.add(1, "项目 B 的代号是 Atlas") is True
+        assert len(await repo.list_for_user(1)) == 2
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_add_semantic_dedup_falls_back_to_lexical_on_store_error(tmp_path):
+    """语义去重时向量库挂了 → 降级词法去重，写入仍安全。"""
+    store = FakeVectorStore(scripted=RuntimeError("milvus down"))
+    db, repo = _repo(str(tmp_path / "v.db"), store, FakeEmbedder())
+
+    async def main():
+        await db.init()
+        assert await repo.add(1, "项目代号是 Orion") is True
+        assert await repo.add(1, "项目代号是 Orion") is False  # 词法兜底
+        assert len(await repo.list_for_user(1)) == 1
         await db.dispose()
 
     asyncio.run(main())

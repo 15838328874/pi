@@ -479,6 +479,9 @@ class MessageRepo:
 #: Lexical Jaccard threshold above which a new memory is treated as a duplicate
 #: of an existing one (short facts, so token overlap is reliable).
 _DUP_JACCARD = 0.85
+#: Cosine-similarity threshold for SEMANTIC dedup (the preferred path). Below
+#: this two memories are treated as distinct even if they share words.
+_DUP_SIMILARITY = 0.92
 #: Per-user cap on memories. Keeps the pool bounded and top-k retrieval clean.
 _MEMORY_LIMIT = 500
 
@@ -528,7 +531,27 @@ class MemoryRepo:
         text = text.strip()
         if not text:
             return False
-        if await self._is_duplicate(user_id, text):
+        # Embed ONCE and reuse the vector for both semantic dedup and the
+        # Milvus upsert - never bill the same text twice. ``vec is None`` means
+        # the vector path is off or the embed failed; lexical dedup still runs.
+        vec: list[float] | None = None
+        if self.embedder is not None and self.vector_store is not None:
+            try:
+                result = await self.embedder.embed([text])
+                await self._meter_embed(user_id, result.usage_tokens)
+                (vec,) = result.vectors
+                hits = await self.vector_store.search(user_id, vec, k=1)
+                if hits and hits[0][1] >= _DUP_SIMILARITY:
+                    return False  # semantic duplicate: same meaning, other wording
+            except Exception:  # noqa: BLE001 - dedup must never fail a write
+                log.exception("semantic dedup failed; falling back to lexical")
+                vec = None
+        # Lexical Jaccard runs AFTER semantic dedup for two reasons: it is the
+        # only dedup when the vector path is off/failed, and it is a safety net
+        # on top of a passing semantic check (catches near-verbatim repeats even
+        # when embeddings are noisy). It cannot see semantic equivalence, which
+        # is exactly why it must never be the PRIMARY check.
+        if await self._is_duplicate_lexical(user_id, text):
             return False
         async with AsyncSession(self.db.engine) as s:
             row = MemoryRow(user_id=user_id, text=text)
@@ -536,18 +559,14 @@ class MemoryRepo:
             await s.flush()  # capture the autoincrement id for the vector key
             memory_id = row.id
             await s.commit()
-        await self._vector_add(memory_id, user_id, text)
+        await self._vector_add(memory_id, user_id, text, vec)
         await self._enforce_limit(user_id, self.memory_limit)
         return True
 
-    async def _is_duplicate(self, user_id: int, text: str) -> bool:
-        """Lexical Jaccard dedup against the user's existing memories.
+    async def _is_duplicate_lexical(self, user_id: int, text: str) -> bool:
+        """Lexical Jaccard fallback: token overlap against existing memories.
 
-        Memories are SHORT facts (preferences, decisions, project names), so
-        token overlap catches near-duplicates reliably. A semantic (vector)
-        check would be more precise but the search API returns ids without
-        scores, and lexical is good enough for the failure mode it guards
-        (compaction re-remembering the same summary verbatim).
+        Only catches near-verbatim repeats; cannot see semantic equivalence.
         """
         new_terms = _terms(text)
         if not new_terms:
@@ -600,7 +619,8 @@ class MemoryRepo:
         if self.embedder is None or self.vector_store is None:
             return await self._lexical_search(user_id, query, k)  # feature off
         t0 = time.perf_counter()
-        ids, failure = await self._vector_search(user_id, query, k)
+        hits, failure = await self._vector_search(user_id, query, k)
+        ids = [mid for mid, _ in hits] if hits else []
         if ids:
             rows = await self._rows_by_ids(user_id, ids)
             if rows:
@@ -616,15 +636,23 @@ class MemoryRepo:
         await self._report_retrieval(outcome, time.perf_counter() - t0)
         return rows
 
-    async def _vector_add(self, memory_id: int, user_id: int, text: str) -> None:
+    async def _vector_add(
+        self, memory_id: int, user_id: int, text: str, vec: list[float] | None = None
+    ) -> None:
         """Best-effort vector upsert; failures are logged and swallowed so a
-        memory write can never fail a run (the row is already committed)."""
+        memory write can never fail a run (the row is already committed).
+
+        ``vec`` is the embedding already produced by ``add``; when None (vector
+        path off, or the embed failed earlier) this falls back to embedding here
+        once more so a transient embed outage still repopulates on a later write.
+        """
         if self.embedder is None or self.vector_store is None:
             return
         try:
-            result = await self.embedder.embed([text])
-            await self._meter_embed(user_id, result.usage_tokens)
-            (vec,) = result.vectors
+            if vec is None:
+                result = await self.embedder.embed([text])
+                await self._meter_embed(user_id, result.usage_tokens)
+                (vec,) = result.vectors
             await self.vector_store.add(memory_id, user_id, text, vec)
         except Exception:  # noqa: BLE001 - memory must never fail a run
             log.exception(
@@ -634,9 +662,10 @@ class MemoryRepo:
 
     async def _vector_search(
         self, user_id: int, query: str, k: int
-    ) -> tuple[list[int] | None, str | None]:
-        """(ids, failure). ids None on failure or empty result -> the caller
-        falls back to lexical. failure distinguishes the two outage kinds:
+    ) -> tuple[list[tuple[int, float]] | None, str | None]:
+        """(hits, failure). hits are ``(memory_id, cosine)`` in descending
+        similarity order; None on failure or empty result -> the caller falls
+        back to lexical. failure distinguishes the two outage kinds:
         "embed_failed" (nothing was billed) vs "store_failed" (embed succeeded,
         the index is down - the more alarming one)."""
         if self.embedder is None or self.vector_store is None:
@@ -651,11 +680,11 @@ class MemoryRepo:
             log.exception("vector memory search failed (embed); falling back to lexical")
             return None, "embed_failed"
         try:
-            ids = await self.vector_store.search(user_id, vec, k)
+            hits = await self.vector_store.search(user_id, vec, k)
         except Exception:  # noqa: BLE001 - memory must never fail a run
             log.exception("vector memory search failed (index); falling back to lexical")
             return None, "store_failed"
-        return ids or None, None
+        return hits or None, None
 
     async def _report_retrieval(self, outcome: str, duration_s: float) -> None:
         if self.on_retrieval is None:

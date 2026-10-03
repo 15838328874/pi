@@ -30,8 +30,13 @@ class VectorStore(Protocol):
     async def add(self, memory_id: int, user_id: int, text: str, vector: list[float]) -> None:
         """Upsert one vector, keyed by the Postgres memory row id (idempotent)."""
 
-    async def search(self, user_id: int, vector: list[float], k: int) -> list[int]:
-        """Top-k memory_ids for one user, best match first."""
+    async def search(self, user_id: int, vector: list[float], k: int) -> list[tuple[int, float]]:
+        """Top-k (memory_id, cosine_similarity) for one user, best match first.
+
+        The score is exposed (not just the ids) so callers can do semantic
+        dedup with a similarity threshold - Milvus already computes it, and
+        dropping it here forced the memory layer to fall back to lexical dedup.
+        """
 
     async def ping(self) -> bool:
         """Health probe."""
@@ -102,7 +107,7 @@ class MilvusStore:
         }
         await asyncio.to_thread(self._get_client().upsert, self.collection, data=[row])
 
-    async def search(self, user_id: int, vector: list[float], k: int) -> list[int]:
+    async def search(self, user_id: int, vector: list[float], k: int) -> list[tuple[int, float]]:
         await self._ensure(len(vector))
         res = await asyncio.to_thread(
             self._get_client().search,
@@ -119,7 +124,8 @@ class MilvusStore:
         # pymilvus 3.x: 主键挂在 Hit 的属性 `id` 上，`Hit.entity` 只包含请求的
         # output_fields。旧写法 h["id"] 在**有命中时**必抛 KeyError（空结果不会
         # 进入推导式，所以这个 bug 能长期潜伏），向量召回反而在最该生效时失败。
-        return [int(h.id) for h in hits]  # pk == Postgres memory id
+        # 返回 (memory_id, cosine_similarity)：分数留给上层做语义去重。
+        return [(int(h.id), float(h.distance)) for h in hits]  # pk == Postgres memory id
 
     async def ping(self) -> bool:
         try:

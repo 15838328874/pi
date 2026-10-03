@@ -80,9 +80,26 @@ microVM 与 docker 不同的攻击面：
 **不能自验证的部分**：kernel CVE、供应链投毒、利用沙箱内合法组件的零日（HF 事件那一类）。
 "无法证明一个否定"——这类只能靠外部红队/持续研究，不做进仓库，但要在文档里明确边界。
 
-**运行形态**：cube 逃逸在**线上共享 cube 平台**上跑，会真建 VM、吃平台配额（历史上踩过
-`no more resource` 事故），所以做成 **manual harness**（不进 CI）：`tools/` 下脚本 + 用例清单，
-每次手动、限并发、跑完校验 VM 数回落，结论 + 机器规格写进 `docs/`。
+**运行 runbook（待执行，不进 CI）**：cube 逃逸在**线上共享 cube 平台**上跑，会真建 VM、
+吃平台配额（历史踩过 `no more resource` 事故），所以做成 manual、限并发、跑完必校验回收。
+执行时照下面走：
+
+1. **环境**：`source .env.local`（`PI_CUBE_API_URL` / `PI_CUBE_API_KEY` / `PI_CUBE_TEMPLATE` /
+   `PI_CUBE_DOMAIN` / `PI_SANDBOX_CA_FILE` 全在）；SDK = `/opt/pi-venv` 的
+   `e2b_code_interpreter`，`Sandbox.create(...)` 或复用 `CubeSandboxRunner`。
+2. **harness 形态**：单 VM 顺序跑探测，`finally` 里 `sbx.kill()`；跑前用
+   `cubemastercli list`（`/usr/local/services/cubetoolbox/CubeMaster/bin/cubemastercli`，或
+   `PI_CUBE_CLI`）记 VM 数基线，跑后再查，确认回落（历史事故就是 VM 泄漏吃满配额）。
+3. **两档分开**：
+   - **第一档（非破坏）**：网络（连宿主内网 MySQL/Redis、云元数据、cube 控制面、外网——全是
+     "连不上"的失败探测）；文件系统（`/proc/1`、`dmesg`、挂载点、宿主文件不可见）；
+     设备（`/dev/kvm`、`/dev/mem`、`/dev/sd*` 是否存在）；控制面（VM 内能否摸到 cube API/envd）。
+   - **第二档（资源耗尽，单独跑、跑前再确认）**：fork bomb、内存超限、磁盘填满——验证
+     256M/1vcpu 模板的限额。
+4. **判定**：网络/文件系统/设备/控制面探测**必须全部失败**（连不上、读不到、不存在）；
+   资源耗尽探测**必须被限额拦住**（进程被杀/分配失败），且 VM 本体不死、宿主不受影响。
+5. **结论落档**：每条 PASS/FAIL + 机器规格 + 模板 id 写进 `docs/`（如
+   `docs/cube-sandbox-escape-report.md`），FAIL 的转 issue。
 
 ---
 

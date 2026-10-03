@@ -215,12 +215,16 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     async def _audit_to_db(record: dict) -> None:
         await audit_repo.save(record)
 
-    audit = AuditLogger(settings.audit_path, on_record=_audit_to_db)
+    audit = AuditLogger(settings.audit_path, on_record=_audit_to_db, retention_days=settings.audit_retention_days)
     runs = RunManager(
         policy=server_policy(settings.policy_path),
         audit=audit,
         max_concurrent=settings.max_concurrent_runs,
         timeout_seconds=settings.run_timeout_seconds,
+        max_turns=settings.max_turns,
+        compact_threshold=settings.compact_threshold,
+        compact_keep=settings.compact_keep,
+        max_cost_usd=settings.max_cost_usd,
         usage=usage_tracker,
         tracer=get_tracer(settings.tracer_backend, metrics=metrics),
         cache=cache,

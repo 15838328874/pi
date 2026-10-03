@@ -89,6 +89,10 @@ class RunManager:
         audit: AuditLogger,
         max_concurrent: int,
         timeout_seconds: int,
+        max_turns: int = 40,
+        compact_threshold: int = 80_000,
+        compact_keep: int = 8,
+        max_cost_usd: float = 0.0,
         usage: UsageTracker | None = None,
         tracer: Tracer | None = None,
         cache: CacheBackend | None = None,
@@ -111,6 +115,10 @@ class RunManager:
         self.usage = usage
         self.tracer = tracer
         self.timeout = timeout_seconds
+        self.max_turns = max_turns
+        self.compact_threshold = compact_threshold
+        self.compact_keep = compact_keep
+        self.max_cost_usd = max_cost_usd
         self.cache = cache or MemoryBackend()
         self.sandbox = sandbox
         self.sandbox_image = sandbox_image
@@ -263,6 +271,10 @@ class RunManager:
                     cwd=Path(session.cwd),
                     on_message=on_message,
                     on_compact=on_compact,
+                    max_turns=self.max_turns,
+                    compact_threshold=self.compact_threshold,
+                    compact_keep=self.compact_keep,
+                    max_cost_usd=self.max_cost_usd,
                     policy=self.policy,
                     audit=self.audit,
                     session_id=session.id,

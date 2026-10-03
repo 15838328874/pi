@@ -25,6 +25,16 @@ class ServerSettings:
     workspace_max_bytes: int = 100 * 1024 * 1024
     max_concurrent_runs: int = 8
     run_timeout_seconds: int = 600
+    # Agent-loop bounds (previously hardcoded as AgentLoop constructor defaults):
+    # - max_turns: hard cap on LLM+tool rounds per run (not a timeout)
+    # - compact_threshold / compact_keep: context compaction trigger (0 = off)
+    # - max_cost_usd: per-run estimated cost ceiling, USD (0 = off). Estimate
+    #   uses pi.observability.prices (input/output tokens only, no prompt-cache
+    #   pricing) - the same estimate metering records as est_cost_usd.
+    max_turns: int = 40
+    compact_threshold: int = 80_000
+    compact_keep: int = 8
+    max_cost_usd: float = 0.0
     rate_limit_runs_per_min: int = 20
     default_quota_tokens: int = 1_000_000
     # PI_ALLOW_REGISTER=0 关闭开放注册（公网演示时用），注册接口返回 403。
@@ -46,6 +56,9 @@ class ServerSettings:
     sandbox_pool_pressure_high: int = 1_500 * 1024 * 1024  # 1.5 GiB
     sandbox_pool_pressure_low: int = 512 * 1024 * 1024  # 512 MiB
     audit_path: Path = field(default_factory=lambda: Path.home() / ".pi-py" / "audit.jsonl")
+    # Rotated audit JSONL older than this many days is pruned on daily rotation.
+    # 0 = keep forever. The DB mirror (audit_events) is pruned separately, if at all.
+    audit_retention_days: int = 0
     # Canonical run trajectories (P1), one JSON line per run, daily rotation.
     # Trajectories are RAW (tool args unredacted) - same sensitivity class as
     # the workspace itself, and the viewer endpoint checks session ownership.
@@ -131,6 +144,10 @@ class ServerSettings:
             ),
             max_concurrent_runs=int(os.environ.get("PI_MAX_CONCURRENT_RUNS", 8)),
             run_timeout_seconds=int(os.environ.get("PI_RUN_TIMEOUT_SECONDS", 600)),
+            max_turns=int(os.environ.get("PI_MAX_TURNS", 40)),
+            compact_threshold=int(os.environ.get("PI_COMPACT_THRESHOLD", 80_000)),
+            compact_keep=int(os.environ.get("PI_COMPACT_KEEP", 8)),
+            max_cost_usd=float(os.environ.get("PI_MAX_COST_USD", 0.0)),
             rate_limit_runs_per_min=int(os.environ.get("PI_RATE_LIMIT_RUNS_PER_MIN", 20)),
             default_quota_tokens=int(os.environ.get("PI_DEFAULT_QUOTA_TOKENS", 1_000_000)),
             allow_register=os.environ.get("PI_ALLOW_REGISTER", "1") == "1",
@@ -150,6 +167,7 @@ class ServerSettings:
                 os.environ.get("PI_SANDBOX_POOL_PRESSURE_LOW", 512 * 1024 * 1024)
             ),
             audit_path=Path(os.environ.get("PI_AUDIT_PATH", base / "audit.jsonl")),
+            audit_retention_days=int(os.environ.get("PI_AUDIT_RETENTION_DAYS", 0)),
             trajectory_path=(
                 None
                 if os.environ.get("PI_TRAJECTORY_PATH") == ""

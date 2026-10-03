@@ -6,10 +6,14 @@ PI_MCP_SERVERS = JSON array, e.g.
 or
   [{"name":"remote","url":"https://host/mcp"}]
 
-Security note: stdio servers are spawned as child processes of the app and
-inherit its environment - treat PI_MCP_SERVERS as admin-level config. Their
-tools go through the same policy gate / audit / tracing as builtin tools, and
-path-like args are workspace-confined by the generic path sandbox.
+Security note: stdio servers are spawned as child processes of the app. They do
+NOT inherit the app's environment - the MCP SDK spawns them with a safe
+allow-list (HOME/LOGNAME/PATH/SHELL/TERM/USER via get_default_environment), so
+PI_JWT_SECRET / PI_DATABASE_URL never reach them. They DO run unsandboxed (the
+app's uid, filesystem and network), so PI_MCP_SERVERS is still admin-level
+config. Their tools go through the same policy gate / audit / tracing as builtin
+tools, and path/file/dir args are workspace-confined by the generic path sandbox
+(best-effort, key-name based - see security.policy._extract_paths).
 
 v1: no automatic reconnect - a dead server surfaces as per-call tool errors
 until the server process restarts (TODO: health check + reconnect).

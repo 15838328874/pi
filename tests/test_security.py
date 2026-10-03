@@ -253,6 +253,31 @@ class TestAudit:
         assert forged["event"] == "auth" and forged["ok"] is False
         assert forged["username"] == 'evil\n{"event":"forged","ok":true}'
 
+    def test_retention_prunes_only_expired_rotations(self, tmp_path: Path):
+        from datetime import datetime, timedelta, timezone
+
+        old_day = (datetime.now(timezone.utc) - timedelta(days=5)).strftime("%Y-%m-%d")
+        recent_day = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        (tmp_path / f"audit-{old_day}.jsonl").write_text("old\n", encoding="utf-8")
+        (tmp_path / f"audit-{recent_day}.jsonl").write_text("recent\n", encoding="utf-8")
+
+        log = AuditLogger(tmp_path / "audit.jsonl", retention_days=2)
+        log.tool_call(session_id="s1", user_id="alice", tool="bash", args={}, decision_allowed=True)
+
+        assert not (tmp_path / f"audit-{old_day}.jsonl").exists(), "expired rotation must be pruned"
+        assert (tmp_path / f"audit-{recent_day}.jsonl").exists(), "within-retention rotation must survive"
+
+    def test_zero_retention_keeps_everything(self, tmp_path: Path):
+        from datetime import datetime, timedelta, timezone
+
+        old_day = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+        (tmp_path / f"audit-{old_day}.jsonl").write_text("old\n", encoding="utf-8")
+
+        log = AuditLogger(tmp_path / "audit.jsonl")  # default retention_days=0
+        log.tool_call(session_id="s1", user_id="alice", tool="bash", args={}, decision_allowed=True)
+
+        assert (tmp_path / f"audit-{old_day}.jsonl").exists(), "0 must mean keep forever"
+
 
 # ---------------------------------------------------------------------------
 # Server policy: a PI_POLICY file may ADD rules, it must never subtract isolation
@@ -408,6 +433,14 @@ class TestGenericPathSandbox:
 
     def test_non_path_args_unaffected(self, tmp_path: Path):
         assert check(_policy(), "mcp_echo", {"text": "../../etc/passwd"}, tmp_path).allowed
+
+    def test_nested_path_keys_also_confined(self, tmp_path: Path):
+        d = check(_policy(), "mcp_thing", {"options": {"path": "../../secret"}}, tmp_path)
+        assert not d.allowed
+
+    def test_nested_list_path_key_confined(self, tmp_path: Path):
+        d = check(_policy(), "mcp_thing", {"files": [{"path": "../../secret"}]}, tmp_path)
+        assert not d.allowed
 
     def test_builtin_file_tools_unchanged(self, tmp_path: Path):
         assert not check(_policy(), "read", {"path": "../../x"}, tmp_path).allowed

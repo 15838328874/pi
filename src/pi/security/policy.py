@@ -163,14 +163,29 @@ def _extract_paths(tool_name: str, args: dict[str, Any]) -> list[str]:
     """All path-like argument values a tool should be confined to the workspace.
 
     Known file tools contribute their dedicated "path" arg; unknown tools
-    (MCP / skill) contribute every string value under a path-like key.
+    (MCP / skill) contribute every string value under a path-like key
+    (path/file/dir), including inside nested dicts/lists.
+
+    This is best-effort and key-name based, NOT a security boundary for
+    MCP/skill tools: an arg under any other name ("target", "url", "src") is not
+    confined. The real controls for those tools are the capability allow-list
+    (allow_capabilities, fail-closed for undeclared tools) and the operator's own
+    MCP server root - see tools/mcp.py.
     """
     if tool_name in FILE_PATH_TOOLS or tool_name in SEARCH_PATH_TOOLS:
         value = args.get(FILE_PATH_ARG)
         return [str(value)] if value else []
     out: list[str] = []
-    for key in PATH_KEYS:
-        value = args.get(key)
-        if isinstance(value, str) and value:
-            out.append(value)
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in PATH_KEYS and isinstance(value, str) and value:
+                    out.append(value)
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(args)
     return out

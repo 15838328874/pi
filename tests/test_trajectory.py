@@ -110,6 +110,39 @@ def test_trajectory_records_error():
     assert types[-1] == "RunFinished"
 
 
+def test_cost_budget_aborts_the_run():
+    """max_cost_usd is a per-run estimated cost ceiling; exceeding it stops the
+    run with an explicit error instead of silently burning budget."""
+    # qwen3.8-max prices (1.6/6.4 per 1M) => one turn = 8e-6 USD; cap below that.
+    provider = FakeProvider(
+        model="qwen3.8-max", responses=[[TextBlock(text="x")] for _ in range(5)]
+    )
+    agent = AgentLoop(provider=provider, tools=all_tools(), max_cost_usd=0.000001)
+    errors: list[str] = []
+
+    async def main() -> None:
+        async for ev in agent.run("hi"):
+            if type(ev).__name__ == "ErrorEvent":
+                errors.append(ev.message)
+
+    asyncio.run(main())
+    assert any("cost budget exceeded" in e for e in errors), errors
+    # stopped after the first LLM round, before burning into a second turn
+    assert agent.trajectory is not None
+    finished = agent.trajectory.to_dict()["events"][-1]
+    assert finished["turns"] == 1
+
+
+def test_no_cost_budget_runs_normally():
+    """max_cost_usd=0 (default) must not change behaviour."""
+    provider = FakeProvider(responses=[[TextBlock(text="hi")]])
+    agent = AgentLoop(provider=provider, tools=all_tools(), max_cost_usd=0.0)
+    _run(agent, "hi")
+    assert agent.trajectory is not None
+    finished = agent.trajectory.to_dict()["events"][-1]
+    assert finished["type"] == "RunFinished"
+
+
 class TestDenialCircuitBreaker:
     """A model stuck retrying policy-denied calls aborts loudly instead of
     burning turns into max_turns/the run timeout (load-test observation:

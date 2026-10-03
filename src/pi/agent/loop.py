@@ -37,6 +37,7 @@ from pi.agent.events import (
 )
 from pi.llm.base import LLMProvider, StreamEnd, TextDelta, ThinkingDelta, ToolCallDelta
 from pi.models import Message, Role, TextBlock, ToolCallBlock, ToolResultBlock, ToolSpec, Usage
+from pi.observability.prices import estimate_cost
 from pi.observability.tracing import NoOpTracer, Tracer
 from pi.security.audit import AuditLogger
 from pi.security.policy import Policy, check as policy_check
@@ -118,6 +119,7 @@ class AgentLoop:
         max_turns: int = 40,
         compact_threshold: int = 80_000,
         compact_keep: int = 8,
+        max_cost_usd: float = 0.0,
         policy: Policy | None = None,
         audit: AuditLogger | None = None,
         session_id: str = "",
@@ -151,6 +153,7 @@ class AgentLoop:
         self.max_turns = max_turns
         self.compact_threshold = compact_threshold
         self.compact_keep = compact_keep
+        self.max_cost_usd = max_cost_usd
         self.policy = policy
         self.audit = audit
         self.session_id = session_id
@@ -199,6 +202,18 @@ class AgentLoop:
             turns=turns,
             completed_tools=dict(self._completed),
         )
+
+    def _cost_usd(self, total: Usage) -> float:
+        """Estimated USD cost of the accumulated token usage (no prompt-cache)."""
+        return estimate_cost(
+            getattr(self.provider, "model", ""),
+            total.input_tokens,
+            total.output_tokens,
+        )
+
+    def _over_budget(self, total: Usage) -> bool:
+        """True when the run's estimated cost exceeds the per-run ceiling."""
+        return self.max_cost_usd > 0 and self._cost_usd(total) > self.max_cost_usd
 
     async def run(
         self,
@@ -324,6 +339,13 @@ class AgentLoop:
                 if assistant_blocks:
                     self._append(Message(role=Role.assistant, blocks=assistant_blocks))
 
+                if self._over_budget(total):
+                    yield ErrorEvent(
+                        f"cost budget exceeded: est ${self._cost_usd(total):.4f} "
+                        f"> ${self.max_cost_usd:.4f}, aborting"
+                    )
+                    break
+
                 if not calls or stop_reason != "tool_use":
                     break
 
@@ -375,6 +397,12 @@ class AgentLoop:
                     Message(role=Role.user, blocks=[o.block for o in outcomes])
                 )
                 if abort_denials:
+                    break
+                if self._over_budget(total):
+                    yield ErrorEvent(
+                        f"cost budget exceeded: est ${self._cost_usd(total):.4f} "
+                        f"> ${self.max_cost_usd:.4f}, aborting"
+                    )
                     break
                 if self.on_checkpoint is not None:
                     try:

@@ -256,6 +256,7 @@
   .empty { color: var(--muted); text-align: center; padding: 60px 0; }
 
   .inputbar { display: flex; gap: 10px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--card); }
+  .inputbar .search-toggle { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--dim); white-space: nowrap; cursor: pointer; }
   .inputbar textarea { flex: 1; resize: none; max-height: 120px; }
   @media (max-width: 800px) {
     aside { width: 180px; }
@@ -347,6 +348,7 @@
         <div class="empty">登录后选择一个会话，或新建一个开始对话</div>
       </div>
       <div class="inputbar">
+        <label class="search-toggle"><input type="checkbox" id="enableSearch"> 联网搜索</label>
         <textarea id="prompt" rows="2" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
         <button class="primary" id="send">发送</button>
       </div>
@@ -762,7 +764,7 @@ async function sendPrompt() {
   const resp = await fetch(`/v1/sessions/${sid}/runs`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, enable_search: $("enableSearch").checked }),
   });
   if (resp.status === 401) {
     showBanner("未登录或登录已过期，请刷新页面重新登录");

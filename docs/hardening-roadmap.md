@@ -55,28 +55,34 @@
 **目标**：证明"单元测试全绿"不等于"逃不出去"。单元测试里的
 `tests/test_sandbox_pool.py` 全程 `FakeTransport` 纯 mock，从没有用例真的尝试逃逸。
 
-**✅ docker 级已落地**（2026-10-03）：`tests/test_sandbox_escape.py`，对真实
-`DockerRunner` 跑 8 个逃逸用例——fork bomb（`--pids-limit`）、内存分配（`--memory` +
-无 swap）、`--network none` 断网、宿主密钥不泄漏、docker.sock 不可见、非 root uid、
-workspace 是唯一宿主可见路径、镜像可用性 smoke。`skipif` 无 docker CLI，因此 CI
-（ubuntu-latest 有 docker）自动跑、无 docker 环境自动跳过；本地可用
-`PI_TEST_SANDBOX_IMAGE` 指向预置镜像免拉取。每个用例都在显式 cgroup 上限 + `--rm`
-下运行，失败只会杀死容器，不会拖垮宿主。
+**⚠️ 优先级澄清（2026-10-03）**：生产只用 **CubeSandbox microVM**（`PI_SANDBOX=cubesandbox`），
+docker 只是**本地无 cube 时的降级路径**，不是生产边界。所以 B2 的主战场是 **cube microVM 逃逸**，
+docker 逃逸优先级降为低。
 
-**能自验证的部分**（本机即可跑，见 §7 FAQ）：
+**✅ docker 级（降级路径，已落地、价值有限）**：`tests/test_sandbox_escape.py`，8 个用例对真实
+`DockerRunner` 打逃逸（fork bomb / 内存 / 断网 / 密钥不泄漏 / docker.sock / 非 root / workspace
+唯一可见 / smoke）。`skipif` 无 docker，CI 可跑。**只验证本地降级路径，不验证生产边界。**
 
-- **docker 级**（已覆盖上述 8 类）：还可补——磁盘填满（需先有 disk quota，否则危险）、
-  symlink/挂载穿越、`/dev` 设备访问、`--cpus` 限额、`--memory-swap` 双重确认。
-- **microVM 级**（CubeSandbox）：本机 Cubelet 平台在跑、生产档位就是 `PI_SANDBOX=cubesandbox`，
-  经 `PI_CUBE_API_URL` 建 VM 后从 VM 内打逃逸。
+**🎯 cube microVM 级（生产边界，待做）**：本机 Cubelet 平台在跑、生产档位就是
+`PI_SANDBOX=cubesandbox`，`/opt/pi-venv` 有 `e2b_code_interpreter` SDK，经
+`PI_CUBE_API_URL=http://127.0.0.1:3000` + `PI_SANDBOX_TEMPLATE` 即可建 VM。逃逸用例应覆盖
+microVM 与 docker 不同的攻击面：
+
+| 类别 | 用例 | 验证的边界 |
+|---|---|---|
+| 网络 | 从 VM 内连宿主内网 MySQL(13306)/Redis(16379)、云元数据(100.96.0.96)、cube 控制面(127.0.0.1:3000)、外网 | `--network none`（`PI_SANDBOX_NET` 关闭）在 microVM 的 eBPF 网络隔离 |
+| 文件系统 | 读宿主文件（workspace 之外）、`/proc/1` 看宿主 init、宿主机名/挂载点 | 独立根 fs + 仅 tar 进出 workspace |
+| 设备/内核 | `/dev/kvm`、`/dev/mem`、`/dev/sd*`、`dmesg`、`mount`、加载内核模块 | 独立内核 + 设备最小化 |
+| 控制面 | VM 内访问 cube API / envd 控制通道 | microVM 隔离到宿主控制面的通道 |
+| 资源 | fork bomb、内存超限、磁盘填满（VM 磁盘配额） | 256M/1vcpu 模板 + 平台配额 |
+| 逃逸后横向 | 逃出后能否到别的会话 VM / 别的租户 | 会话级隔离 |
 
 **不能自验证的部分**：kernel CVE、供应链投毒、利用沙箱内合法组件的零日（HF 事件那一类）。
 "无法证明一个否定"——这类只能靠外部红队/持续研究，不做进仓库，但要在文档里明确边界。
 
-**剩余落点**：
-1. microVM 级逃逸用例：做 manual/privileged harness（GitHub runner 无嵌套虚拟化，进不了 CI），
-   至少跑一次并把结论 + 机器规格写进 `docs/`。
-2. docker 级补充：磁盘填满（先给容器加 disk quota 才安全）、`/dev`、symlink/挂载穿越。
+**运行形态**：cube 逃逸在**线上共享 cube 平台**上跑，会真建 VM、吃平台配额（历史上踩过
+`no more resource` 事故），所以做成 **manual harness**（不进 CI）：`tools/` 下脚本 + 用例清单，
+每次手动、限并发、跑完校验 VM 数回落，结论 + 机器规格写进 `docs/`。
 
 ---
 
@@ -179,11 +185,11 @@ root 可改文件、有 DB 权限的 admin 可删行。对要合规的企业，*
 
 | 项 | 优先级 | 依赖 | 自验证 |
 |---|---|---|---|
-| B2 docker 级逃逸进 CI | **最高**（唯一"绿测≠安全"的结构缺口） | 无 | ✅ |
+| B2 docker 级逃逸（已落地） | **低**（仅本地降级路径，非生产边界） | 无 | ✅ |
 | B1a 能力级预授权 | 高（一天可落地） | 无 | ✅ |
 | B3 OIDC + RBAC | 高（企业准入硬门槛） | 身份模型/migration | ✅ |
 | B5 哈希链（tamper-evident） | 中（便宜、合规先行） | 无 | ✅ |
 | B1b 运行时 ask + 写回 | 中 | B1a + checkpoint/resume 接 HTTP | ✅ |
 | B4 集群化 | 低（仅「app 多副本」时相关；app 单节点 + cube 独立集群时非阻塞） | 会话粘性/全局信号量/锁 fencing | ✅ |
-| B2 microVM 级逃逸 harness | 中（特权环境，进不了 CI） | Cubelet 平台 | ✅ |
+| B2 cube microVM 级逃逸 harness | **最高**（唯一验证生产边界；绿测≠逃不出去） | Cubelet 平台 | ✅ |
 | B5 WORM / 双控 | 低（依赖外部存储/运维） | S3 Object Lock、IAM 分离 | 部分 |

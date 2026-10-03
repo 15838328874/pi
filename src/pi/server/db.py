@@ -772,7 +772,12 @@ class MemoryRepo:
                 if verdict == "conflict" and target_idx is not None and 0 <= target_idx < len(candidates):
                     return "conflict", candidates[target_idx].id
                 if verdict == "duplicate":
-                    return "duplicate", None
+                    # Fallback: a judge "duplicate" is UNRELIABLE here. The cosine
+                    # fast-path already returned every ≥0.92 near-identical rewrite
+                    # above, so reaching the judge means top-1 cosine < 0.92 — the
+                    # judge's "duplicate" is then more likely a conflict it misread.
+                    # 宁可重复不丢：write it as new instead of dropping a value.
+                    return "new", None
                 return "new", None  # judge 是最终裁决：判 new 就写新
             except Exception:  # noqa: BLE001 - degrade, never fail a write
                 log.exception("judge stage failed; falling back to lexical")

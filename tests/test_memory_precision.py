@@ -40,8 +40,12 @@ def test_judge_conflict_overwrites_target(tmp_path):
     asyncio.run(main())
 
 
-def test_judge_duplicate_skips(tmp_path):
-    """judge 判 duplicate → 不写。"""
+def test_judge_duplicate_falls_back_to_new(tmp_path):
+    """judge 判 duplicate → 降级为写新（宁可重复不丢）。
+
+    因为 cosine 快速路径已处理了 ≥0.92 的可靠同义改写，走到 judge 的 duplicate
+    不可靠（可能是 conflict 被误判）。宁可写重，不丢新值。
+    """
     db = Database(TEST_DB_URL)
 
     async def judge(user_id, new, candidates):
@@ -51,8 +55,8 @@ def test_judge_duplicate_skips(tmp_path):
         await db.init()
         repo = _repo(db, judge=judge)
         assert await repo.add(1, "项目代号是 Orion") is True
-        assert await repo.add(1, "这个项目的代号叫 Orion") is False
-        assert len(await repo.list_for_user(1)) == 1
+        assert await repo.add(1, "这个项目的代号叫 Orion") is True  # judge 判 duplicate → 写新
+        assert len(await repo.list_for_user(1)) == 2
         await db.dispose()
 
     asyncio.run(main())

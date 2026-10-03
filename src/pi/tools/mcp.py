@@ -130,7 +130,13 @@ class McpToolProvider(ToolProvider):
 
 
 async def _connect(cfg: dict[str, Any]) -> tuple[Any, AsyncExitStack]:
-    """Connect one server config: {"command": [...]} stdio, or {"url": ...} HTTP."""
+    """Connect one server config: {"command": [...]} stdio, or {"url": ...} HTTP.
+
+    HTTP servers may carry a ``headers`` dict (e.g. an X-API-Key for hosted MCP
+    endpoints). The SDK's streamable_http_client takes a pre-built httpx client,
+    so we build one with those headers and register it on the stack BEFORE the
+    transport (LIFO => the transport is torn down first, then the client closes).
+    """
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
     from mcp.client.streamable_http import streamable_http_client
@@ -144,7 +150,16 @@ async def _connect(cfg: dict[str, Any]) -> tuple[Any, AsyncExitStack]:
         )
         read, write = await stack.enter_async_context(stdio_client(params))
     elif cfg.get("url"):
-        read, write = await stack.enter_async_context(streamable_http_client(str(cfg["url"])))
+        headers = {str(k): str(v) for k, v in (cfg.get("headers") or {}).items()}
+        http_client = None
+        if headers:
+            import httpx
+
+            http_client = httpx.AsyncClient(headers=headers)
+            await stack.enter_async_context(http_client)
+        read, write = await stack.enter_async_context(
+            streamable_http_client(str(cfg["url"]), http_client=http_client)
+        )
     else:
         raise ValueError(f"MCP server config needs 'command' or 'url': {cfg!r}")
     session = await stack.enter_async_context(ClientSession(read, write))

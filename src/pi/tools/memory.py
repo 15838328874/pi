@@ -31,8 +31,10 @@ class RememberTool(Tool):
         text = str(args.get("text", "")).strip()
         if not text:
             return ToolResult(content="Error: `text` is required", is_error=True)
-        await ctx.memory.add(getattr(ctx, "user_db_id", 0), text)
-        return ToolResult(content="remembered")
+        added = await ctx.memory.add(getattr(ctx, "user_db_id", 0), text)
+        return ToolResult(
+            content="remembered" if added else "already remembered (no change)"
+        )
 
 
 class RecallTool(Tool):

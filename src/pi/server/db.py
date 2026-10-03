@@ -476,6 +476,13 @@ class MessageRepo:
             ).scalar_one_or_none()
 
 
+#: Lexical Jaccard threshold above which a new memory is treated as a duplicate
+#: of an existing one (short facts, so token overlap is reliable).
+_DUP_JACCARD = 0.85
+#: Per-user cap on memories. Keeps the pool bounded and top-k retrieval clean.
+_MEMORY_LIMIT = 500
+
+
 class MemoryRepo:
     """Semantic (cross-session) memory store.
 
@@ -492,8 +499,10 @@ class MemoryRepo:
         embedder: EmbeddingClient | None = None,
         on_embed_usage: "Callable[[int, int], Awaitable[None]] | None" = None,
         on_retrieval: "Callable[[str, float], Awaitable[None]] | None" = None,
+        memory_limit: int = _MEMORY_LIMIT,
     ):
         self.db = db
+        self.memory_limit = memory_limit
         self.vector_store = vector_store
         self.embedder = embedder
         # (user_id, tokens) after a successful embed call - the app wires this
@@ -503,7 +512,24 @@ class MemoryRepo:
         # a retrieval served by the lexical fallback (index down) makes noise.
         self.on_retrieval = on_retrieval
 
-    async def add(self, user_id: int, text: str) -> None:
+    async def add(self, user_id: int, text: str) -> bool:
+        """Insert a memory. Returns True when inserted, False when it duplicated
+        an existing one (nothing written).
+
+        Two guards keep the pool clean as it grows (see docs/artifact-delivery
+        and the memory-design notes):
+          - dedup: a near-verbatim fact is not stored twice;
+          - per-user cap: the oldest memories are evicted past ``_MEMORY_LIMIT``.
+
+        Both are deliberate: ``add`` is called automatically (e.g. on context
+        compaction), so without them the pool balloons into duplicates + stale
+        facts and the top-k retrieval degrades into noise.
+        """
+        text = text.strip()
+        if not text:
+            return False
+        if await self._is_duplicate(user_id, text):
+            return False
         async with AsyncSession(self.db.engine) as s:
             row = MemoryRow(user_id=user_id, text=text)
             s.add(row)
@@ -511,6 +537,51 @@ class MemoryRepo:
             memory_id = row.id
             await s.commit()
         await self._vector_add(memory_id, user_id, text)
+        await self._enforce_limit(user_id, self.memory_limit)
+        return True
+
+    async def _is_duplicate(self, user_id: int, text: str) -> bool:
+        """Lexical Jaccard dedup against the user's existing memories.
+
+        Memories are SHORT facts (preferences, decisions, project names), so
+        token overlap catches near-duplicates reliably. A semantic (vector)
+        check would be more precise but the search API returns ids without
+        scores, and lexical is good enough for the failure mode it guards
+        (compaction re-remembering the same summary verbatim).
+        """
+        new_terms = _terms(text)
+        if not new_terms:
+            return False
+        for r in await self.list_for_user(user_id):
+            old_terms = _terms(r.text)
+            if not old_terms:
+                continue
+            jaccard = len(new_terms & old_terms) / len(new_terms | old_terms)
+            if jaccard >= _DUP_JACCARD:
+                return True
+        return False
+
+    async def _enforce_limit(self, user_id: int, limit: int = _MEMORY_LIMIT) -> None:
+        """Evict the OLDEST memories beyond the per-user cap.
+
+        Vector side is left as-is: stale Milvus ids are already skipped by
+        ``_rows_by_ids`` (it re-checks existence in MySQL), so orphan vectors
+        are harmless - they only cost a tiny bit of index space and never
+        surface as wrong answers.
+        """
+        async with AsyncSession(self.db.engine) as s:
+            ids = (
+                await s.execute(
+                    select(MemoryRow.id)
+                    .where(MemoryRow.user_id == user_id)
+                    .order_by(MemoryRow.id.asc())  # oldest first
+                )
+            ).scalars().all()
+            if len(ids) <= limit:
+                return
+            to_delete = ids[: len(ids) - limit]
+            await s.execute(sa_delete(MemoryRow).where(MemoryRow.id.in_(to_delete)))
+            await s.commit()
 
     async def list_for_user(self, user_id: int, limit: int = 500) -> Sequence[MemoryRow]:
         async with AsyncSession(self.db.engine) as s:

@@ -155,7 +155,12 @@ async def _connect(cfg: dict[str, Any]) -> tuple[Any, AsyncExitStack]:
         if headers:
             import httpx
 
-            http_client = httpx.AsyncClient(headers=headers)
+            # trust_env=False: an ambient proxy env var (a dead local proxy, a
+            # SOCKS proxy without socksio, ...) must not silently hijack the MCP
+            # request - the endpoint in cfg is an explicit, direct destination,
+            # and the API key rides in these headers. Same discipline as
+            # llm/openai_provider.py.
+            http_client = httpx.AsyncClient(headers=headers, trust_env=False)
             await stack.enter_async_context(http_client)
         read, write = await stack.enter_async_context(
             streamable_http_client(str(cfg["url"]), http_client=http_client)

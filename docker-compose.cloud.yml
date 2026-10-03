@@ -88,7 +88,17 @@ services:
       # workspace in its own warm container (exec per call, preheated at turn
       # start, idle-recycled, LRU-capped) - needs docker access from inside
       # the app container (see deploy/cloud-deploy.md "Sandbox" before enabling).
-      PI_SANDBOX: ${PI_SANDBOX:-}
+      # Tool-execution isolation. DEFAULT = cubesandbox (one microVM per session,
+      # hostile-tenant-grade isolation - this is the public-SaaS posture). Unset
+      # PI_CUBE_* / PI_SANDBOX_TEMPLATE and every bash call fails closed (and
+      # /readyz flips 503), so a half-configured deploy can never silently fall
+      # back to in-process execution. "docker" stays the local-dev shape (warm
+      # pool; needs daemon access) - see env.local.example / cloud-deploy.md.
+      PI_SANDBOX: ${PI_SANDBOX:-cubesandbox}
+      PI_SANDBOX_TEMPLATE: ${PI_SANDBOX_TEMPLATE:-}
+      PI_CUBE_API_KEY: ${PI_CUBE_API_KEY:-}
+      PI_CUBE_API_URL: ${PI_CUBE_API_URL:-}
+      PI_CUBE_DOMAIN: ${PI_CUBE_DOMAIN:-}
       PI_SANDBOX_IMAGE: ${PI_SANDBOX_IMAGE:-python:3.12-slim}
       # Warm pool knobs (docker sandbox mode only)
       PI_SANDBOX_POOL: ${PI_SANDBOX_POOL:-1}            # 0 = legacy container-per-call

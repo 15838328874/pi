@@ -231,13 +231,19 @@ curl -s http://127.0.0.1:3000/v1/models -H "Authorization: Bearer sk-<令牌>"
 
 ## 4. Sandbox（工具执行隔离）说明
 
-- **默认（local）**：bash 工具命令在 app 容器内以非特权用户 `pi`（uid 10001）执行。
-  有容器这层隔离（碰不到宿主机），但所有用户共享同一个 app 容器环境——
-  **包括应用的全部环境变量**。任何注册用户都能 `echo $PI_JWT_SECRET` 拿到签发 token 的密钥、
-  从 `PI_DATABASE_URL` 里读出 RDS 密码。裸跑（不在容器里）时更糟：那是宿主机 root。
-  所以 local 只适合完全信任的单机场景，公网部署必须开 docker 模式。
-- **`PI_SANDBOX=docker`（预热池模式，默认）**：每个 workspace 一个常驻温容器——
-  turn 开始时预热（与 LLM 首个响应并行），命令通过 `docker exec` 进入（单次调用
+- **默认 = `cubesandbox`（CubeSandbox microVM，公网 SaaS 形态）**：compose 默认值，
+  每会话独立 microVM，恶意多租户级隔离。需配 `PI_SANDBOX_TEMPLATE` + `PI_CUBE_API_KEY`
+  （`PI_CUBE_API_URL`/`PI_CUBE_DOMAIN` 有默认值）；**配一半 = fail-closed**——模板或
+  key 缺失时每次 bash 调用都报错、`/readyz` 翻 503，绝无静默回退。平台本身（coredns
+  等）挂掉时同理（§2.5 的硬检查）。
+- **`PI_SANDBOX=local`（为什么不再是默认）**：bash 在 app 容器内以非特权用户 `pi`
+  （uid 10001）执行。有容器这层隔离（碰不到宿主机），但所有用户共享同一个 app 容器
+  环境——**包括应用的全部环境变量**。任何注册用户都能 `echo $PI_JWT_SECRET` 拿到签发
+  token 的密钥、从 `PI_DATABASE_URL` 里读出 RDS 密码。裸跑（不在容器里）时更糟：
+  那是宿主机 root。所以 local 只适合完全信任的单机场景。
+- **`PI_SANDBOX=docker`（自托管单机/团队形态，本地开发也用这个）**：每个 workspace
+  一个常驻容器，首次 bash 调用时惰性创建（会话级复用，不是 turn 开始时预热）；
+  命令通过 `docker exec` 进入（单次调用
   只有 exec 开销，没有 create/start/销毁的完整生命周期）；容器闲置超过
   `PI_SANDBOX_IDLE_TTL`（默认 600s）自动回收，达到 `PI_SANDBOX_POOL_MAX`（默认 16）
   按 LRU 驱逐（全部忙碌时允许临时超额，不阻塞）；命令超时的容器视为脏、立即销毁

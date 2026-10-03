@@ -1181,7 +1181,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_DEFAULT_QUOTA_TOKENS` | 1,000,000 | 新用户默认月配额 |
 | `PI_TRACER` | jsonl | noop / jsonl / otel |
 | `PI_POLICY` | 空 | 策略 JSON 文件路径；**只能加规则**，`path_sandbox`/`redact` 被 `server_policy` 强制打开 |
-| `PI_SANDBOX` | 空 | 空/`local`=本机执行（启动时打 `warning`）；`docker`=容器隔离；`cubesandbox`=CubeSandbox microVM（生产方案）；**其它值启动即报错**，不再静默降级 |
+| `PI_SANDBOX` | 空（配置层）；**部署层默认：cloud compose=cubesandbox / 本地=docker** | 空/`local`=本机执行（启动时打 `warning`）；`docker`=容器隔离；`cubesandbox`=CubeSandbox microVM（生产方案，配一半=fail-closed，`/readyz` 翻 503）；**其它值启动即报错**，不再静默降级 |
 | `PI_SANDBOX_IMAGE` | python:3.12-slim | 沙箱镜像 |
 | `PI_SANDBOX_NET` | 关 | `host` 才允许容器联网 |
 | `PI_SANDBOX_MEMORY` | 1g | 单容器内存上限；同时设等值 `--memory-swap` 关掉 swap（docker 默认允许 2 倍） |
@@ -1243,7 +1243,8 @@ pi-py serve --port 8398                   # 别占用生产的 8300
   MySQL/Redis 的**内网**域名；密钥全部来自 `.env`（`deploy/env.cloud.example` 模板）；
   内置 `llm-gateway`（new-api）聚合网关服务：`OPENAI_BASE_URL` 留空即默认走网关
   （compose 内 `http://llm-gateway:3000/v1`），管理 UI 只绑 `127.0.0.1:3000`、
-  经 SSH 隧道访问；可选 `--profile tls` 加 Caddy（`deploy/Caddyfile.cloud`，`{$DOMAIN}` 注入，
+  经 SSH 隧道访问；**沙箱默认 `cubesandbox`**（公网 SaaS 形态，需 `PI_SANDBOX_TEMPLATE`
+  + `PI_CUBE_API_KEY`，配一半 fail-closed 绝不回退进程内执行）；可选 `--profile tls` 加 Caddy（`deploy/Caddyfile.cloud`，`{$DOMAIN}` 注入，
   `flush_interval -1` + `encode off` 保证 SSE 不被缓冲）。
 - **完整云端 runbook**（安全组核对、上传、验证清单、调优、故障排查）：
   `deploy/cloud-deploy.md`。

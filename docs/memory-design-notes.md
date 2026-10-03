@@ -84,6 +84,13 @@ reranker 高分（≥0.65）只说明"相关"，分不清是"重复"还是"冲�
 
 真实 DeepSeek 冒烟三例全对：中文→英文 = conflict、Orion 改写 = duplicate、项目A/B MySQL = new。
 
+> **规模实测观察（integration/test_memory_real_scale.py，300 条）**：去重 20/20 全对；
+> 但冲突 20 条里 19 条被判 `new`、只有 1 条 `conflict`。样本是「用户0的主语言是Rust」vs
+> 「用户0的主语言改成Go」——judge 对带"改成/更新为"这类**动作动词**的冲突倾向判成
+> "新事实"而非"覆盖"，对直接矛盾的「是Rust / 是Go」才稳。**结论：judge 的 conflict
+> 判定对措辞敏感**，后续优化方向是 prompt 里明确"同一主体、同一属性换值即 conflict，
+> 无论措辞是'改成'还是'是'"。
+
 ## 4. 并发正确性：per-user 锁 + fencing token
 
 「查重 → 写入」是 check-then-act，两个并发 add 会都通过查重、都落库。解法是 per-user

@@ -245,7 +245,7 @@ class TestRuns:
         monkeypatch.setattr(
             runner_mod,
             "resolve_chain",
-            lambda model, on_fallback=None: _BoomMidStreamProvider(),
+            lambda model, on_fallback=None, **kw: _BoomMidStreamProvider(),
         )
         _register(server, "alice", "password123")
         token = _login(server, "alice", "password123")
@@ -272,7 +272,7 @@ class TestRuns:
         monkeypatch.setattr(
             runner_mod,
             "resolve_chain",
-            lambda model, on_fallback=None: _BoomBeforeStreamProvider(),
+            lambda model, on_fallback=None, **kw: _BoomBeforeStreamProvider(),
         )
         _register(server, "alice", "password123")
         token = _login(server, "alice", "password123")
@@ -298,7 +298,7 @@ class TestRuns:
 
         calls = {"n": 0}
 
-        def factory(model, on_fallback=None):
+        def factory(model, on_fallback=None, **kw):
             calls["n"] += 1
             if calls["n"] == 1:
                 return _BoomMidStreamProvider()
@@ -348,7 +348,7 @@ class TestRuns:
         monkeypatch.setattr(
             runner_mod,
             "resolve_chain",
-            lambda model, on_fallback=None: _BoomAfterToolProvider(),
+            lambda model, on_fallback=None, **kw: _BoomAfterToolProvider(),
         )
         _register(server, "alice", "password123")
         token = _login(server, "alice", "password123")

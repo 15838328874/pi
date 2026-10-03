@@ -43,10 +43,25 @@ def _cache_tokens(u: Any) -> tuple[int, int]:
     return int(hit or 0), int(miss or 0)
 
 
+#: Gateway-executed tool types the OpenAI-compatible endpoint understands as
+#: bare `{"type": ...}` entries in the tools array. The model answers them with
+#: a normal function tool_call; the client returns an empty tool result and the
+#: gateway performs the actual search/extraction/execution provider-side, so the
+#: app process's network position is never involved.
+BUILTIN_TOOL_TYPES = ("web_search", "web_extractor", "code_interpreter")
+
+
 class OpenAIProvider(LLMProvider):
     name = "openai"
 
-    def __init__(self, model: str, api_key: str | None = None, base_url: str | None = None):
+    def __init__(
+        self,
+        model: str,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        enable_search: bool = False,
+        builtin_tools: list[str] | None = None,
+    ):
         from openai import AsyncOpenAI
 
         # trust_env=False: ambient proxy env vars (a dead local proxy, a SOCKS
@@ -58,6 +73,8 @@ class OpenAIProvider(LLMProvider):
             http_client=httpx.AsyncClient(trust_env=False),
         )
         self.model = model
+        self.enable_search = enable_search
+        self.builtin_tools = [t for t in (builtin_tools or []) if t in BUILTIN_TOOL_TYPES]
 
     @staticmethod
     def _to_wire(system: str, messages: list[Message]) -> list[dict[str, Any]]:
@@ -98,26 +115,36 @@ class OpenAIProvider(LLMProvider):
         messages: list[Message],
         tools: list[ToolSpec],
     ) -> AsyncIterator[StreamEvent]:
-        wire_tools = (
-            [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": t.name,
-                        "description": t.description,
-                        "parameters": t.input_schema,
-                    },
-                }
-                for t in tools
-            ]
-            or None
+        wire_tools: list[dict[str, Any]] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.input_schema,
+                },
+            }
+            for t in tools
+        ]
+        # Gateway-executed tools travel as bare {"type": ...} entries; the loop
+        # answers their tool_calls with an empty result and the endpoint runs them.
+        wire_tools.extend({"type": t} for t in self.builtin_tools)
+        # enable_search alone is advisory: the gateway skips the search unless the
+        # model itself wants one, so a user-toggled 联网搜索 silently produced
+        # "I can't provide live data" answers. forced_search makes the toggle
+        # deterministic (probed against Qwen-class models).
+        extra_body: dict[str, Any] | None = (
+            {"enable_search": True, "search_options": {"forced_search": True}}
+            if self.enable_search
+            else None
         )
         stream = await self.client.chat.completions.create(
             model=self.model,
             messages=self._to_wire(system, messages),
-            tools=wire_tools,
+            tools=wire_tools or None,
             stream=True,
             stream_options={"include_usage": True},
+            extra_body=extra_body,
         )
 
         calls: dict[int, dict[str, str]] = {}

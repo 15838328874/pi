@@ -10,6 +10,7 @@ import asyncio
 
 from conftest import TEST_DB_URL
 
+from pi.server.cache import MemoryBackend
 from pi.server.db import Database, MemoryRepo
 
 
@@ -169,6 +170,104 @@ def test_no_reranker_falls_back_to_cosine_path(tmp_path):
         assert await repo.add(1, "项目代号是 Orion") is True
         assert await repo.add(1, "项目代号是 Orion") is False
         assert len(await repo.list_for_user(1)) == 1
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_reranker_length_mismatch_treats_as_new(tmp_path):
+    """reranker 返回长度与候选数不一致 → 判 new（写新），不崩。"""
+    db = Database(TEST_DB_URL)
+
+    async def rerank(user_id, query, docs):
+        return []  # 长度 0，与候选数（≥1）不匹配 → falsy → 判 new
+
+    async def main():
+        await db.init()
+        repo = _repo(db, reranker=rerank)
+        assert await repo.add(1, "项目 A 的代号是 Orion") is True
+        assert await repo.add(1, "项目 B 的代号是 Atlas") is True  # 长度不匹配 → new
+        assert len(await repo.list_for_user(1)) == 2
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_reranker_low_score_overrides_lexical_dup(tmp_path):
+    """reranker 低分优先于词法：即使词法会判重，reranker 说低分就写新。
+
+    这是有意的设计——reranker 比词法准，低分意味着"不相关"，词法的逐字重复
+    判断反而可能是噪声。固化为显式断言，防未来有人"顺手"加回词法兜底。
+    """
+    db = Database(TEST_DB_URL)
+
+    async def rerank(user_id, query, docs):
+        return [0.3] * len(docs)
+
+    async def main():
+        await db.init()
+        repo = _repo(db, reranker=rerank)
+        assert await repo.add(1, "项目代号是 Orion") is True
+        # 词法 Jaccard 会判重（逐字相同），但 reranker 低分 → 写新
+        assert await repo.add(1, "项目代号是 Orion") is True
+        assert len(await repo.list_for_user(1)) == 2
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_reranker_exact_threshold_boundary(tmp_path):
+    """reranker 分数恰好等于 0.65 → 判重（>= 阈值）。"""
+    db = Database(TEST_DB_URL)
+
+    async def rerank(user_id, query, docs):
+        return [0.65] * len(docs)
+
+    async def main():
+        await db.init()
+        repo = _repo(db, reranker=rerank)
+        assert await repo.add(1, "项目代号是 Orion") is True
+        assert await repo.add(1, "项目代号是 Orion") is False  # 恰好 0.65 → 判重
+        assert len(await repo.list_for_user(1)) == 1
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_add_long_text_no_crash(tmp_path):
+    """超长文本（>4096 字符）add 不崩，MySQL 存全量、可词法检索。"""
+    db = Database(TEST_DB_URL)
+    long_text = "alpha " * 3000 + "特殊标记XYZ789"  # ~18000 字符
+
+    async def main():
+        await db.init()
+        repo = MemoryRepo(db)
+        assert await repo.add(1, long_text) is True
+        hits = await repo.search(1, "特殊标记XYZ789", k=1)
+        assert hits and "特殊标记XYZ789" in hits[0].text
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_concurrent_add_with_reranker_and_eviction(tmp_path):
+    """并发 add + reranker + 驱逐三者叠加：锁串行化，最终只留 limit 条、不崩。"""
+    db = Database(TEST_DB_URL)
+
+    async def rerank(user_id, query, docs):
+        return [0.3] * len(docs)  # 低分 → 全部判 new（不判重，逼出驱逐路径）
+
+    async def main():
+        await db.init()
+        repo = MemoryRepo(db, cache=MemoryBackend(), reranker=rerank, memory_limit=3)
+        texts = [f"fact number {i}" for i in range(10)]
+        results = await asyncio.gather(*[repo.add(1, t) for t in texts])
+        assert all(results)  # 低分 → 每条都写
+        rows = await repo.list_for_user(1)
+        assert len(rows) == 3  # 驱逐后只留最新 3 条
+        texts_kept = {r.text for r in rows}
+        assert "fact number 9" in texts_kept  # 最新保留
+        assert "fact number 0" not in texts_kept  # 最旧驱逐
         await db.dispose()
 
     asyncio.run(main())

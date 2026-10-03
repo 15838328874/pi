@@ -303,6 +303,41 @@ def test_add_after_eviction_not_blocked_by_orphan_vector(tmp_path):
     asyncio.run(main())
 
 
+def test_conflict_overwrite_updates_milvus_same_id(tmp_path):
+    """judge 判 conflict → 原地覆盖（id 不变）+ Milvus 同 id 二次 upsert。"""
+    store = FakeVectorStore()
+    embedder = FakeEmbedder()
+    db = Database(TEST_DB_URL)
+
+    async def rerank(user_id, query, docs):
+        return [0.9] * len(docs)
+
+    async def judge(user_id, new, existing):
+        return "conflict"
+
+    repo = MemoryRepo(
+        db, vector_store=store, embedder=embedder, reranker=rerank, judge=judge
+    )
+
+    async def main():
+        await db.init()
+        assert await repo.add(1, "用户偏好中文回答") is True
+        old = (await repo.list_for_user(1))[0]
+        # 让向量召回命中旧行，触发 reranker→judge→conflict
+        store.scripted = [(old.id, 0.9)]
+        assert await repo.add(1, "用户偏好英文回答") is True
+        rows = await repo.list_for_user(1)
+        assert len(rows) == 1
+        assert rows[0].id == old.id  # 原地更新，不新增行
+        assert rows[0].text == "用户偏好英文回答"
+        # Milvus 收到同 id 的两次 upsert，最后一次是新文本（覆盖旧向量）
+        assert [mid for mid, _u, _t, _v in store.adds].count(old.id) == 2
+        assert store.adds[-1][2] == "用户偏好英文回答"
+        await db.dispose()
+
+    asyncio.run(main())
+
+
 def test_unconfigured_repo_is_lexical_only(tmp_path):
     db = Database(TEST_DB_URL)
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from typing import Protocol
 
 log = logging.getLogger("pi.server.cache")
@@ -23,6 +24,16 @@ class CacheBackend(Protocol):
 
     async def release_lock(self, key: str) -> None:
         """Release a previously acquired lock."""
+
+    async def acquire_lock_owned(self, key: str, ttl_seconds: float) -> str | None:
+        """Acquire a lock and return a unique ownership token, or None if not
+        acquired. The token must be passed to ``release_lock_owned`` so a holder
+        whose TTL has expired (and been re-acquired by someone else) cannot
+        delete the new holder's lock. Compare-and-delete release semantics."""
+
+    async def release_lock_owned(self, key: str, token: str) -> bool:
+        """Release ONLY if still owned (token matches). Returns True if released.
+        False means the lock was already expired / taken by someone else."""
 
     async def ping(self) -> bool:
         """Health probe."""
@@ -46,6 +57,7 @@ class MemoryBackend:
     def __init__(self) -> None:
         self._windows: dict[str, tuple[float, int]] = {}
         self._locks: set[str] = set()
+        self._owned_locks: dict[str, str] = {}  # key -> ownership token
         self._kv: dict[str, tuple[float, str]] = {}  # key -> (expires_monotonic, value)
 
     async def incr_window(self, key: str, window_seconds: float) -> int:
@@ -65,6 +77,19 @@ class MemoryBackend:
 
     async def release_lock(self, key: str) -> None:
         self._locks.discard(key)
+
+    async def acquire_lock_owned(self, key: str, ttl_seconds: float) -> str | None:
+        if key in self._owned_locks:
+            return None
+        token = uuid.uuid4().hex
+        self._owned_locks[key] = token
+        return token
+
+    async def release_lock_owned(self, key: str, token: str) -> bool:
+        if self._owned_locks.get(key) != token:
+            return False  # expired / re-acquired by someone else: do not delete
+        del self._owned_locks[key]
+        return True
 
     async def ping(self) -> bool:
         return True
@@ -114,6 +139,26 @@ class RedisBackend:
         lock_key = f"{self._ns}:lock:{key}"
         await self._redis.delete(lock_key)
         self._lock_names.discard(lock_key)
+
+    async def acquire_lock_owned(self, key: str, ttl_seconds: float) -> str | None:
+        lock_key = f"{self._ns}:lock:{key}"
+        token = uuid.uuid4().hex
+        got = await self._redis.set(lock_key, token, nx=True, ex=int(ttl_seconds) + 1)
+        return token if got else None
+
+    async def release_lock_owned(self, key: str, token: str) -> bool:
+        lock_key = f"{self._ns}:lock:{key}"
+        # Atomic compare-and-delete: only the current holder's token may delete.
+        # A bare GET-then-DEL has a race (the lock can expire and be re-acquired
+        # between the two round-trips), so this runs server-side as one script.
+        deleted = await self._redis.eval(
+            "if redis.call('GET', KEYS[1]) == ARGV[1] "
+            "then return redis.call('DEL', KEYS[1]) else return 0 end",
+            1,
+            lock_key,
+            token,
+        )
+        return bool(deleted)
 
     async def ping(self) -> bool:
         try:

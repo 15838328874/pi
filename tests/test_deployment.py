@@ -34,6 +34,25 @@ class TestMemoryBackend:
 
         assert asyncio.run(main()) == (True, False, True)
 
+    def test_owned_lock_compare_and_delete(self):
+        """release 带 token：错误 token 删不掉，正确 token 才删（fencing）。"""
+
+        async def main():
+            b = MemoryBackend()
+            tok = await b.acquire_lock_owned("m1", 60)
+            assert tok is not None
+            assert await b.acquire_lock_owned("m1", 60) is None  # 第二把拿不到
+            # 错误 token 删不掉，锁仍在
+            assert await b.release_lock_owned("m1", "wrong-token") is False
+            assert await b.acquire_lock_owned("m1", 60) is None
+            # 正确 token 才删
+            assert await b.release_lock_owned("m1", tok) is True
+            tok2 = await b.acquire_lock_owned("m1", 60)
+            assert tok2 is not None and tok2 != tok  # 新 token 是新身份
+            return True
+
+        assert asyncio.run(main()) is True
+
 
 class TestRateLimiterBackends:
     def test_memory_backend_limit(self):
@@ -76,6 +95,30 @@ class TestRedisBackend:
         if counts is None:
             pytest.skip("redis not running locally")
         assert counts == [1, 2]
+
+    def test_redis_owned_lock_compare_and_delete(self):
+        """Live Redis test for the Lua compare-and-delete release."""
+        pytest.importorskip("redis")
+        backend = get_backend("redis://localhost:6379/9", namespace="test-rl")
+
+        async def main():
+            if not await backend.ping():
+                return None
+            key = "test-rl:lock:owned-tst"
+            await backend._redis.delete(key)
+            tok = await backend.acquire_lock_owned("owned-tst", 60)
+            assert tok is not None
+            # 错误 token 删不掉
+            assert await backend.release_lock_owned("owned-tst", "wrong") is False
+            # 正确 token 删掉
+            assert await backend.release_lock_owned("owned-tst", tok) is True
+            await backend.close()
+            return True
+
+        result = asyncio.run(main())
+        if result is None:
+            pytest.skip("redis not running locally")
+        assert result is True
 
 
 class TestSandbox:

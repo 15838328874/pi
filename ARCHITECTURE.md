@@ -817,7 +817,7 @@ CLI:`pi-py eval rollout --tasks DIR --model X --n 8 --concurrency 16 --sandbox d
 
 | 方法 | 作用 |
 |---|---|
-| `add(user_id, text)` | 插 `memories` 行（源事实）；写前先**语义去重**（embed 一次 → Milvus 最近邻 cosine ≥ 0.92 判重，词法 Jaccard 兜底）与**每用户上限驱逐**（最旧优先，`_MEMORY_LIMIT=500`）；整段 check-then-write 用 **per-user 分布式锁**串行化（`cache.acquire_lock`，TTL 60s 无续期、等锁 5s 超时后 **fail-open**——偶发重复好过丢记忆）；配置向量后端时复用同一 embedding → Milvus upsert（失败只记日志、不抛——记忆绝不能挂 run） |
+| `add(user_id, text)` | 插 `memories` 行（源事实）；写前先**语义去重**（embed 一次 → Milvus 最近邻 cosine ≥ 0.92 判重，词法 Jaccard 兜底）与**每用户上限驱逐**（最旧优先，`_MEMORY_LIMIT=500`）；整段 check-then-write 用 **per-user 分布式锁**串行化（`cache.acquire_lock_owned`，fencing token + compare-and-delete 释放，TTL 60s 无续期、等锁 5s 超时后 **fail-open**——偶发重复好过丢记忆）；配置向量后端时复用同一 embedding → Milvus upsert（失败只记日志、不抛——记忆绝不能挂 run） |
 | `search(user_id, query, k)` | 配置向量后端时先向量检索（按 `user_id` 过滤，`search` 现返回带 COSINE 分数）再按命中序回查 DB；任何失败/空结果**回退词法**（token 重叠打分，即原实现） |
 | `list_for_user(user_id)` | 倒序全量 |
 

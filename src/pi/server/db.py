@@ -556,27 +556,33 @@ class MemoryRepo:
         text = text.strip()
         if not text:
             return False
-        lock_key = await self._acquire_add_lock(user_id)
+        acquired = await self._acquire_add_lock(user_id)
+        lock_key, lock_token = acquired if acquired is not None else (None, None)
         try:
             return await self._add_locked(user_id, text)
         finally:
             if lock_key is not None:
                 try:
-                    await self.cache.release_lock(lock_key)
+                    await self.cache.release_lock_owned(lock_key, lock_token)
                 except Exception:  # noqa: BLE001 - lock release must not hide the write
                     log.exception("memory add lock release failed (key=%s)", lock_key)
 
-    async def _acquire_add_lock(self, user_id: int) -> str | None:
-        """Per-user add lock (distributed when Redis-backed). Returns the key to
-        release, or None when unlocked (no backend, or fail-open on error/timeout)."""
+    async def _acquire_add_lock(self, user_id: int) -> tuple[str, str] | None:
+        """Per-user add lock (distributed when Redis-backed). Returns (key, token)
+        to release, or None when unlocked (no backend, or fail-open on error/timeout).
+
+        The token makes release compare-and-delete: if our TTL expired and the
+        key was re-acquired by another request, we cannot delete their lock.
+        """
         if self.cache is None:
             return None
         key = f"mem:add:{user_id}"
         deadline = time.monotonic() + _MEM_LOCK_WAIT
         while True:
             try:
-                if await self.cache.acquire_lock(key, _MEM_LOCK_TTL):
-                    return key
+                token = await self.cache.acquire_lock_owned(key, _MEM_LOCK_TTL)
+                if token is not None:
+                    return key, token
             except Exception:  # noqa: BLE001 - Redis down must not block memory writes
                 log.exception("memory add lock acquire failed; proceeding unlocked")
                 return None

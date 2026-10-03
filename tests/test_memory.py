@@ -223,10 +223,10 @@ def test_memory_add_lock_failure_proceeds_unlocked(tmp_path):
     db = Database(TEST_DB_URL)
 
     class BoomCache:
-        async def acquire_lock(self, key, ttl_seconds):
+        async def acquire_lock_owned(self, key, ttl_seconds):
             raise RuntimeError("redis down")
 
-        async def release_lock(self, key):
+        async def release_lock_owned(self, key, token):
             pass
 
     async def main():

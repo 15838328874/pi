@@ -10,6 +10,7 @@ from pi.tools.ls import LsTool
 from pi.tools.memory import RecallTool, RememberTool
 from pi.tools.read import ReadTool
 from pi.tools.subagent import SpawnSubagentsTool
+from pi.tools.web_search import WebSearchTool
 from pi.tools.write import WriteTool
 
 
@@ -30,6 +31,7 @@ def all_tools(
         RememberTool(),
         RecallTool(),
         SpawnSubagentsTool(depth=subagent_depth, max_depth=max_subagent_depth),
+        WebSearchTool(),
     ]
 
 
@@ -46,4 +48,5 @@ __all__ = [
     "ListFilesTool",
     "FetchFileTool",
     "SpawnSubagentsTool",
+    "WebSearchTool",
 ]

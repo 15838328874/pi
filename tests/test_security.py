@@ -134,6 +134,7 @@ class TestCapabilities:
         assert caps["remember"] == {"memory.write"}
         assert caps["recall"] == {"memory.read"}
         assert caps["spawn_subagents"] == {"agent.delegate"}
+        assert caps["web_search"] == {"web.search"}
 
 
 class TestRedact:
@@ -392,14 +393,18 @@ class TestShippedPolicy:
         assert not blocked, f"policy.json false-positives on: {blocked}"
 
     def test_web_tools_are_removed_entirely(self):
-        """SSRF 关闭方案（2026-09）：进程内抓取工具整体移除，不是 deny——
-        deny 只是策略层，移除连"被模型调用"的可能都没有；沙箱内 bash 抓取替代。
-        回归断言：工具集里不允许再出现进程内抓取工具。"""
+        """SSRF 关闭方案（2026-09）→ 演进（2026-10）：任意 URL 抓取工具 web_fetch
+        仍整体移除；web_search 回来了，但它是**固定端点**搜索（模型只传 query 字符串，
+        不传 URL；follow_redirects=False），所以没有 SSRF 面。断言：无 web_fetch，
+        且 web_search 的入参 schema 里没有任何 URL/地址类字段。"""
         from pi.tools import all_tools
 
-        names = {t.name for t in all_tools()}
-        assert "web_fetch" not in names
-        assert "web_search" not in names
+        tools = {t.name: t for t in all_tools()}
+        assert "web_fetch" not in tools, "arbitrary-URL fetcher must stay removed"
+        assert "web_search" in tools, "fixed-endpoint web search should be present"
+        schema = tools["web_search"].input_schema
+        props = set((schema.get("properties") or {}).keys())
+        assert props == {"query", "top_k"}, f"web_search must accept no URL arg, got {props}"
 
     def test_bash_itself_is_not_denied(self):
         policy = server_policy(str(SHIPPED_POLICY))

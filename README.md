@@ -27,7 +27,7 @@ tools, and sandboxing (CubeSandbox microVMs in production, Docker locally). Mirr
 
 | 亮点 | 一句话 | 详情 |
 |---|---|---|
-| 🏜️ **会话级沙箱（方案 B）** | 每个回合**新建独立 VM**（71ms 冷启）、用完即销毁：零常驻、崩溃隔离、内存模型 = 并发回合数 × 256Mi 而非会话数 | [架构总览](ARCHITECTURE.md#3-整体架构) · [设计笔记](docs/cube-sandbox-design-notes.md) |
+| 🏜️ **会话级沙箱** | 懒加载 + 会话级复用池：纯聊天回合**零 VM**，首次 `bash` 才现场建 VM（毫秒级冷启），跨回合延续状态，空闲超时 / 内存压力自适应回收；崩溃隔离、内存模型 = 并发**活跃**回合 × 256Mi 而非会话数 | [架构总览](ARCHITECTURE.md#3-整体架构) · [设计笔记](docs/cube-sandbox-design-notes.md) |
 | 🛡️ **SSRF 防线** | 进程内抓取工具（web_fetch/web_search）已**移除**，抓取一律降级到沙箱内执行——宿主内网（MySQL/Redis/云元数据）对模型不可达 | [坑 20（已解决）](ARCHITECTURE.md#17-注意事项与坑前人踩过的) |
 | 🗂️ **工作区闭环归档** | 每回合基线快照 → 结束 tar.gz + 差异元数据（added/modified/deleted），MinIO 惰性接口就绪 | [实测数据](ARCHITECTURE.md#附录实测数据速查) |
 | 🧪 **自治验证** | 真实模型跑企业任务：数据分析/日志解析/GitHub 情报/文档摘要/数据清洗 **5/5 PASS**；安全回归 **40/40**；沙箱组合 **11/11** | [测试体系](ARCHITECTURE.md#15-测试) |
@@ -87,16 +87,24 @@ Notes:
   (`postgresql+asyncpg://`); the server raises at startup without it. There is no
   local-file fallback — SQLite survives only as a test dependency.
 - Any OpenAI-compatible endpoint works via `OPENAI_BASE_URL` (Aliyun MaaS verified:
-  `token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`).
+  `token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`). The provider
+  adapters are `openai` / `anthropic` / `fake`, but the `openai/` prefix plus
+  `OPENAI_BASE_URL` covers most OpenAI-compatible vendors (Qwen / GLM / DeepSeek /
+  Kimi / Doubao …) — set `PI_MODEL=openai/<vendor-model>` and the vendor's base URL.
+  Per-model pricing for the cost meter / `PI_MAX_COST_USD` lives in
+  `src/pi/observability/prices.py` (override via `PI_PRICES_FILE`).
 - `<think>...</think>` reasoning spans are stripped from the stream automatically (qwen/deepseek style).
 - Vector semantic memory (`remember`/`recall` tools, auto-injection at turn start): the
   four `PI_EMBEDDING_*` / `PI_MILVUS_URI` vars enable Milvus vector search with the
   `memories` table as source of truth; unset (or any missing) = lexical retrieval only.
   Milvus outages degrade to lexical — retrieval quality, never correctness.
-- MCP stdio servers are spawned as child processes of the app and inherit its environment:
-  treat `PI_MCP_SERVERS` as admin-level config. MCP/skill tools pass the same policy gate,
-  and path-like args on unknown tools are workspace-confined by the generic path sandbox.
-  They declare no capabilities, so under an allow-list policy they are denied fail-closed
+- MCP stdio servers are spawned as child processes of the app. They do **not** inherit
+  the app's environment (the MCP SDK passes a safe allow-list, so `PI_JWT_SECRET` /
+  `PI_DATABASE_URL` never reach them) but they **do** run unsandboxed with the app's
+  uid/filesystem/network — treat `PI_MCP_SERVERS` as admin-level config. MCP/skill
+  tools pass the same policy gate, and path/file/dir args on unknown tools are
+  workspace-confined by the generic path sandbox (best-effort, key-name based). They
+  declare no capabilities, so under an allow-list policy they are denied fail-closed
   (see Enterprise security).
 - No API key? Set `PI_MODEL=fake/demo` — the scripted provider keeps every HTTP path
   exercisable end to end with canned replies.

@@ -21,7 +21,7 @@
 
 | 亮点 | 一句话 | 详情 |
 |---|---|---|
-| 🏜️ **会话级沙箱（方案 B）** | 每个回合**新建独立 VM**（71ms 冷启）、用完即销毁：零常驻、崩溃隔离、内存模型 = 并发回合数 × 256Mi 而非会话数 | [架构总览](ARCHITECTURE.md#3-整体架构) · [设计笔记](docs/cube-sandbox-design-notes.md) |
+| 🏜️ **会话级沙箱** | 懒加载 + 会话级复用池：纯聊天回合**零 VM**，首次 `bash` 才现场建 VM（毫秒级冷启），跨回合延续状态，空闲超时 / 内存压力自适应回收；崩溃隔离、内存模型 = 并发**活跃**回合 × 256Mi 而非会话数 | [架构总览](ARCHITECTURE.md#3-整体架构) · [设计笔记](docs/cube-sandbox-design-notes.md) |
 | 🛡️ **SSRF 防线** | 进程内抓取工具（web_fetch/web_search）已**移除**，抓取一律降级到沙箱内执行——宿主内网（MySQL/Redis/云元数据）对模型不可达 | [坑 20（已解决）](ARCHITECTURE.md#17-注意事项与坑前人踩过的) |
 | 🗂️ **工作区闭环归档** | 每回合基线快照 → 结束 tar.gz + 差异元数据（added/modified/deleted），MinIO 惰性接口就绪 | [实测数据](ARCHITECTURE.md#附录实测数据速查) |
 | 🧪 **自治验证** | 真实模型跑企业任务：数据分析/日志解析/GitHub 情报/文档摘要/数据清洗 **5/5 PASS**；安全回归 **40/40**；沙箱组合 **11/11** | [测试体系](ARCHITECTURE.md#15-测试) |
@@ -77,13 +77,19 @@ PI_SKILLS_DIR=/opt/pi-py/skills
 - `PI_DATABASE_URL` **必填**。MySQL（`mysql+aiomysql://`）或 PostgreSQL
   （`postgresql+asyncpg://`）；缺失则服务拒绝启动。没有本地文件兜底——SQLite 仅作为测试依赖存活。
 - 任何 OpenAI 兼容端点都可以通过 `OPENAI_BASE_URL` 接入（阿里云百炼已验证：
-  `token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`）。
+  `token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`）。provider 适配器是
+  `openai` / `anthropic` / `fake`，但 `openai/` 前缀 + `OPENAI_BASE_URL` 已覆盖绝大多数
+  OpenAI 兼容厂商（Qwen / GLM / DeepSeek / Kimi / 豆包…）：设 `PI_MODEL=openai/<厂商模型>`
+  与厂商的 base URL 即可。成本计量 / `PI_MAX_COST_USD` 的按模型单价在
+  `src/pi/observability/prices.py`（可用 `PI_PRICES_FILE` 覆盖）。
 - `<think>...</think>` 推理段会在流中自动剥离（qwen/deepseek 风格）。
 - 向量语义记忆（`remember`/`recall` 工具 + 每轮开始自动注入）：四个 `PI_EMBEDDING_*` /
   `PI_MILVUS_URI` 变量启用 Milvus 向量检索，`memories` 表是唯一事实源；不配（或缺任一）= 词法检索。
   Milvus 故障自动降级为词法——影响的是检索质量，不是正确性。
-- MCP stdio server 作为应用子进程启动并继承其环境变量：请把 `PI_MCP_SERVERS` 视为管理员级配置。
-  MCP/skill 工具走同一道策略闸门；未知工具的 path 类参数由通用路径沙箱收敛到 workspace。
+- MCP stdio server 作为应用子进程启动，但**不继承**应用环境变量（MCP SDK 传入安全白名单，
+  故 `PI_JWT_SECRET` / `PI_DATABASE_URL` 不会进入 MCP 进程）；它**确实**以应用 uid / 文件系统 /
+  网络权限在沙箱外运行，所以仍要把 `PI_MCP_SERVERS` 视为管理员级配置。MCP/skill 工具走同一道
+  策略闸门；未知工具的 path/file/dir 类参数由通用路径沙箱收敛到 workspace（best-effort、按参数名）。
   它们不声明任何能力，因此 allow-list 策略下被 fail-closed 拒绝（见企业安全一节）。
 - 没有 API key？设 `PI_MODEL=fake/demo`——脚本化 provider 用固定回复把每条 HTTP 路径端到端跑通。
 - 永远不要提交 `.env`（已 gitignore）。谨慎轮换 `PI_JWT_SECRET`：换掉它所有已签发 token 立即失效。

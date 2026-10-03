@@ -80,6 +80,7 @@
 | 管理台平台健康卡片 | `/v1/admin/stats` 目前只返回 `today/users/sessions`，运维看不到平台状态。补：cubelet 是否在线、模板是否 READY、近期建沙箱失败数、`/readyz` 各项，做成 `admin.html` 上的状态卡片 | 中 |
 | `/metrics` 加访问 token | 当前 `PI_METRICS_TOKEN` 为空 → `/metrics` 完全开放（启动日志已明确告警："Fine behind a private network, a leak on a published port"）。本机只绑 127.0.0.1 暂时无碍，但一旦挂反代就可能泄漏用量/并发等运行数据。同时改 `prometheus.yml` 的 `authorization.credentials_file` 配套 | 中 |
 | 记忆向量重建命令 | 换 embedding 模型后 RAG 侧有 `pi-py rag rebuild-index --user <id>`，但**记忆向量 `pi_memories` 没有重建入口**——`vectorstore.py` 注释说它是"可重建索引"，却无对应 CLI。换模型时旧记忆向量全部失效且无报错（静默降级到词法）。补一个 `pi-py memory rebuild`（或复用 RAG 的重建范式：从 SQL 真相源 re-embed 到 Milvus）| 中 |
+| 安全硬化 B1–B5 | 高危操作人工确认（HITL）/ 沙箱对抗性验证 / OIDC+RBAC / 集群化 / 审计不可变存储。完整演进计划与验收不变量见 [`docs/hardening-roadmap.md`](docs/hardening-roadmap.md)。其中 **B2（docker 级逃逸用例进 CI）优先级最高**——当前 521 用例全绿但无一真实逃逸尝试。B1 与本表"交互式 run"共享 checkpoint/resume 依赖 | 见文档 |
 
 ## 4. 后续阶段开发
 

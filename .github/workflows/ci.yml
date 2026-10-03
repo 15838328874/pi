@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # 测试与生产同栈：真实 MySQL（pi_py_test 库）+ Redis（db1），
+    # 服务替身只替换 LLM/embedding/Milvus（见 tests/conftest.py）。
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: pi_py_test
+          MYSQL_USER: pi
+          MYSQL_PASSWORD: pi_py_local
+        ports: ["3306:3306"]
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -proot"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install
+        run: pip install -e ".[dev,production]"
+
+      # conftest 已钉死 PI_SANDBOX="" / PI_POLICY="" 等，这里只需挡住
+      # pi/__init__.py 的 ./.env 自动加载（CI 环境本身没有 .env，双保险）。
+      - name: Run tests
+        env:
+          PI_SANDBOX: ""
+          PI_POLICY: ""
+        run: python -m pytest -q

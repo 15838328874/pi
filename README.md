@@ -1,5 +1,7 @@
 # pi-py
 
+[![ci](https://github.com/15838328874/pi/actions/workflows/ci.yml/badge.svg)](https://github.com/15838328874/pi/actions) · [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 > **实测战绩**：真实模型企业测评 **5/5** ✅ · 安全回归 **40/40** ✅ · SandboxFS 组合 **11/11** ✅ · Python 3.12 · CubeSandbox 会话级沙箱
 
 A **self-hostable, extensible AI agent platform**: sandboxed tool execution, multi-tenant
@@ -357,7 +359,8 @@ python tools/seed_testdb.py      # idempotent; --reset wipes first, --users N se
 pi-py serve --port 8398          # leave 8300 for production
 ```
 
-Seeded fixtures (password from `--password`, default `pi-test-123`): `admin` (promoted via
+Seeded fixtures (password from `--password`, default `pi-test-123` — **test database only,
+production has no default password**): `admin` (promoted via
 `UserRepo.set_admin`, the only path to admin), `alice`/`bob`/`carol` normal users with one
 populated and one empty session plus a usage record, `overquota` (`quota_tokens=1000` against
 1540 tokens used → 402), and `disabled` (`is_active=0` → 401). The script refuses to run unless
@@ -380,3 +383,7 @@ until its own command finishes. (Established by reading the code, not reproduced
 warm pool calls `docker rm -f` and the Engine API path POSTs `/kill`, so both do tear it down.)
 For hostile multi-tenant workloads, run tool execution inside microVMs. Never commit `.env`
 (git-ignored); rotate `PI_JWT_SECRET` in production.
+
+## License
+
+[MIT](LICENSE).

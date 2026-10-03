@@ -96,7 +96,7 @@
   #filePanel .head .spacer { flex: 1; }
   #filePanel .head button { font-size: 13px; }
   .file-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
-  .file-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .file-row .sz { color: var(--muted); font-size: 12px; min-width: 56px; text-align: right; }
   .file-row button { padding: 3px 8px; font-size: 12px; }
   .file-row button.danger { color: var(--error); border-color: var(--error); }
@@ -115,7 +115,7 @@
   #ragPanel .head button { font-size: 13px; }
   #ragPanel .hint { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
   .rag-row { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
-  .rag-row .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .rag-row .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .rag-row .rag-status { font-size: 12px; min-width: 78px; text-align: right; }
   .rag-row .rag-status.ready { color: #2e9e44; }
   .rag-row .rag-status.pending, .rag-row .rag-status.index_pending { color: var(--muted); }
@@ -948,22 +948,12 @@ async function uploadFile(file) {
   const msg = $("fileMsg");
   msg.textContent = `上传 ${file.name} …`;
   try {
-    const buf = await file.arrayBuffer();
-    const sha = await sha256Hex(buf);
-    const ct = file.type || "application/octet-stream";
-    const up = await apiJson("/v1/files", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name, size: file.size, content_type: ct, sha256: sha }),
-    });
-    if (!up.deduplicated && up.upload_url) {
-      const r = await fetch(up.upload_url, { method: "PUT", body: buf });
-      if (!r.ok) throw new Error("直传失败 HTTP " + r.status);
-    }
-    await apiJson("/v1/files/commit", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name, object_key: up.object_key, sha256: sha, content_type: ct }),
-    });
-    msg.textContent = `✅ ${file.name}` + (up.deduplicated ? "（已存在，已去重）" : "");
+    // 走服务器中转（multipart）：MinIO 不支持设置 CORS，浏览器直传 PUT 会被跨域拦。
+    // 字节在服务器内存里过一遍直存 MinIO，不落盘，服务端用完即弃。
+    const fd = new FormData();
+    fd.append("file", file);
+    const r = await apiJson("/v1/files/upload", { method: "POST", body: fd });
+    msg.textContent = `✅ ${file.name}` + (r.deduplicated ? "（已存在，已去重）" : "");
     await refreshFiles();
   } catch (err) {
     msg.textContent = "❌ " + err.message;

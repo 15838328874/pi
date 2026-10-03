@@ -699,9 +699,16 @@ PI_MODEL_LIST=openai/deepseek-flash,openai/qwen3.8-flash,openai/glm-5.3-flash
 MinIO 对象 ──服务器 get_bytes──▶ 服务器内存 ──SandboxFS.write──▶ VM 的 /workspace
 ```
 
-文件真身始终在 MinIO、**服务器磁盘零占用**（只内存过一遍）；上传/下载两端仍是
-预签名直连。当前中转上限 256MB（防 OOM 宿主），大文件流式记档待做。若你将来给
-MinIO 一个公网地址，可无缝切回 VM 真直连。
+文件真身始终在 MinIO、**服务器磁盘零占用**（只内存过一遍）。当前中转上限 256MB
+（防 OOM 宿主），大文件流式记档待做。若你将来给 MinIO 一个公网地址，可无缝切回 VM 真直连。
+
+> **上传侧同理（2026-10 补充）**：浏览器上传原本走"预签名直传"（客户端 PUT 到
+> MinIO），但本部署的 MinIO **不支持设置 CORS**（`PutBucketCors` 返回
+> `NotImplemented`），浏览器跨域 PUT 会被拦。因此浏览器上传改走**服务器内存中转**
+> （`POST /v1/files/upload` multipart → app 内存 → `put_bytes`），上限同样 256MB
+> （`app.py::_MAX_RELAY_UPLOAD_BYTES`），超限提示走预签名直传。预签名直传
+> （`POST /v1/files` + PUT）**保留**，供 curl/API 等非浏览器客户端和 >256MB 大文件使用。
+> 原则不变：**能直传就直传，客户端/沙箱够不到 MinIO 时（CORS / VM NAT 隔离）走有界内存中转**。
 
 ### 8.2 出网控制（只影响"联网抓取"类任务）
 

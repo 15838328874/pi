@@ -7,6 +7,7 @@ mysql+aiomysql:// or postgresql+asyncpg://), PI_MODEL, PI_POLICY.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -48,6 +49,11 @@ from pi.tools.skill import SkillToolProvider
 log = logging.getLogger("pi.server")
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9_-]{2,32}$")
+
+# Server-memory relay cap for the browser upload path: staging the whole object
+# into RAM must not OOM the host (aligned with tools/files.py::_MAX_FETCH_BYTES,
+# which bounds the download relay). Larger files keep the presigned-direct flow.
+_MAX_RELAY_UPLOAD_BYTES = 256 * 1024 * 1024  # 256 MiB
 
 
 def _client_ip(request: Request) -> str:
@@ -121,12 +127,11 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     from pi.llm.base import StreamEnd, TextDelta
     from pi.models import Message, Role, TextBlock
 
-    # The judge runs on every add that has candidates, so it defaults to a
-    # cheap+fast model (flash) rather than the chat model - judging 3 short
-    # texts does not need a frontier model. Override with PI_MEMORY_JUDGE_MODEL;
-    # fall back to the default chat model, then to no judge at all (resolve can
-    # fail for missing creds in tests → cosine + lexical only, never a crash).
-    judge_model = os.environ.get("PI_MEMORY_JUDGE_MODEL", "").strip() or "openai/deepseek-v4-flash"
+    # The judge runs on every add that has candidates, so it should use a
+    # cheap+fast model, not a frontier one. Default to the chat model (PI_MODEL
+    # is already a flash-class model), override with PI_MEMORY_JUDGE_MODEL.
+    # Resolve may fail (missing creds in tests) → cosine + lexical only.
+    judge_model = os.environ.get("PI_MEMORY_JUDGE_MODEL", "").strip() or settings.default_model
     judge_provider = None
     judge_name = ""
     for candidate_model in (judge_model, settings.default_model):
@@ -681,6 +686,53 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             size=size,
             content_type=body.content_type or ctype,
             sha256=body.sha256,
+        )
+        url = await store.presign_get(row.object_key, row.bucket)
+        return {"id": row.id, "filename": row.filename, "size": row.size, "url": url}
+
+    @app.post("/v1/files/upload")
+    async def upload_file(file: UploadFile = File(...), username: str = Depends(current_user)) -> dict:
+        """Server-relay upload (multipart): the browser cannot PUT cross-origin to
+        MinIO (this MinIO deployment returns NotImplemented for CORS), so bytes pass
+        through the app process IN MEMORY and are stored via put_object. No temp
+        file is written to disk, and the upload handle is closed explicitly, so
+        there is nothing to clean up afterwards."""
+        if not store.enabled:
+            raise HTTPException(status_code=503, detail="object storage not configured")
+        data = await file.read()
+        await file.close()
+        # In-memory relay cap (aligned with tools/files.py::_MAX_FETCH_BYTES):
+        # staging the whole object into RAM must not OOM the host. Larger files
+        # keep the presigned-direct flow (POST /v1/files + PUT), which never
+        # touches app memory.
+        if len(data) > _MAX_RELAY_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=(
+                    f"file size {len(data)} exceeds the in-memory relay cap "
+                    f"{_MAX_RELAY_UPLOAD_BYTES}; use the presigned-direct flow "
+                    "(POST /v1/files + PUT to upload_url) for large files"
+                ),
+            )
+        sha = hashlib.sha256(data).hexdigest()
+        user = await users.by_username(username)
+        existing = await files_repo.by_sha(user.id, sha)
+        if existing is not None:
+            url = await store.presign_get(existing.object_key, existing.bucket)
+            return {"id": existing.id, "deduplicated": True, "url": url, "filename": existing.filename}
+        filename = file.filename or "file"
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", filename)[:200]
+        object_key = f"{user.id}/{time.strftime('%Y-%m')}/{uuid.uuid4().hex[:12]}-{safe_name}"
+        ctype = file.content_type or "application/octet-stream"
+        await store.put_bytes(object_key, settings.s3_bucket_files, data, ctype)
+        row = await files_repo.create(
+            user_id=user.id,
+            object_key=object_key,
+            bucket=settings.s3_bucket_files,
+            filename=filename,
+            size=len(data),
+            content_type=ctype,
+            sha256=sha,
         )
         url = await store.presign_get(row.object_key, row.bucket)
         return {"id": row.id, "filename": row.filename, "size": row.size, "url": url}

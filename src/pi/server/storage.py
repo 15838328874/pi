@@ -1,7 +1,15 @@
 """Object storage (S3-compatible MinIO) for the user file pipeline.
 
-The server is a *signer + bookkeeper*, not a byte mover: clients/sandboxes get
+The server is a *signer + bookkeeper* by default: clients/sandboxes get
 presigned URLs and talk to MinIO directly (the mainstream "direct handshake").
+Two bounded exceptions make it a *byte mover, in memory only*:
+
+- ``get_bytes`` — the sandbox VM cannot reach the host's MinIO (NAT-isolated
+  egress), so fetch_file stages the object through app RAM;
+- ``put_bytes`` — the browser cannot PUT cross-origin to MinIO (this MinIO
+  deployment returns NotImplemented for CORS), so uploads relay through app RAM.
+
+Both stage bytes in RAM, never on disk; the caller caps size to avoid host OOM.
 http metadata lives in MySQL `files` (see db.FileRow). Every boto3 call is
 synchronous, so it is wrapped in asyncio.to_thread to keep the event loop free.
 
@@ -121,3 +129,23 @@ class ObjectStore:
     def _get_bytes_sync(self, object_key: str, bucket: str) -> bytes:
         resp = self._client_sync().get_object(Bucket=bucket, Key=object_key)
         return resp["Body"].read()
+
+    async def put_bytes(
+        self, object_key: str, bucket: str, data: bytes, content_type: str = ""
+    ) -> None:
+        """Store in-memory bytes server-side (upload relay).
+
+        Counterpart of get_bytes: the browser cannot PUT cross-origin to MinIO
+        (this deployment's MinIO returns NotImplemented for CORS), so uploads
+        relay through the app process. Bytes go straight from memory into
+        put_object - the server never writes them to disk, so there is no temp
+        file to clean up. The caller enforces the size cap.
+        """
+        await asyncio.to_thread(self._put_bytes_sync, object_key, bucket, data, content_type)
+
+    def _put_bytes_sync(
+        self, object_key: str, bucket: str, data: bytes, content_type: str
+    ) -> None:
+        self._client_sync().put_object(
+            Bucket=bucket, Key=object_key, Body=data, ContentType=content_type
+        )

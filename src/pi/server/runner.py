@@ -179,7 +179,18 @@ class RunManager:
                 def on_message(msg: Message) -> None:
                     nonlocal write_ahead
                     if write_ahead is None:
-                        write_ahead = msg  # first message = user prompt
+                        # The user turn rides a memory prefix (injected for
+                        # prompt-cache shape); persist the RAW prompt, not the
+                        # injected memory block - otherwise the frontend renders
+                        # "<relevant memories>..." as the user's own words.
+                        write_ahead = msg
+                        if memory_prefix:
+                            first = msg.blocks[0] if msg.blocks else None
+                            if isinstance(first, TextBlock) and first.text.startswith(memory_prefix):
+                                write_ahead = Message(
+                                    role=msg.role,
+                                    blocks=[TextBlock(text=first.text[len(memory_prefix):])],
+                                )
                     else:
                         buffer.append(msg)
 

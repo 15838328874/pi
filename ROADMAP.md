@@ -16,7 +16,7 @@
 
 | 能力 | 位置 | 验证 |
 |---|---|---|
-| Agent loop + 12 内置工具（+ rag_search 可选）+ 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 528 单测 |
+| Agent loop + 12 内置工具（+ rag_search 可选）+ 错误回喂自纠正 | `src/pi/agent/` `src/pi/tools/` | 529 单测 |
 | **能力授权（P0-1）**：allow/deny_capabilities 策略键（allow 子集语义、未声明能力的 MCP/skill 工具 fail-closed） | `security/policy.py` `tools/base.py` | 7 单测（TestCapabilities） |
 | **幂等重放（P0-2）**：checkpoint 带 completed_tools 账本，resume 重放已完成工具而非重执行副作用 | `agent/loop.py` | 2 单测（test_durable） |
 | LLM 接入层（openai/anthropic/fake）+ 降级链 + 退避重试 | `src/pi/llm/` | 单测 + 真实模型（qwen3.8-flash/max） |
@@ -40,7 +40,7 @@
 | **沙箱生产化**（CubeSandbox microVM + GNU timeout + 退出码透传 + 10MB 装载上限 + 三层 VM 泄漏防线 + **懒加载/复用池/内存自适应回收生命周期**） | `tools/sandbox.py` `server/runner.py` | 真机故障注入探针 + 企业 eval 5/5 |
 | **会话闭环归档**（turn 基线快照 + 结束 tar.gz + 差异元数据 + MinIO 惰性接口） | `server/archive.py` | 9 turns 实测 diff 精确 |
 | **沙箱健康指标**（创建失败/命令超时/close 失败/创建耗时 4 系列） | `observability/metrics.py` | 真实任务实测 |
-| **文件管线 P0/P1/P2**（MinIO 预签名直连 + sha256 用户级去重 + files 表 + list_files/fetch_file 工具 + 沙箱能力镜像） | `server/storage.py` `server/db.py` `tools/files.py` | 528 单测 |
+| **文件管线 P0/P1/P2**（MinIO 预签名直连 + sha256 用户级去重 + files 表 + list_files/fetch_file 工具 + 沙箱能力镜像） | `server/storage.py` `server/db.py` `tools/files.py` | 529 单测 |
 | **轨迹结构化落库**（runs 表 + `/v1/trajectory/{run_id}` 回放 + `/v1/admin/trajectory/{run_id}` 跨用户） | `server/db.py` `server/app.py` | 单测 + 实测 |
 | **审计结构化查询**（audit_events 表双写，jsonl 仍是合规底稿） | `server/db.py` `security/audit.py` | 单测 + 实测 |
 | **官方 SDK**（异步客户端：SSE 流式解析、PiError 语义、trust_env=False） | `src/pi/client.py` | 单测 + 真实模型实测 |

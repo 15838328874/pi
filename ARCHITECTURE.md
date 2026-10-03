@@ -3,7 +3,7 @@
 > 面向后来人的完整说明：项目是什么、怎么设计的、每个模块每个函数干什么、
 > 如何启动和使用、有哪些坑。读完本文 + `README.md`，你应该能独立维护和扩展这个项目。
 >
-> 最后更新：2026-10-02 · 代码规模约 10,000 行源码 + 528 个测试
+> 最后更新：2026-10-03 · 代码规模约 17,800 行源码（含 RAG 6,700 行）+ 529 个测试
 >
 > **文档地图**（三个文档各管一段，知识点不重复）：
 >
@@ -278,7 +278,7 @@ pi-python/
 │       ├── archive.py        会话工作区归档（tar.gz + 差异元数据 + MinIO 惰性上传）
 │       ├── storage.py         MinIO/S3 文件管线（预签名直连 + sha256 去重）
 │       └── client.py         SDK（异步 HTTP 客户端，SSE 流式解析）
-├── tests/                   528 个测试（连本地 MySQL/Redis，服务替身分层）
+├── tests/                   529 个测试（连本地 MySQL/Redis，服务替身分层）
 ├── migrations/              Alembic 迁移（0001 建表 ~ 0007 files）
 ├── docs/                    CubeSandbox 设计笔记 / 生产部署手册 / 生产就绪审计（专项文档）
 ├── tools/loadtest.py        SSE 压测工具
@@ -1266,7 +1266,7 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 
 | 层 | 内容 | 规模 | 依赖 | 命令 |
 |---|---|---|---|---|
-| **单测** | 逻辑/协议/安全/降级/契约，共 267 例 | 20 秒 | 本地 MySQL（pi_py_test）+ Redis；LLM/embedding/Milvus 用替身 | `python -m pytest -q` |
+| **单测** | 逻辑/协议/安全/降级/契约，共 529 例 | ~36 秒 | 本地 MySQL（pi_py_test）+ Redis；LLM/embedding/Milvus 用替身 | `python -m pytest -q` |
 | **真实栈集成** | 真 MySQL+Redis+Milvus+云 embedding | 2 例 | 完整本地栈 + 云 API | `PI_INTEGRATION=1 pytest integration/ -q` |
 | **浏览器** | Playwright 无头 Chromium：登录/流式/布局/联动/缓存头 | 脚本 | 运行中的服务 | `/tmp/*.py` 脚本或未来 `tests/browser/` |
 | **压测** | 沙箱容量、并发锁 | 2 工具 | Docker 沙箱 | `tools/sandbox_bench.py` `tools/loadtest.py` |
@@ -1279,7 +1279,7 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
   配置变量 `PI_ITEST_*`，见 `integration/conftest.py`）。
 - 基础设施没起时单测会失败，先 `docker compose -f deploy/docker-compose.local.yml up -d`。
 
-测试组织（都在 `tests/`，共 528 例，2026-10-02 按 `--collect-only` 实测）：
+测试组织（都在 `tests/`，共 529 例，2026-10-03 按 `--collect-only` 实测）：
 
 | 文件 | 例数 | 覆盖 |
 |---|---|---|
@@ -1308,7 +1308,7 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 | `test_mcp.py` | 5 | MCP 工具源：对假 stdio server（tests/fake_mcp_server.py） |
 | `test_evals.py` | 5 | eval harness（P4）：runner、判分器、报告、加载器 |
 | `test_durable.py` | 4 | durable execution（P2）：checkpoint 往返 + resume 幂等重放 + 正常 run 同参数重复不误去重 |
-| `test_skill.py` | 4 | Skills：加载、索引、use_skill、脚本工具、提示注入 |
+| `test_skill.py` | 5 | Skills：加载、索引、use_skill、脚本工具、提示注入、记忆移出 system prompt 后的缓存稳定性守卫 |
 | `test_subagent.py` | 4 | 递归子代理委派（spawn_subagents） |
 | `test_client.py` | 3 | SDK：pi.client 用 ASGITransport 打真实 app（不开 socket） |
 | `test_mysql_compat.py` | 3 | `engine_kwargs` 的方言分支 + 布尔默认值在 MySQL/PG/SQLite 三方言下的 DDL 兼容 |
@@ -1321,7 +1321,7 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 > 事件流）随本地 CLI 一起删除；`test_deployment.py` 里的 GBK 解码例随 Windows 支持删除。
 > 101 → 93 的差额（8 例）全部来自这两处，没有覆盖率损失。（93 是**那次删除之后**的
 > 数量，不是当前总数；之后陆续补了认证审计、`X-Forwarded-For`、沙箱资源限额与
-> 策略回归，现在见上表 528 例。）
+> 策略回归，现在见上表 529 例。）
 
 **测试约定**：
 
@@ -1445,7 +1445,7 @@ def test_five_consecutive_denials_abort_the_run(self, tmp_path):
 3. 涉及 app 的测试用 `TestClient(create_app(...))` fixture 模式，参考 `tests/test_server.py`；
 4. 涉及 MySQL 数据断言：每个测试开始前库是干净的（conftest 自动清表 + 播种 u1..u20/s1..s9）；
 5. 前端改动：跑 node 语法检查 + Playwright 脚本（布局断言）；
-6. 全套 `python -m pytest -q` 必须全绿——267 例是底线不是上限。
+6. 全套 `python -m pytest -q` 必须全绿——529 例是底线不是上限。
 
 ---
 
@@ -2249,7 +2249,7 @@ rerank 后仍排不到第一」这一失效模式的修复方向（同轮定性�
 
 | 指标 | 数值 | 来源/条件 |
 |---|---|---|
-| 测试规模 | **267 单测 + 2 真实栈集成**，20 秒跑完 | 本地 MySQL+Redis 统一栈 |
+| 测试规模 | **529 单测 + 2 真实栈集成**，~36 秒跑完 | 本地 MySQL+Redis 统一栈 |
 | 沙箱吞吐（Docker 形态基准） | **~52 exec/s 饱和、零失败**（p50 44ms@N=1 → 1162ms@N=64） | `tools/sandbox_bench.py`，4 vCPU/16GiB，Docker 预热池 |
 | 沙箱内存（Docker 形态） | 每预热容器 ~26 MiB；64 容器冷启动 3.0s | 同上 |
 | 登录哈希 | **PBKDF2 453ms → 40ms**（CPU 52.7% → 99.7%） | `asyncio.to_thread` 优化 |

@@ -6,6 +6,7 @@ postgresql+asyncpg://... - the schema and queries are dialect-neutral.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -20,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from pi.llm.embedding import EmbeddingClient
+from pi.server.cache import CacheBackend
 from pi.server.vectorstore import VectorStore
 
 log = logging.getLogger("pi.server.db")
@@ -484,6 +486,18 @@ _DUP_JACCARD = 0.85
 _DUP_SIMILARITY = 0.92
 #: Per-user cap on memories. Keeps the pool bounded and top-k retrieval clean.
 _MEMORY_LIMIT = 500
+#: Redis lock TTL for the per-user ``add`` lock. Must outlive the whole add -
+#: embed, Milvus search/upsert and the DB writes are each bounded by their own
+#: timeout, so the lock is held for a bounded span. No renewal, matching the
+#: session lock in runner.py: a crashed process just holds the key until TTL,
+#: and memory writes are low-frequency so the wait is tolerable.
+_MEM_LOCK_TTL = 60.0
+#: How long to wait for a concurrent ``add`` on the same user before giving up
+#: and writing anyway. Fail-open: an occasional duplicate is cheaper than a
+#: silently lost memory (and the per-user cap still bounds the damage).
+_MEM_LOCK_WAIT = 5.0
+#: Retry interval between lock attempts.
+_MEM_LOCK_RETRY = 0.05
 
 
 class MemoryRepo:
@@ -503,6 +517,7 @@ class MemoryRepo:
         on_embed_usage: "Callable[[int, int], Awaitable[None]] | None" = None,
         on_retrieval: "Callable[[str, float], Awaitable[None]] | None" = None,
         memory_limit: int = _MEMORY_LIMIT,
+        cache: CacheBackend | None = None,
     ):
         self.db = db
         self.memory_limit = memory_limit
@@ -514,6 +529,10 @@ class MemoryRepo:
         # (outcome, duration_s) per search - the app wires this to metrics so
         # a retrieval served by the lexical fallback (index down) makes noise.
         self.on_retrieval = on_retrieval
+        # Distributed per-user add lock (Redis-backed when configured); None
+        # means the dedup check-then-write is NOT serialized across processes
+        # (single-instance callers and unit tests pass nothing).
+        self.cache = cache
 
     async def add(self, user_id: int, text: str) -> bool:
         """Insert a memory. Returns True when inserted, False when it duplicated
@@ -527,10 +546,52 @@ class MemoryRepo:
         Both are deliberate: ``add`` is called automatically (e.g. on context
         compaction), so without them the pool balloons into duplicates + stale
         facts and the top-k retrieval degrades into noise.
+
+        The dedup check-then-write is serialized per user via a distributed
+        lock (Redis-backed when ``cache`` is injected) so two concurrent adds
+        for the same user cannot both pass dedup. The lock is fail-open: if the
+        backend is down or the wait times out, we write anyway - an occasional
+        duplicate beats a silently lost memory.
         """
         text = text.strip()
         if not text:
             return False
+        lock_key = await self._acquire_add_lock(user_id)
+        try:
+            return await self._add_locked(user_id, text)
+        finally:
+            if lock_key is not None:
+                try:
+                    await self.cache.release_lock(lock_key)
+                except Exception:  # noqa: BLE001 - lock release must not hide the write
+                    log.exception("memory add lock release failed (key=%s)", lock_key)
+
+    async def _acquire_add_lock(self, user_id: int) -> str | None:
+        """Per-user add lock (distributed when Redis-backed). Returns the key to
+        release, or None when unlocked (no backend, or fail-open on error/timeout)."""
+        if self.cache is None:
+            return None
+        key = f"mem:add:{user_id}"
+        deadline = time.monotonic() + _MEM_LOCK_WAIT
+        while True:
+            try:
+                if await self.cache.acquire_lock(key, _MEM_LOCK_TTL):
+                    return key
+            except Exception:  # noqa: BLE001 - Redis down must not block memory writes
+                log.exception("memory add lock acquire failed; proceeding unlocked")
+                return None
+            if time.monotonic() >= deadline:
+                log.warning(
+                    "memory add lock wait exceeded %.1fs for user %s; proceeding unlocked",
+                    _MEM_LOCK_WAIT,
+                    user_id,
+                )
+                return None
+            await asyncio.sleep(_MEM_LOCK_RETRY)
+
+    async def _add_locked(self, user_id: int, text: str) -> bool:
+        """Dedup + insert + evict, the check-then-write body of ``add``. Callers
+        must hold the per-user add lock so the check and the write are atomic."""
         # Embed ONCE and reuse the vector for both semantic dedup and the
         # Milvus upsert - never bill the same text twice. ``vec is None`` means
         # the vector path is off or the embed failed; lexical dedup still runs.

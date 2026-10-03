@@ -6,6 +6,7 @@ import asyncio
 
 from conftest import TEST_DB_URL
 
+from pi.server.cache import MemoryBackend
 from pi.server.db import Database, MemoryRepo
 from pi.tools.base import ToolContext
 from pi.tools.memory import RecallTool, RememberTool
@@ -169,6 +170,70 @@ def test_remember_tool_reports_dedup(tmp_path):
         assert "remembered" in r1.content and "already" not in r1.content
         r2 = await remember.execute({"text": "项目代号是 Orion"}, ctx)
         assert "already" in r2.content
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+# ---------------------------------------------------------------------------
+# add 的 per-user 锁：并发 check-then-write 原子性
+# ---------------------------------------------------------------------------
+
+
+def test_memory_add_concurrent_same_user_only_one_wins(tmp_path):
+    """同一用户并发 add 相同事实：per-user 锁保证 check-then-write 原子，只落一条。"""
+    db = Database(TEST_DB_URL)
+
+    async def main():
+        await db.init()
+        repo = MemoryRepo(db, cache=MemoryBackend())
+        results = await asyncio.gather(
+            repo.add(1, "项目代号是 Orion"),
+            repo.add(1, "项目代号是 Orion"),
+            repo.add(1, "项目代号是 Orion"),
+        )
+        assert results.count(True) == 1  # 只有一个真正写入
+        assert results.count(False) == 2  # 其余拿到锁后发现重复
+        assert len(await repo.list_for_user(1)) == 1
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_memory_add_concurrent_distinct_facts_both_kept(tmp_path):
+    """同一用户并发 add 两条不同事实：锁串行化但两条都保留。"""
+    db = Database(TEST_DB_URL)
+
+    async def main():
+        await db.init()
+        repo = MemoryRepo(db, cache=MemoryBackend())
+        results = await asyncio.gather(
+            repo.add(1, "项目 A 的代号是 Orion"),
+            repo.add(1, "项目 B 的代号是 Atlas"),
+        )
+        assert results == [True, True]
+        assert len(await repo.list_for_user(1)) == 2
+        await db.dispose()
+
+    asyncio.run(main())
+
+
+def test_memory_add_lock_failure_proceeds_unlocked(tmp_path):
+    """锁后端抛异常 → fail-open：写入仍成功（偶发重复好过丢记忆）。"""
+    db = Database(TEST_DB_URL)
+
+    class BoomCache:
+        async def acquire_lock(self, key, ttl_seconds):
+            raise RuntimeError("redis down")
+
+        async def release_lock(self, key):
+            pass
+
+    async def main():
+        await db.init()
+        repo = MemoryRepo(db, cache=BoomCache())
+        assert await repo.add(1, "项目代号是 Orion") is True
+        assert len(await repo.list_for_user(1)) == 1
         await db.dispose()
 
     asyncio.run(main())

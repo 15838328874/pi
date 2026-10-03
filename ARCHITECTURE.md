@@ -817,7 +817,7 @@ CLI:`pi-py eval rollout --tasks DIR --model X --n 8 --concurrency 16 --sandbox d
 
 | 方法 | 作用 |
 |---|---|
-| `add(user_id, text)` | 插 `memories` 行（源事实）；写前先**语义去重**（embed 一次 → Milvus 最近邻 cosine ≥ 0.92 判重，词法 Jaccard 兜底）与**每用户上限驱逐**（最旧优先，`_MEMORY_LIMIT=500`）；配置向量后端时复用同一 embedding → Milvus upsert（失败只记日志、不抛——记忆绝不能挂 run） |
+| `add(user_id, text)` | 插 `memories` 行（源事实）；写前先**语义去重**（embed 一次 → Milvus 最近邻 cosine ≥ 0.92 判重，词法 Jaccard 兜底）与**每用户上限驱逐**（最旧优先，`_MEMORY_LIMIT=500`）；整段 check-then-write 用 **per-user 分布式锁**串行化（`cache.acquire_lock`，TTL 60s 无续期、等锁 5s 超时后 **fail-open**——偶发重复好过丢记忆）；配置向量后端时复用同一 embedding → Milvus upsert（失败只记日志、不抛——记忆绝不能挂 run） |
 | `search(user_id, query, k)` | 配置向量后端时先向量检索（按 `user_id` 过滤，`search` 现返回带 COSINE 分数）再按命中序回查 DB；任何失败/空结果**回退词法**（token 重叠打分，即原实现） |
 | `list_for_user(user_id)` | 倒序全量 |
 
@@ -1316,7 +1316,7 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 | `test_client.py` | 3 | SDK：pi.client 用 ASGITransport 打真实 app（不开 socket） |
 | `test_mysql_compat.py` | 3 | `engine_kwargs` 的方言分支 + 布尔默认值在 MySQL/PG/SQLite 三方言下的 DDL 兼容 |
 | `test_smoke.py` | 2 | 端到端：fake 模型驱动完整 agent 循环（write→read→edit→grep 四次工具调用）+ `on_message` 回调 |
-| `test_memory.py` | 9 | 语义记忆（P3）：跨会话长期记忆 + add 守卫（词法去重、上限驱逐、空文本、跨用户隔离、工具去重提示） |
+| `test_memory.py` | 12 | 语义记忆（P3）：跨会话长期记忆 + add 守卫（词法去重、上限驱逐、空文本、跨用户隔离、工具去重提示、per-user 锁并发串行化、锁失败 fail-open） |
 | `test_episodic.py` | 2 | episodic 记忆（P3）：压缩摘要落库复用 |
 | `test_compaction.py` | 1 | 压缩：摘要替换旧历史、保留尾部 |
 

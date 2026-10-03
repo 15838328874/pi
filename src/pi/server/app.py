@@ -109,10 +109,13 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     validate_sandbox_mode(settings.sandbox)
 
     db = Database(settings.database_url)
+    # Cache backend (Redis or in-memory) is built before MemoryRepo so the
+    # per-user add lock can be injected; it is also shared by limiter + runner.
+    cache = get_backend(settings.redis_url, namespace=settings.redis_ns)
     users = UserRepo(db)
     sessions = SessionRepo(db)
     messages = MessageRepo(db)
-    memories = MemoryRepo(db)
+    memories = MemoryRepo(db, cache=cache)
     runs_repo = RunRepo(db)
     files_repo = FileRepo(db)
     store = ObjectStore(settings)
@@ -158,6 +161,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             embedder=embedder,
             on_embed_usage=on_embed_usage,
             on_retrieval=report_retrieval,
+            cache=cache,
         )
         # mask_url: a serverless Milvus URI can embed a token in its hostname
         # section - the startup log lands in journald and must not carry it.
@@ -166,7 +170,6 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             mask_url(settings.milvus_uri),
             settings.embedding_model,
         )
-    cache = get_backend(settings.redis_url, namespace=settings.redis_ns)
     # Tool sources: builtin always; MCP / skills when configured. Warmup happens
     # in lifespan (create_app is sync, and MCP connects spawn child processes).
     providers: list[ToolProvider] = [BuiltinToolProvider()]

@@ -1,5 +1,7 @@
 # pi-py
 
+**English** | [中文](README.zh-CN.md)
+
 [![ci](https://github.com/15838328874/pi/actions/workflows/ci.yml/badge.svg)](https://github.com/15838328874/pi/actions) · [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 > **实测战绩**：真实模型企业测评 **5/5** ✅ · 安全回归 **40/40** ✅ · SandboxFS 组合 **11/11** ✅ · Python 3.12 · CubeSandbox 会话级沙箱
@@ -265,7 +267,7 @@ viewer at `GET /ui/trajectory.html?session=<id>`, and the admin console at
 | MySQL | `PI_DATABASE_URL=mysql+aiomysql://user:pass@host:3306/pi_py` (install `pi-py[mysql]`) — the engine adds `charset=utf8mb4` + connection recycling automatically |
 | PostgreSQL | `PI_DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/pi` (install `pi-py[postgres]`) — same schema and Alembic path |
 | Tool sandbox | `PI_SANDBOX=docker` runs bash commands in containers (warm pool, `--network none`, cgroup limits). `PI_SANDBOX=cubesandbox` runs in **CubeSandbox microVMs** via the E2B-compatible SDK (`PI_CUBE_API_KEY`, host KVM/nested virtualization required) — session workspace lives inside the VM, commands wrapped in GNU `timeout` (124 → `timed_out`, zero residue), non-zero exit codes pass through, >10MB workspace load rejected with an actionable error. VM lifecycle: lazy creation (chat turns run with zero VMs), a reuse pool per session (`pool_hits`), LRU + idle-TTL + host-memory-pressure adaptive eviction (`PI_SANDBOX_POOL_*`). Any other value **fails at startup** — it used to fall through to running commands inside the app process, where they inherit `PI_JWT_SECRET` and `PI_DATABASE_URL`. Design/runbook: `docs/cube-sandbox-design-notes.md` / `docs/production-deployment.md` |
-| Warm container pool | docker mode defaults to a per-workspace warm pool: containers are preheated at turn start (concurrent with the first LLM response), commands run via `docker exec` (no per-call container lifecycle), idle entries are recycled (`PI_SANDBOX_IDLE_TTL`, default 600s), LRU-evicted at capacity (`PI_SANDBOX_POOL_MAX`, default 16) with soft overshoot when all are busy, and vanished containers are rebuilt transparently. `PI_SANDBOX_POOL=0` restores the legacy fresh-container-per-call behaviour. Warm containers self-terminate after `PI_SANDBOX_WARM_LIFETIME` (default 2h) so a crashed app cannot orphan them forever |
+| Warm container pool | docker mode defaults to a per-workspace container pool with **lazy creation** (the first bash call of a turn creates/reuses the container; chat-only turns never create one), commands run via `docker exec` (no per-call container lifecycle), idle entries are recycled (`PI_SANDBOX_IDLE_TTL`, default 600s), LRU-evicted at capacity (`PI_SANDBOX_POOL_MAX`, default 16) with soft overshoot when all are busy, and vanished containers are rebuilt transparently. `PI_SANDBOX_POOL=0` restores the legacy fresh-container-per-call behaviour. Warm containers self-terminate after `PI_SANDBOX_WARM_LIFETIME` (default 2h) so a crashed app cannot orphan them forever |
 | Container resource limits | `PI_SANDBOX_MEMORY` (1g) / `PI_SANDBOX_PIDS` (256) / `PI_SANDBOX_CPUS` (1.0). Docker's own defaults are **no limit at all** (`Memory=0`, `NanoCpus=0`, no `PidsLimit`), and registration is open, so uncapped containers let any account exhaust the host with one command — `--network none` does not cover resource exhaustion. Applied at **all four** container-creation paths (cold CLI, cold Engine API, warm CLI, warm API); `--memory-swap` is set equal to `--memory` because docker otherwise allows 2x via swap. Keep `PI_SANDBOX_MEMORY × PI_MAX_CONCURRENT_RUNS` well under physical RAM (shipped: 1g × 8 = 8 GiB of 16 GiB). `PI_SANDBOX_USER` defaults to the **app's own uid:gid** so files written through the bind mount stay readable and deletable by it — `0:0` bare metal, `10001:10001` under compose, no config change needed |
 | Fail-loud config validation | Two settings whose wrong value silently removed isolation now refuse to start or self-correct: an unrecognised `PI_SANDBOX` raises in `create_app` (and the legitimate local path logs a warning spelling out the consequence), and `server_policy()` forces `path_sandbox`/`redact` on so a `PI_POLICY` file can add rules but never subtract them |
 | Container image | multi-stage `Dockerfile` (non-root uid 10001, HEALTHCHECK `/healthz`, migrations baked into `/opt/pi-py`); `docker-compose.local.yml` (MySQL+Redis+Milvus 基础设施) 与 `docker-compose.cloud.yml`（生产 app+caddy，DB 云端托管） |
@@ -318,13 +320,13 @@ src/pi/
   prompt.py                 system prompt
   llm/                      base, registry, openai, anthropic, fake, fallback, think_filter
   agent/                    loop.py + events.py + compaction.py
-  tools/                    base + bash/read/write/edit/grep/find/ls/web + sandbox
+  tools/                    base + bash/read/write/edit/grep/find/ls + files/memory/mcp/skill/subagent/rag + registry + sandbox
   security/                 policy.py + audit.py + redact.py
   observability/            tracing.py + metering.py + prices.py
   server/                   config, db, auth, cache, ratelimit, runner, app (FastAPI)
   cli.py                    argparse entrypoints: serve / migrate
 migrations/                 Alembic versions (0001 schema, 0002 user_active)
-tests/                      pytest suite: 132 tests, no network/DB/model needed
+tests/                      pytest suite: 529 tests against the real MySQL + Redis stack (LLM/embedding/Milvus use fakes)
 tools/loadtest.py           SSE load test
 tools/seed_testdb.py        seed a reusable *_test database (idempotent, refuses production)
 tools/sandbox_bench.py      docker warm-pool capacity sweep (concurrent users -> exec latency)
@@ -338,11 +340,13 @@ pip install -e ".[dev]"
 python -m pytest -q          # 521 passed, 8 skipped
 ```
 
-The suite needs no database, Redis, Docker, or API key: `tests/conftest.py` pins
-`PI_REDIS_URL` / `PI_SANDBOX` / `PI_POLICY` empty and `PI_TRACER=noop` before `pi` is
-imported, so a production `.env` in the repo root cannot leak into a test run. Tests use
-`FakeProvider` plus throwaway SQLite files, and async tests are wrapped in `asyncio.run()`
-(no pytest-asyncio dependency).
+The suite runs against the real local stack (MySQL `pi_py_test` + Redis db1, same as
+production since 2026-09-27 - see `deploy/docker-compose.local.yml` or the CI services).
+`tests/conftest.py` pins `PI_SANDBOX` / `PI_POLICY` empty and `PI_TRACER=noop` before `pi`
+is imported, so a production `.env` in the repo root cannot leak into a test run. LLM /
+embedding / Milvus use fakes (FakeProvider et al.), a handful of tests use throwaway
+SQLite files directly, and async tests are wrapped in `asyncio.run()` (no pytest-asyncio
+dependency).
 
 ### Shared test database
 
@@ -381,7 +385,9 @@ pids / cpu ceilings, running as the app's own uid). The one known gap that remai
 forwarded to the container and `--rm` fires on container *exit*, so the container keeps running
 until its own command finishes. (Established by reading the code, not reproduced live; the default
 warm pool calls `docker rm -f` and the Engine API path POSTs `/kill`, so both do tear it down.)
-For hostile multi-tenant workloads, run tool execution inside microVMs. Never commit `.env`
+For hostile multi-tenant workloads, run tool execution inside microVMs - the cloud compose
+now **defaults** to `PI_SANDBOX=cubesandbox` (half-configured = fail-closed, never a silent
+fallback; see `deploy/cloud-deploy.md` §4). Never commit `.env`
 (git-ignored); rotate `PI_JWT_SECRET` in production.
 
 ## License

@@ -540,12 +540,20 @@ class MemoryRepo:
                 result = await self.embedder.embed([text])
                 await self._meter_embed(user_id, result.usage_tokens)
                 (vec,) = result.vectors
+            except Exception:  # noqa: BLE001 - dedup must never fail a write
+                log.exception("semantic dedup embed failed; falling back to lexical")
+                vec = None
+        if vec is not None:
+            # Semantic dedup: nearest neighbour cosine ≥ threshold means the
+            # meaning is already stored. A search failure here only SKIPS dedup
+            # (lexical still runs) - keep ``vec`` so ``_vector_add`` does not
+            # re-embed and double-bill a text that was already metered above.
+            try:
                 hits = await self.vector_store.search(user_id, vec, k=1)
                 if hits and hits[0][1] >= _DUP_SIMILARITY:
                     return False  # semantic duplicate: same meaning, other wording
             except Exception:  # noqa: BLE001 - dedup must never fail a write
-                log.exception("semantic dedup failed; falling back to lexical")
-                vec = None
+                log.exception("semantic dedup search failed; skipping dedup (lexical still runs)")
         # Lexical Jaccard runs AFTER semantic dedup for two reasons: it is the
         # only dedup when the vector path is off/failed, and it is a safety net
         # on top of a passing semantic check (catches near-verbatim repeats even

@@ -371,3 +371,25 @@ class TestEmbedUsageMetering:
             await db.dispose()
 
         asyncio.run(main())
+
+    def test_search_failure_reuses_embedding_no_double_bill(self, tmp_path):
+        """embed 成功 + 语义判重的 search 挂了 → vec 复用，只计一次费。"""
+        usage: list[tuple[int, int]] = []
+        store = FakeVectorStore(scripted=RuntimeError("milvus down"))
+        embedder = FakeEmbedder(usage_tokens=5)
+        db = Database(TEST_DB_URL)
+
+        async def on_usage(user_id: int, tokens: int) -> None:
+            usage.append((user_id, tokens))
+
+        repo = MemoryRepo(db, vector_store=store, embedder=embedder, on_embed_usage=on_usage)
+
+        async def main():
+            await db.init()
+            assert await repo.add(3, "note") is True  # dedup search 挂了，词法兜底仍写入
+            # add 里 embed 一次；_vector_add 复用 vec，不再 embed → 只计一次
+            assert usage == [(3, 5)]
+            assert len(embedder.calls) == 1
+            await db.dispose()
+
+        asyncio.run(main())

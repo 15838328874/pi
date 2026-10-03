@@ -525,7 +525,7 @@ class MemoryRepo:
         on_retrieval: "Callable[[str, float], Awaitable[None]] | None" = None,
         memory_limit: int = _MEMORY_LIMIT,
         cache: CacheBackend | None = None,
-        reranker: "Callable[[str, list[str]], Awaitable[list[float]]] | None" = None,
+        reranker: "Callable[[int, str, list[str]], Awaitable[list[float]]] | None" = None,
         judge: "Callable[[int, str, str], Awaitable[str]] | None" = None,
     ):
         self.db = db
@@ -692,7 +692,7 @@ class MemoryRepo:
         if self.reranker is not None:
             try:
                 if candidates:
-                    scores = await self.reranker(text, [r.text for r in candidates])
+                    scores = await self.reranker(user_id, text, [r.text for r in candidates])
                     if len(scores) == len(candidates) and scores:
                         best_i = max(range(len(scores)), key=lambda i: scores[i])
                         if scores[best_i] >= _RERANK_DUP:
@@ -728,12 +728,14 @@ class MemoryRepo:
 
     async def _judge(self, user_id: int, new_text: str, existing_text: str) -> str:
         """Classify (new_text, existing_text) via the injected judge. A judge
-        failure is conservative: high relevance + broken judge → duplicate."""
+        failure is fail-OPEN: treat as "new" (write it). A dropped write is worse
+        than an occasional duplicate - the per-user cap still bounds the damage,
+        and the judge only runs when rerank was already high-confidence."""
         try:
             return await self.judge(user_id, new_text, existing_text)  # type: ignore[misc]
         except Exception:  # noqa: BLE001 - a broken judge must not fail a write
-            log.exception("memory judge failed; treating as duplicate")
-            return "duplicate"
+            log.exception("memory judge failed; treating as new (fail-open)")
+            return "new"
 
     async def _overwrite(
         self, memory_id: int, user_id: int, text: str, vec: list[float] | None

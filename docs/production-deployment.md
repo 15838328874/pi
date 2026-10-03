@@ -339,7 +339,9 @@ OpenAI 官方、DeepSeek、vLLM、Ollama、TEI 等提供。此前还支持 DashS
 
 > ⚠️ 换 embedding 模型后**必须重建向量**：RAG 侧 `pi-py rag rebuild-index --user <id>`
 > （SQL 是真相源、Milvus 是可重建投影）；记忆向量侧目前**还没有重建命令**，见 `ROADMAP.md` §3。
-pi-py 记忆层只用 **embedding**；RAG（§21 / feat-rag）**有 rerank**，配 `PI_RAG_RERANK_*`。
+pi-py 记忆层用 **embedding + 复用 RAG 的 rerank**（`PI_RAG_RERANK_*`，配了才启用精判去重）+
+**LLM judge**（`PI_MODEL` 的 default_model，判 duplicate/conflict/new 并计量 `judge/<model>`）；
+两者都缺时降级为 cosine 0.92 + 词法 Jaccard，详见 `docs/memory-design-notes.md`。
 
 **部署（docker-compose，端口必须避开平台已有服务）：**
 

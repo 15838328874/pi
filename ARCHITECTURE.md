@@ -817,7 +817,7 @@ CLI:`pi-py eval rollout --tasks DIR --model X --n 8 --concurrency 16 --sandbox d
 
 | 方法 | 作用 |
 |---|---|
-| `add(user_id, text)` | 插 `memories` 行（源事实）；写前先**语义去重**（embed 一次 → Milvus 最近邻 cosine ≥ 0.92 判重，词法 Jaccard 兜底）与**每用户上限驱逐**（最旧优先，`_MEMORY_LIMIT=500`）；整段 check-then-write 用 **per-user 分布式锁**串行化（`cache.acquire_lock_owned`，fencing token + compare-and-delete 释放，TTL 60s 无续期、等锁 5s 超时后 **fail-open**——偶发重复好过丢记忆）；配置向量后端时复用同一 embedding → Milvus upsert（失败只记日志、不抛——记忆绝不能挂 run） |
+| `add(user_id, text)` | 插 `memories` 行（源事实）；写前先**精判去重/冲突**（embed 一次 → 召回 top-k 候选 → reranker 精判 ≥0.65 → LLM judge 三分类 duplicate/conflict/new：duplicate 不写、conflict 原地覆盖、new 写新；无 reranker 时降级 cosine ≥0.92 + 词法 Jaccard）与**每用户上限驱逐**（最旧优先，`_MEMORY_LIMIT=500`）；整段 check-then-write 用 **per-user 分布式锁**串行化（`cache.acquire_lock_owned`，fencing token + compare-and-delete 释放，TTL 60s 无续期、等锁 5s 超时后 **fail-open**——偶发重复好过丢记忆）；配置向量后端时复用同一 embedding → Milvus upsert（失败只记日志、不抛——记忆绝不能挂 run） |
 | `search(user_id, query, k)` | 配置向量后端时先向量检索（按 `user_id` 过滤，`search` 现返回带 COSINE 分数）再按命中序回查 DB；任何失败/空结果**回退词法**（token 重叠打分，即原实现） |
 | `list_for_user(user_id)` | 倒序全量 |
 
@@ -1297,7 +1297,7 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 | `test_trajectory_view.py` | 16 | 轨迹持久化 + 查看端点：会话级/run 级查询、DB 优先 jsonl 兜底、属主校验（跨用户 404 不泄漏存在性） |
 | `test_rollout.py` | 15 | RL 数据飞轮：rollout、reward 抽取、过滤、导出 JSONL |
 | `test_rag_embedder.py` | 15 | RAG embedding 适配：fake/http、批量、用量上报钩子 |
-| `test_memory_vector.py` | 18 | 向量语义记忆：Milvus/embedding 路径 + 失败/未配置时优雅词法兜底 + 语义去重（措辞不同判重、相似度不足不判重、store 挂时降级词法） |
+| `test_memory_vector.py` | 20 | 向量语义记忆：Milvus/embedding 路径 + 失败/未配置时优雅词法兜底 + 语义去重（措辞不同判重、相似度不足不判重、store 挂时降级词法、驱逐孤儿向量不挡路）+ embed 计量 |
 | `test_observability.py` | 14 | 计量、配额、价格、tracer、降级链 |
 | `test_metrics.py` | 14 | 指标：span 钩子、run/工具事件投影、gauge、gate、标签纪律（缺 metrics 类时 skip） |
 | `test_deployment.py` | 12 | 缓存后端、本地沙箱执行器、迁移可达性；其中 1 例（真 Redis 限流）在 localhost:6379 无服务时 **skip** |
@@ -1317,6 +1317,8 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 | `test_mysql_compat.py` | 3 | `engine_kwargs` 的方言分支 + 布尔默认值在 MySQL/PG/SQLite 三方言下的 DDL 兼容 |
 | `test_smoke.py` | 2 | 端到端：fake 模型驱动完整 agent 循环（write→read→edit→grep 四次工具调用）+ `on_message` 回调 |
 | `test_memory.py` | 12 | 语义记忆（P3）：跨会话长期记忆 + add 守卫（词法去重、上限驱逐、空文本、跨用户隔离、工具去重提示、per-user 锁并发串行化、锁失败 fail-open） |
+| `test_memory_precision.py` | 8 | 记忆精判：reranker 高分判重/低分写新、judge 三分类（duplicate/conflict/new）、conflict 原地覆盖、reranker/judge 失败降级、judge 失败 fail-open |
+| `test_memory_edge.py` | 7 | 记忆边界：中文单字 token、纯符号文本拒绝、k=0/负数、空 query、英文大小写不敏感 |
 | `test_episodic.py` | 2 | episodic 记忆（P3）：压缩摘要落库复用 |
 | `test_compaction.py` | 1 | 压缩：摘要替换旧历史、保留尾部 |
 

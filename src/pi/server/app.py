@@ -129,7 +129,7 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             os.environ.get("PI_RAG_RERANK_MODEL", ""),
         )
 
-        async def rerank(query: str, docs: list[str]) -> list[float]:
+        async def rerank(user_id: int, query: str, docs: list[str]) -> list[float]:
             # Adapter: HttpReranker works on RetrievedChunk and returns sorted;
             # MemoryRepo wants scores aligned to its own candidate order.
             chunks = [
@@ -137,8 +137,26 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
                 for i, d in enumerate(docs)
             ]
             scored = await http_reranker.rerank(query, chunks)
+            # Meter the rerank spend like embedding/judge spend (best-effort).
+            usage = getattr(http_reranker, "last_usage", None)
+            if usage is not None and getattr(usage, "usage_tokens", 0):
+                try:
+                    row = await users.by_id(user_id)
+                    if row is not None:
+                        await usage_tracker.record(
+                            user_id=user_id,
+                            username=row.username,
+                            session_id="",
+                            model=f"rerank/{http_reranker.model}",
+                            input_tokens=usage.usage_tokens,
+                            output_tokens=0,
+                            turns=0,
+                        )
+                except Exception:  # noqa: BLE001 - accounting must not fail a write
+                    log.exception("memory rerank usage metering failed")
             by_id = {c.chunk_id: c.score for c in scored}
-            return [by_id[i] for i in range(len(docs))]
+            # .get: a partial rerank result must not KeyError the write path.
+            return [by_id.get(i, 0.0) for i in range(len(docs))]
 
         reranker = rerank
 

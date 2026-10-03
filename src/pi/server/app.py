@@ -113,122 +113,114 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     # Cache backend (Redis or in-memory) is built before MemoryRepo so the
     # per-user add lock can be injected; it is also shared by limiter + runner.
     cache = get_backend(settings.redis_url, namespace=settings.redis_ns)
-    # Memory precision stage: a reranker (reuse RAG's rerank endpoint) scores the
-    # recalled candidates; an LLM judge then classifies duplicate/conflict/new.
-    # Both optional - absent, add falls back to cosine + lexical dedup only.
-    reranker = None
+    # Memory precision stage: an LLM judge classifies (new_text, candidates) into
+    # duplicate/conflict/new and picks the target itself (mem0-style: it sees the
+    # WHOLE candidate list, not a pre-picked top-1). Absent → cosine + lexical only.
     judge = None
-    rerank_url = os.environ.get("PI_RAG_RERANK_URL", "")
-    if rerank_url:
-        from pi.rag.defaults.http_reranker import HttpReranker
-        from pi.rag.types import RetrievedChunk
+    from pi.llm import resolve
+    from pi.llm.base import StreamEnd, TextDelta
+    from pi.models import Message, Role, TextBlock
 
-        http_reranker = HttpReranker(
-            rerank_url,
-            os.environ.get("PI_RAG_RERANK_API_KEY", ""),
-            os.environ.get("PI_RAG_RERANK_MODEL", ""),
-        )
+    # The judge runs on every add that has candidates, so it defaults to a
+    # cheap+fast model (flash) rather than the chat model - judging 3 short
+    # texts does not need a frontier model. Override with PI_MEMORY_JUDGE_MODEL;
+    # fall back to the default chat model, then to no judge at all (resolve can
+    # fail for missing creds in tests → cosine + lexical only, never a crash).
+    judge_model = os.environ.get("PI_MEMORY_JUDGE_MODEL", "").strip() or "openai/deepseek-v4-flash"
+    judge_provider = None
+    judge_name = ""
+    for candidate_model in (judge_model, settings.default_model):
+        if not candidate_model:
+            continue
+        try:
+            judge_provider = resolve(candidate_model)
+            judge_name = candidate_model
+            break
+        except Exception:  # noqa: BLE001 - try the next candidate
+            log.warning("memory judge: cannot resolve %r; trying next", candidate_model)
+    if judge_provider is None:
+        log.warning("memory judge unavailable; falling back to cosine+lexical dedup")
 
-        async def rerank(user_id: int, query: str, docs: list[str]) -> list[float]:
-            # Adapter: HttpReranker works on RetrievedChunk and returns sorted;
-            # MemoryRepo wants scores aligned to its own candidate order.
-            chunks = [
-                RetrievedChunk(chunk_id=i, doc_key="", text=d, score=0.0)
-                for i, d in enumerate(docs)
-            ]
-            scored = await http_reranker.rerank(query, chunks)
-            # Meter the rerank spend like embedding/judge spend (best-effort).
-            usage = getattr(http_reranker, "last_usage", None)
-            if usage is not None and getattr(usage, "usage_tokens", 0):
-                try:
-                    row = await users.by_id(user_id)
-                    if row is not None:
-                        await usage_tracker.record(
-                            user_id=user_id,
-                            username=row.username,
-                            session_id="",
-                            model=f"rerank/{http_reranker.model}",
-                            input_tokens=usage.usage_tokens,
-                            output_tokens=0,
-                            turns=0,
-                        )
-                except Exception:  # noqa: BLE001 - accounting must not fail a write
-                    log.exception("memory rerank usage metering failed")
-            by_id = {c.chunk_id: c.score for c in scored}
-            # .get: a partial rerank result must not KeyError the write path.
-            return [by_id.get(i, 0.0) for i in range(len(docs))]
+    async def judge(user_id: int, new_text: str, candidates: list[str]) -> tuple[str, int | None]:
+        # mem0 式：候选列表（编号）全给 judge，让它自己挑 target，而不是预选 top-1
+        # （embedding 召回 top-1 可能选错，如「改成Go」召回「用户1的主语言是Go」）。
+        cand_lines = "\n".join(f"{i}. {t}" for i, t in enumerate(candidates))
+        prompt = (
+            "候选记忆（编号 0 起）：\n{cands}\n\n"
+            "新记忆：{new}\n\n"
+            "判断新记忆与候选记忆的关系，只输出一个 JSON 对象：\n"
+            '{{"verdict": "duplicate"|"conflict"|"new", "target": 编号或 null}}\n\n'
+            "判定准则：\n"
+            "- duplicate：新记忆与某条候选同义（措辞不同、含义相同）→ target 填该候选编号\n"
+            "- conflict：新记忆与某条候选是同一主体、同一属性/偏好、但值不同 → target 填该候选编号（覆盖它）。"
+            "关键：无论措辞是「是X」「改成X」「改为X」「换成X」，同一属性换值即 conflict。\n"
+            "- new：新记忆与所有候选都不同 → target 填 null\n\n"
+            "示例：\n"
+            '候选：["用户0的主语言是Rust", "用户1的主语言是Go"]\n'
+            "新记忆：用户0的主语言改成Go\n"
+            '输出：{{"verdict": "conflict", "target": 0}}\n'
+        ).format(cands=cand_lines, new=new_text)
+        parts: list[str] = []
+        usage = None
+        async for ev in judge_provider.stream(
+            "你是记忆去重与冲突判断器，判断新记忆与候选记忆列表的关系，只输出 JSON。",
+            [Message(role=Role.user, blocks=[TextBlock(text=prompt)])],
+            [],
+        ):
+            if isinstance(ev, TextDelta):
+                parts.append(ev.text)
+            elif isinstance(ev, StreamEnd):
+                usage = ev.usage
+        # Meter the judge's LLM spend like embedding spend (best-effort).
+        if usage is not None:
+            try:
+                row = await users.by_id(user_id)
+                if row is not None:
+                    await usage_tracker.record(
+                        user_id=user_id,
+                        username=row.username,
+                        session_id="",
+                        model=f"judge/{judge_name}",
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        turns=0,
+                    )
+            except Exception:  # noqa: BLE001 - accounting must not fail a write
+                log.exception("memory judge usage metering failed")
+        answer = "".join(parts).strip()
+        verdict = ""
+        target = None
+        m = re.search(r"\{[^{}]*\}", answer, re.DOTALL)
+        if m:
+            try:
+                obj = json.loads(m.group(0))
+                verdict = str(obj.get("verdict", "")).strip().lower()
+                raw = obj.get("target")
+                if raw is not None:
+                    try:
+                        target = int(raw)
+                    except (TypeError, ValueError):
+                        target = None
+            except ValueError:
+                pass
+        if verdict not in ("duplicate", "conflict", "new"):
+            # Malformed JSON → substring fallback (keep the old refusal guard).
+            low = answer.lower()
+            if "conflict" in low:
+                verdict = "conflict"
+            elif "duplicate" in low and "not duplicate" not in low and "not a duplicate" not in low:
+                verdict = "duplicate"
+            else:
+                verdict = "new"
+            target = None
+        return verdict, target
 
-        reranker = rerank
-
-        from pi.llm import resolve
-        from pi.llm.base import StreamEnd, TextDelta
-        from pi.models import Message, Role, TextBlock
-
-        # Judge uses the default chat model; a dedicated cheaper model can be
-        # pinned later via a separate env var without touching MemoryRepo.
-        judge_provider = resolve(settings.default_model)
-
-        async def judge(user_id: int, new_text: str, existing_text: str) -> str:
-            # Few-shot 结构借鉴 mem0 的 DEFAULT_UPDATE_MEMORY_PROMPT：每个动作配
-            # 具体「已有 vs 新」示例，而不是只给抽象定义。实测（规模集成测试）零示例
-            # 的 prompt 把「主语言改成Go」这类动作动词冲突 19/20 判成 new，few-shot
-            # 明确钉死「同一主体同一属性换值即 conflict，无论措辞是'改成'还是'是'」。
-            prompt = (
-                "判定准则：\n"
-                "- duplicate：两者表达同一个意思（措辞不同、含义相同）→ 不新增。\n"
-                "- conflict：两者针对同一主体、同一属性/偏好，但值不同（新值应覆盖旧值）→ 覆盖。"
-                "关键：无论新记忆措辞是「是X」「改成X」「改为X」「换成X」「现在是X」，"
-                "只要它是同一属性的一个新值，就判 conflict。\n"
-                "- new：不同主体、或不同属性的事实 → 都保留。\n\n"
-                "示例：\n"
-                "1. 已有「用户0的主语言是Rust」→ 新「用户0的主语言改成Go」 = conflict\n"
-                "2. 已有「用户0的主语言是Rust」→ 新「用户0主用语言为Rust」 = duplicate\n"
-                "3. 已有「用户0的主语言是Rust」→ 新「用户1的主语言是Go」 = new\n"
-                "4. 已有「项目A用MySQL」→ 新「项目B用MySQL」 = new\n"
-                "5. 已有「用户偏好中文回答」→ 新「用户偏好英文回答」 = conflict\n\n"
-                "新记忆：{new}\n已有记忆：{old}\n只输出一个词："
-            ).format(new=new_text, old=existing_text)
-            parts: list[str] = []
-            usage = None
-            async for ev in judge_provider.stream(
-                "你是记忆去重与冲突判断器，判断两条记忆的关系，只输出一个词：duplicate / conflict / new。",
-                [Message(role=Role.user, blocks=[TextBlock(text=prompt)])],
-                [],
-            ):
-                if isinstance(ev, TextDelta):
-                    parts.append(ev.text)
-                elif isinstance(ev, StreamEnd):
-                    usage = ev.usage
-            # Meter the judge's LLM spend like embedding spend (best-effort).
-            if usage is not None:
-                try:
-                    row = await users.by_id(user_id)
-                    if row is not None:
-                        await usage_tracker.record(
-                            user_id=user_id,
-                            username=row.username,
-                            session_id="",
-                            model=f"judge/{settings.default_model}",
-                            input_tokens=usage.input_tokens,
-                            output_tokens=usage.output_tokens,
-                            turns=0,
-                        )
-                except Exception:  # noqa: BLE001 - accounting must not fail a write
-                    log.exception("memory judge usage metering failed")
-            answer = "".join(parts).strip().lower()
-            if "conflict" in answer:
-                return "conflict"
-            # Guard the common refusal shape "not a duplicate" so a loquacious
-            # model cannot turn a new fact into a dropped write.
-            if "duplicate" in answer and "not duplicate" not in answer and "not a duplicate" not in answer:
-                return "duplicate"
-            return "new"
-
+    if judge_provider is not None:
         judge = judge
     users = UserRepo(db)
     sessions = SessionRepo(db)
     messages = MessageRepo(db)
-    memories = MemoryRepo(db, cache=cache, reranker=reranker, judge=judge)
+    memories = MemoryRepo(db, cache=cache, judge=judge)
     runs_repo = RunRepo(db)
     files_repo = FileRepo(db)
     store = ObjectStore(settings)
@@ -275,7 +267,6 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             on_embed_usage=on_embed_usage,
             on_retrieval=report_retrieval,
             cache=cache,
-            reranker=reranker,
             judge=judge,
         )
         # mask_url: a serverless Milvus URI can embed a token in its hostname

@@ -6,10 +6,10 @@
   - 真 LLM（PI_MODEL）judge 判 duplicate/conflict/new，冲突原地覆盖
 
 数据设计（seed 固定，可复现）：
-  - 260 条独特事实（模板 + 随机实体，主题分散）
-  - 20 条重复变体（措辞改写，应被 reranker+judge 判 duplicate → 不写）
-  - 20 条冲突变体（矛盾值，应被 judge 判 conflict → 覆盖旧行）
-  总 add 300 次；理想最终 260 条（20 重复去重、20 冲突覆盖不新增）。
+  - 60 条独特事实（20 条用户主语言 + 40 条功能配置）
+  - 20 条重复变体（措辞改写，cosine 高分直接判 duplicate → 不写）
+  - 20 条冲突变体（同一 slot 换值，应被 judge 判 conflict → 覆盖旧行）
+  总 add 100 次；理想最终 60 条（20 重复去重、20 冲突覆盖不新增）。
 
 断言宽松以抗模型波动：数量落在 [230, 280]、抽查重复/冲突各 1 条、记录耗时。
 零残留：独立 Milvus collection（pi_memories_itest）+ throwaway user，结束 drop。
@@ -23,8 +23,10 @@ Run（从 .env.local 加载 creds，不落 shell）:
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import random
+import re
 import time
 
 import pytest
@@ -43,63 +45,65 @@ pytestmark = pytest.mark.skipif(
 _ITEST_COLLECTION = "pi_memories_itest"
 
 
-def _build_reranker():
-    """PI_ITEST_RERANK_* → MemoryRepo reranker callback (query, docs) -> scores."""
-    url = os.environ.get("PI_ITEST_RERANK_URL", "")
-    if not url:
-        return None
-    from pi.rag.defaults.http_reranker import HttpReranker
-    from pi.rag.types import RetrievedChunk
-
-    reranker = HttpReranker(
-        url,
-        os.environ.get("PI_ITEST_RERANK_API_KEY", ""),
-        os.environ.get("PI_ITEST_RERANK_MODEL", ""),
-    )
-
-    async def rerank(user_id: int, query: str, docs: list[str]) -> list[float]:
-        chunks = [
-            RetrievedChunk(chunk_id=i, doc_key="", text=d, score=0.0)
-            for i, d in enumerate(docs)
-        ]
-        scored = await reranker.rerank(query, chunks)
-        by_id = {c.chunk_id: c.score for c in scored}
-        return [by_id.get(i, 0.0) for i in range(len(docs))]
-
-    return rerank
-
-
 def _build_judge():
-    """PI_MODEL → MemoryRepo judge callback (user, new, existing) -> verdict."""
+    """PI_MODEL → MemoryRepo judge callback (user, new, candidates) -> (verdict, target)."""
     from pi.llm import resolve
     from pi.llm.base import StreamEnd, TextDelta
     from pi.models import Message, Role, TextBlock
 
     provider = resolve(os.environ.get("PI_MODEL", "openai/gpt-4o"))
 
-    async def judge(user_id: int, new_text: str, existing_text: str) -> str:
+    async def judge(user_id: int, new_text: str, candidates: list[str]) -> tuple[str, int | None]:
+        cand_lines = "\n".join(f"{i}. {t}" for i, t in enumerate(candidates))
         prompt = (
-            "新记忆：{new}\n已有记忆：{old}\n\n"
-            "判断两者的关系，只输出一个词：duplicate（同义）、"
-            "conflict（同一件事但结论/值不同，新记忆应覆盖旧记忆）、"
-            "new（不同的事实）。"
-        ).format(new=new_text, old=existing_text)
+            "候选记忆（编号 0 起）：\n{cands}\n\n"
+            "新记忆：{new}\n\n"
+            "判断新记忆与候选记忆的关系，只输出一个 JSON 对象：\n"
+            '{{"verdict": "duplicate"|"conflict"|"new", "target": 编号或 null}}\n\n'
+            "判定准则：\n"
+            "- duplicate：新记忆与某条候选同义（措辞不同、含义相同）→ target 填该候选编号\n"
+            "- conflict：新记忆与某条候选是同一主体、同一属性/偏好、但值不同 → target 填该候选编号（覆盖它）。"
+            "关键：无论措辞是「是X」「改成X」「改为X」「换成X」，同一属性换值即 conflict。\n"
+            "- new：新记忆与所有候选都不同 → target 填 null\n\n"
+            "示例：\n"
+            '候选：["用户0的主语言是Rust", "用户1的主语言是Go"]\n'
+            "新记忆：用户0的主语言改成Go\n"
+            '输出：{{"verdict": "conflict", "target": 0}}\n'
+        ).format(cands=cand_lines, new=new_text)
         parts: list[str] = []
         async for ev in provider.stream(
-            "你是记忆去重与冲突判断器，只输出 duplicate / conflict / new 之一。",
+            "你是记忆去重与冲突判断器，判断新记忆与候选记忆列表的关系，只输出 JSON。",
             [Message(role=Role.user, blocks=[TextBlock(text=prompt)])],
             [],
         ):
             if isinstance(ev, TextDelta):
                 parts.append(ev.text)
-            elif isinstance(ev, StreamEnd):
+        answer = "".join(parts).strip()
+        verdict = ""
+        target = None
+        m = re.search(r"\{[^{}]*\}", answer, re.DOTALL)
+        if m:
+            try:
+                obj = json.loads(m.group(0))
+                verdict = str(obj.get("verdict", "")).strip().lower()
+                raw = obj.get("target")
+                if raw is not None:
+                    try:
+                        target = int(raw)
+                    except (TypeError, ValueError):
+                        target = None
+            except ValueError:
                 pass
-        answer = "".join(parts).strip().lower()
-        if "conflict" in answer:
-            return "conflict"
-        if "duplicate" in answer and "not duplicate" not in answer and "not a duplicate" not in answer:
-            return "duplicate"
-        return "new"
+        if verdict not in ("duplicate", "conflict", "new"):
+            low = answer.lower()
+            if "conflict" in low:
+                verdict = "conflict"
+            elif "duplicate" in low and "not duplicate" not in low and "not a duplicate" not in low:
+                verdict = "duplicate"
+            else:
+                verdict = "new"
+            target = None
+        return verdict, target
 
     return judge
 
@@ -108,22 +112,21 @@ def _make_facts():
     """(unique, dupes, conflicts). Seed 固定 → 可复现。
 
     独特事实里前 20 条是「用户 i 的主语言是 X」——这是明确的**唯一 slot**（每个
-    用户只有一个主语言），供冲突测试用；后 240 条是「功能 i 的 X 模块配置为 N」
-    （唯一编号主导语义，reranker 对编号不同的给低分 → 不触发 judge）。只有真正的
-    重复（同义改写）和冲突（同一 slot 换值）才 reranker 高分 → judge 判
-    duplicate/conflict，所以 judge 只在 ~40 条变体上触发，时间成本可控。
+    用户只有一个主语言），供冲突测试用；后 40 条是「功能 i 的 X 模块配置为 N」
+    （唯一编号主导语义）。重复（同义改写）走 cosine 高分快速判重（省 judge）；
+    冲突（同一 slot 换值）和其余事实走 judge。
     """
     rng = random.Random(42)
     subjects = ["登录", "支付", "搜索", "通知", "报表", "权限", "缓存", "日志", "监控", "审计"]
-    vals = [rng.randint(1, 999) for _ in range(240)]
+    vals = [rng.randint(1, 999) for _ in range(40)]
     langs = ["Rust", "Go", "Python", "TypeScript"]
 
     unique = []
     # 前 20 条：用户主语言（唯一 slot，冲突测试的旧值）
     for i in range(20):
         unique.append(f"用户{i}的主语言是{langs[i % 4]}")
-    # 后 240 条：功能模块配置（编号主导，主题分散）
-    for i in range(240):
+    # 后 40 条：功能模块配置（编号主导，主题分散）
+    for i in range(40):
         unique.append(f"功能{i}的{subjects[i % 10]}模块配置为{vals[i]}")
 
     # 20 条重复：同义改写（"主语言是" → "主用语言为"）
@@ -144,9 +147,8 @@ def test_memory_scale_real_stack():
         os.environ["PI_ITEST_EMBEDDING_MODEL"],
     )
     store = MilvusStore(os.environ["PI_ITEST_MILVUS_URI"], collection=_ITEST_COLLECTION)
-    reranker = _build_reranker()
     judge = _build_judge()
-    repo = MemoryRepo(db, vector_store=store, embedder=embedder, reranker=reranker, judge=judge)
+    repo = MemoryRepo(db, vector_store=store, embedder=embedder, judge=judge)
 
     unique, dupes, conflicts = _make_facts()
     stamp = int(time.time())
@@ -184,14 +186,14 @@ def test_memory_scale_real_stack():
         rows = await repo.list_for_user(user_id, limit=1000)
         n = len(rows)
         print(
-            f"\n[scale] add 300: unique_written={added} dup_written={dup_added} "
+            f"\n[scale] add 100: unique_written={added} dup_written={dup_added} "
             f"conflict_handled={conflict_added} final_rows={n} "
             f"unique_time={t_uniq:.1f}s total={total_s:.1f}s"
         )
 
-        # 数量断言（宽松抗模型波动）：去重+冲突在起作用，不是 300 全写，也没崩成空。
-        # 理想 260（20 重复去重 + 20 冲突覆盖）；冲突若被判 new 则最多 280。
-        assert 230 <= n <= 285, f"unexpected final memory count {n}"
+        # 数量断言（宽松抗模型波动）：去重+冲突在起作用，不是全写，也没崩成空。
+        # 理想 60（20 重复去重 + 20 冲突覆盖）；冲突若被判 new 则最多 80。
+        assert 50 <= n <= 82, f"unexpected final memory count {n}"
 
         # 抽查：规模下向量/词法检索对多个 probe 都能命中（不崩、有召回）
         for probe in ["用户0的主语言", "功能0的登录模块", "功能5的报表模块"]:

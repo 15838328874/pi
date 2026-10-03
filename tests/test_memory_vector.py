@@ -309,21 +309,16 @@ def test_conflict_overwrite_updates_milvus_same_id(tmp_path):
     embedder = FakeEmbedder()
     db = Database(TEST_DB_URL)
 
-    async def rerank(user_id, query, docs):
-        return [0.9] * len(docs)
+    async def judge(user_id, new, candidates):
+        return "conflict", 0
 
-    async def judge(user_id, new, existing):
-        return "conflict"
-
-    repo = MemoryRepo(
-        db, vector_store=store, embedder=embedder, reranker=rerank, judge=judge
-    )
+    repo = MemoryRepo(db, vector_store=store, embedder=embedder, judge=judge)
 
     async def main():
         await db.init()
         assert await repo.add(1, "用户偏好中文回答") is True
         old = (await repo.list_for_user(1))[0]
-        # 让向量召回命中旧行，触发 reranker→judge→conflict
+        # 让向量召回命中旧行，触发 judge→conflict
         store.scripted = [(old.id, 0.9)]
         assert await repo.add(1, "用户偏好英文回答") is True
         rows = await repo.list_for_user(1)

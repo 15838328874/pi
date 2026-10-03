@@ -1,7 +1,7 @@
-"""记忆精判阶段测试：reranker 判重 + LLM judge 冲突覆盖 + 降级链。
+"""记忆精判测试：LLM judge 三分类（duplicate/conflict/new）+ 多候选 target 选择。
 
-这些测试只注入假的 reranker/judge 回调，不依赖 embedding/Milvus——目的是把
-`_resolve_verdict` 的分支（重复/冲突/新事实/降级）逐个钉死。
+架构（去 reranker 后）：embedding/词法召回 top-k 候选 → 全部喂给 judge → judge 输出
+(verdict, target_idx)。本文件用假 judge 把 `_resolve_verdict` 的分支逐个钉死。
 """
 
 from __future__ import annotations
@@ -14,65 +14,26 @@ from pi.server.cache import MemoryBackend
 from pi.server.db import Database, MemoryRepo
 
 
-def _repo(db, reranker=None, judge=None):
-    return MemoryRepo(db, reranker=reranker, judge=judge)
+def _repo(db, judge=None):
+    return MemoryRepo(db, judge=judge)
 
 
-def test_reranker_high_score_no_judge_dedups(tmp_path):
-    """reranker 高分且无 judge → 判重（保守默认）。"""
+def test_judge_conflict_overwrites_target(tmp_path):
+    """judge 判 conflict + target → 原地覆盖对应候选（id 不变，text 更新）。"""
     db = Database(TEST_DB_URL)
 
-    async def rerank(user_id, query, docs):
-        return [0.9] * len(docs)
+    async def judge(user_id, new, candidates):
+        return "conflict", 0
 
     async def main():
         await db.init()
-        repo = _repo(db, reranker=rerank)
-        assert await repo.add(1, "项目代号是 Orion") is True
-        assert await repo.add(1, "项目代号是 Orion") is False
-        assert len(await repo.list_for_user(1)) == 1
-        await db.dispose()
-
-    asyncio.run(main())
-
-
-def test_reranker_low_score_inserts_new(tmp_path):
-    """reranker 低分 → 新事实，写入。"""
-    db = Database(TEST_DB_URL)
-
-    async def rerank(user_id, query, docs):
-        return [0.3] * len(docs)
-
-    async def main():
-        await db.init()
-        repo = _repo(db, reranker=rerank)
-        assert await repo.add(1, "项目代号是 Orion") is True
-        assert await repo.add(1, "项目代号是 Orion") is True  # reranker 说低分 → 仍写
-        assert len(await repo.list_for_user(1)) == 2
-        await db.dispose()
-
-    asyncio.run(main())
-
-
-def test_judge_conflict_overwrites_in_place(tmp_path):
-    """judge 判 conflict → 原地覆盖旧行（id/created_at 保留，text 更新）。"""
-    db = Database(TEST_DB_URL)
-
-    async def rerank(user_id, query, docs):
-        return [0.9] * len(docs)
-
-    async def judge(user_id, new, existing):
-        return "conflict"
-
-    async def main():
-        await db.init()
-        repo = _repo(db, reranker=rerank, judge=judge)
+        repo = _repo(db, judge=judge)
         assert await repo.add(1, "用户偏好中文回答") is True
         old = (await repo.list_for_user(1))[0]
-        assert await repo.add(1, "用户偏好英文回答") is True  # 冲突 → 覆盖
+        assert await repo.add(1, "用户偏好英文回答") is True  # conflict → 覆盖
         rows = await repo.list_for_user(1)
         assert len(rows) == 1
-        assert rows[0].id == old.id  # 原地更新，不新增行
+        assert rows[0].id == old.id
         assert rows[0].text == "用户偏好英文回答"
         await db.dispose()
 
@@ -83,17 +44,14 @@ def test_judge_duplicate_skips(tmp_path):
     """judge 判 duplicate → 不写。"""
     db = Database(TEST_DB_URL)
 
-    async def rerank(user_id, query, docs):
-        return [0.9] * len(docs)
-
-    async def judge(user_id, new, existing):
-        return "duplicate"
+    async def judge(user_id, new, candidates):
+        return "duplicate", 0
 
     async def main():
         await db.init()
-        repo = _repo(db, reranker=rerank, judge=judge)
+        repo = _repo(db, judge=judge)
         assert await repo.add(1, "项目代号是 Orion") is True
-        assert await repo.add(1, "这个项目的代号叫 Orion") is False  # judge 说重复
+        assert await repo.add(1, "这个项目的代号叫 Orion") is False
         assert len(await repo.list_for_user(1)) == 1
         await db.dispose()
 
@@ -104,36 +62,48 @@ def test_judge_new_inserts(tmp_path):
     """judge 判 new → 写新（两条都保留）。"""
     db = Database(TEST_DB_URL)
 
-    async def rerank(user_id, query, docs):
-        return [0.9] * len(docs)
-
-    async def judge(user_id, new, existing):
-        return "new"
+    async def judge(user_id, new, candidates):
+        return "new", None
 
     async def main():
         await db.init()
-        repo = _repo(db, reranker=rerank, judge=judge)
+        repo = _repo(db, judge=judge)
         assert await repo.add(1, "项目 A 用 MySQL") is True
-        assert await repo.add(1, "项目 B 用 MySQL") is True  # judge 说新事实
+        assert await repo.add(1, "项目 B 用 MySQL") is True
         assert len(await repo.list_for_user(1)) == 2
         await db.dispose()
 
     asyncio.run(main())
 
 
-def test_reranker_failure_degrades_to_lexical(tmp_path):
-    """reranker 抛异常 → 降级到词法判重（写入仍安全）。"""
+def test_judge_picks_target_among_multiple_candidates(tmp_path):
+    """核心：judge 从多条候选中自己挑 target（不依赖预选 top-1）。
+
+    「用户0的主语言改成Go」会同时召回「用户0的主语言是Rust」（正确冲突对象）和
+    「用户1的主语言是Go」（共享"Go"的干扰项）。judge 必须选对前者。
+    """
     db = Database(TEST_DB_URL)
 
-    async def rerank(user_id, query, docs):
-        raise RuntimeError("rerank down")
+    async def judge(user_id, new, candidates):
+        # 模拟真实 judge：从候选里找含"用户0"的那条
+        for i, c in enumerate(candidates):
+            if "用户0" in c:
+                return "conflict", i
+        return "new", None
 
     async def main():
         await db.init()
-        repo = _repo(db, reranker=rerank)
-        assert await repo.add(1, "项目代号是 Orion") is True
-        assert await repo.add(1, "项目代号是 Orion") is False  # 词法兜底判重
-        assert len(await repo.list_for_user(1)) == 1
+        repo = _repo(db, judge=judge)
+        assert await repo.add(1, "用户0的主语言是Rust") is True
+        assert await repo.add(1, "用户1的主语言是Go") is True
+        # 第三次：judge 应覆盖"用户0"那条，而不是"用户1"那条
+        assert await repo.add(1, "用户0的主语言改成Go") is True
+        rows = await repo.list_for_user(1)
+        texts = {r.text for r in rows}
+        assert len(rows) == 2  # 覆盖一条，仍两条
+        assert "用户0的主语言改成Go" in texts  # 新值覆盖了旧值
+        assert "用户0的主语言是Rust" not in texts  # 旧值消失
+        assert "用户1的主语言是Go" in texts  # 干扰项未被误覆盖
         await db.dispose()
 
     asyncio.run(main())
@@ -143,91 +113,70 @@ def test_judge_failure_treats_as_new(tmp_path):
     """judge 抛异常 → fail-open 判 new（写新）。丢写比偶发重复更糟。"""
     db = Database(TEST_DB_URL)
 
-    async def rerank(user_id, query, docs):
-        return [0.9] * len(docs)
-
-    async def judge(user_id, new, existing):
+    async def judge(user_id, new, candidates):
         raise RuntimeError("llm down")
 
     async def main():
         await db.init()
-        repo = _repo(db, reranker=rerank, judge=judge)
+        repo = _repo(db, judge=judge)
         assert await repo.add(1, "项目代号是 Orion") is True
-        assert await repo.add(1, "这个项目的代号叫 Orion") is True  # judge 挂了 → 写新（不丢）
+        assert await repo.add(1, "这个项目的代号叫 Orion") is True  # judge 挂了 → 写新
         assert len(await repo.list_for_user(1)) == 2
         await db.dispose()
 
     asyncio.run(main())
 
 
-def test_no_reranker_falls_back_to_cosine_path(tmp_path):
-    """无 reranker → 完全走原有 cosine + 词法路径（行为不变）。"""
+def test_judge_target_out_of_range_ignored(tmp_path):
+    """judge 返回越界 target → 忽略，按 new 处理（写新，不崩）。"""
     db = Database(TEST_DB_URL)
+
+    async def judge(user_id, new, candidates):
+        return "conflict", 99  # 越界
 
     async def main():
         await db.init()
-        repo = MemoryRepo(db)  # 无 reranker/judge/embedder
+        repo = _repo(db, judge=judge)
         assert await repo.add(1, "项目代号是 Orion") is True
-        assert await repo.add(1, "项目代号是 Orion") is False
-        assert len(await repo.list_for_user(1)) == 1
-        await db.dispose()
-
-    asyncio.run(main())
-
-
-def test_reranker_length_mismatch_treats_as_new(tmp_path):
-    """reranker 返回长度与候选数不一致 → 判 new（写新），不崩。"""
-    db = Database(TEST_DB_URL)
-
-    async def rerank(user_id, query, docs):
-        return []  # 长度 0，与候选数（≥1）不匹配 → falsy → 判 new
-
-    async def main():
-        await db.init()
-        repo = _repo(db, reranker=rerank)
-        assert await repo.add(1, "项目 A 的代号是 Orion") is True
-        assert await repo.add(1, "项目 B 的代号是 Atlas") is True  # 长度不匹配 → new
+        assert await repo.add(1, "这个项目的代号叫 Orion") is True  # 越界 target 忽略 → 写新
         assert len(await repo.list_for_user(1)) == 2
         await db.dispose()
 
     asyncio.run(main())
 
 
-def test_reranker_low_score_overrides_lexical_dup(tmp_path):
-    """reranker 低分优先于词法：即使词法会判重，reranker 说低分就写新。
+def test_negation_wording_conflict_overwrites(tmp_path):
+    """否定措辞（'不是X了'）被判 conflict → 覆盖成否定文本（已知边界，记录非推崇）。
 
-    这是有意的设计——reranker 比词法准，低分意味着"不相关"，词法的逐字重复
-    判断反而可能是噪声。固化为显式断言，防未来有人"顺手"加回词法兜底。
+    这是「不区分 UPDATE 和 DELETE」的代价：否定义被当成新值覆盖，而非删除旧值。
     """
     db = Database(TEST_DB_URL)
 
-    async def rerank(user_id, query, docs):
-        return [0.3] * len(docs)
+    async def judge(user_id, new, candidates):
+        return "conflict", 0
 
     async def main():
         await db.init()
-        repo = _repo(db, reranker=rerank)
-        assert await repo.add(1, "项目代号是 Orion") is True
-        # 词法 Jaccard 会判重（逐字相同），但 reranker 低分 → 写新
-        assert await repo.add(1, "项目代号是 Orion") is True
-        assert len(await repo.list_for_user(1)) == 2
+        repo = _repo(db, judge=judge)
+        assert await repo.add(1, "用户的主语言是Rust") is True
+        assert await repo.add(1, "用户的主语言不是Rust了") is True  # conflict → 覆盖
+        rows = await repo.list_for_user(1)
+        assert len(rows) == 1
+        assert rows[0].text == "用户的主语言不是Rust了"
         await db.dispose()
 
     asyncio.run(main())
 
 
-def test_reranker_exact_threshold_boundary(tmp_path):
-    """reranker 分数恰好等于 0.65 → 判重（>= 阈值）。"""
+def test_no_judge_falls_back_to_cosine_path(tmp_path):
+    """无 judge → 完全走原有 cosine + 词法路径（行为不变）。"""
     db = Database(TEST_DB_URL)
-
-    async def rerank(user_id, query, docs):
-        return [0.65] * len(docs)
 
     async def main():
         await db.init()
-        repo = _repo(db, reranker=rerank)
+        repo = MemoryRepo(db)  # 无 judge/embedder
         assert await repo.add(1, "项目代号是 Orion") is True
-        assert await repo.add(1, "项目代号是 Orion") is False  # 恰好 0.65 → 判重
+        assert await repo.add(1, "项目代号是 Orion") is False
         assert len(await repo.list_for_user(1)) == 1
         await db.dispose()
 
@@ -250,51 +199,24 @@ def test_add_long_text_no_crash(tmp_path):
     asyncio.run(main())
 
 
-def test_negation_wording_conflict_overwrites(tmp_path):
-    """否定措辞（'不是X了'）被判 conflict → 覆盖成否定文本（已知边界，记录非推崇）。
-
-    这是「不区分 UPDATE 和 DELETE」的代价：否定义被当成新值覆盖，而非删除旧值。
-    后果轻（检索可读），真正的删除是显式操作（待办）。固化当前行为防意外改变。
-    """
+def test_concurrent_add_with_judge_and_eviction(tmp_path):
+    """并发 add + judge + 驱逐三者叠加：锁串行化，最终只留 limit 条、不崩。"""
     db = Database(TEST_DB_URL)
 
-    async def rerank(user_id, query, docs):
-        return [0.9] * len(docs)
-
-    async def judge(user_id, new, existing):
-        return "conflict"
+    async def judge(user_id, new, candidates):
+        return "new", None  # 全部判 new，逼出驱逐路径
 
     async def main():
         await db.init()
-        repo = _repo(db, reranker=rerank, judge=judge)
-        assert await repo.add(1, "用户的主语言是Rust") is True
-        assert await repo.add(1, "用户的主语言不是Rust了") is True  # conflict → 覆盖
-        rows = await repo.list_for_user(1)
-        assert len(rows) == 1
-        assert rows[0].text == "用户的主语言不是Rust了"  # 否定义被当成新值（已知边界）
-        await db.dispose()
-
-    asyncio.run(main())
-
-
-def test_concurrent_add_with_reranker_and_eviction(tmp_path):
-    """并发 add + reranker + 驱逐三者叠加：锁串行化，最终只留 limit 条、不崩。"""
-    db = Database(TEST_DB_URL)
-
-    async def rerank(user_id, query, docs):
-        return [0.3] * len(docs)  # 低分 → 全部判 new（不判重，逼出驱逐路径）
-
-    async def main():
-        await db.init()
-        repo = MemoryRepo(db, cache=MemoryBackend(), reranker=rerank, memory_limit=3)
+        repo = MemoryRepo(db, cache=MemoryBackend(), judge=judge, memory_limit=3)
         texts = [f"fact number {i}" for i in range(10)]
         results = await asyncio.gather(*[repo.add(1, t) for t in texts])
-        assert all(results)  # 低分 → 每条都写
+        assert all(results)
         rows = await repo.list_for_user(1)
-        assert len(rows) == 3  # 驱逐后只留最新 3 条
+        assert len(rows) == 3
         texts_kept = {r.text for r in rows}
-        assert "fact number 9" in texts_kept  # 最新保留
-        assert "fact number 0" not in texts_kept  # 最旧驱逐
+        assert "fact number 9" in texts_kept
+        assert "fact number 0" not in texts_kept
         await db.dispose()
 
     asyncio.run(main())

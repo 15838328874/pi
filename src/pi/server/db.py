@@ -9,9 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import time
 import uuid
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
@@ -498,13 +500,17 @@ _MEM_LOCK_TTL = 60.0
 _MEM_LOCK_WAIT = 5.0
 #: Retry interval between lock attempts.
 _MEM_LOCK_RETRY = 0.05
-#: Reranker relevance-score threshold for semantic dedup. Calibrated against
-#: the real endpoint (tools/probe_memory_threshold.py): "semantic equivalent"
-#: reranks ≥ ~0.74 while "related but different" sits ≤ ~0.59, so 0.65 is a safe
-#: split. Below this the new text is treated as a new fact.
-_RERANK_DUP = 0.65
-#: Candidate memories to recall for rerank/judge (top-k by vector or lexical).
-_RECALL_K = 3
+#: Per-channel recall depth. Recall is the real bottleneck, not the judge:
+#: embedding ranks by semantic/value words, so "用户0的主语言改成Go" pulls every
+#: "用户X的主语言是Go" to the top and pushes the true target
+#: ("用户0的主语言是Rust") to ~#5 — sometimes out of a top-5 entirely. Two
+#: complementary channels each take this many:
+#:   - vector  : semantic / value-word similarity
+#:   - BM25/IDF: entity-word overlap (bigrams), which recovers the target the
+#:               vector channel lost (measured: target lands in BM25 top-5).
+_RECALL_K = 8
+#: Hard cap on the merged (deduped) candidate list handed to the judge.
+_RECALL_MAX = 12
 
 
 class MemoryRepo:
@@ -525,8 +531,7 @@ class MemoryRepo:
         on_retrieval: "Callable[[str, float], Awaitable[None]] | None" = None,
         memory_limit: int = _MEMORY_LIMIT,
         cache: CacheBackend | None = None,
-        reranker: "Callable[[int, str, list[str]], Awaitable[list[float]]] | None" = None,
-        judge: "Callable[[int, str, str], Awaitable[str]] | None" = None,
+        judge: "Callable[[int, str, list[str]], Awaitable[tuple[str, int | None]]] | None" = None,
     ):
         self.db = db
         self.memory_limit = memory_limit
@@ -542,11 +547,10 @@ class MemoryRepo:
         # means the dedup check-then-write is NOT serialized across processes
         # (single-instance callers and unit tests pass nothing).
         self.cache = cache
-        # Optional precision dedup stage: reranker scores (query=text,
-        # documents=candidates) → relevance; judge classifies (text, candidate)
-        # into "duplicate" | "conflict" | "new". Both are injected by the app
-        # (HttpReranker + an LLM turn); absent → cosine + lexical only.
-        self.reranker = reranker
+        # Optional LLM judge: classifies (new_text, candidates) into
+        # ("duplicate" | "conflict" | "new", target_index). It sees the WHOLE
+        # top-k (not a reranker-picked top-1) and picks the target itself, so a
+        # single wrong top-1 cannot mislead it. Absent → cosine + lexical only.
         self.judge = judge
 
     async def add(self, user_id: int, text: str) -> bool:
@@ -661,19 +665,67 @@ class MemoryRepo:
     async def _recall_candidates(
         self, user_id: int, text: str, vec: list[float] | None
     ) -> list[MemoryRow]:
-        """Top-k candidate memories for the rerank/judge stage. Vector recall
-        when the vector is available, lexical otherwise (or on failure)."""
+        """Hybrid recall for the judge stage: vector (semantic) ∪ BM25 (entity).
+
+        The two channels fail differently and that is the point. Vector recall
+        groups by meaning, so a value word drags in every same-value neighbour
+        and can push the true target out of the top-k; BM25 over character
+        bigrams groups by ENTITY, so "用户0的主语言是Rust" survives even when the
+        new text says "改成Go". Union + dedupe, capped at ``_RECALL_MAX``.
+        """
+        out: list[MemoryRow] = []
+        seen: set[int] = set()
+
         if vec is not None:
             try:
                 hits = await self.vector_store.search(user_id, vec, _RECALL_K)
                 if hits:
-                    ids = [mid for mid, _ in hits]
-                    rows = await self._rows_by_ids(user_id, ids)
-                    if rows:
-                        return rows
+                    for r in await self._rows_by_ids(user_id, [mid for mid, _ in hits]):
+                        if r.id not in seen:
+                            seen.add(r.id)
+                            out.append(r)
             except Exception:  # noqa: BLE001 - recall must never fail a write
                 log.exception("vector recall failed; falling back to lexical")
+
+        try:
+            for r in await self._bm25_recall(user_id, text, _RECALL_K):
+                if r.id not in seen:
+                    seen.add(r.id)
+                    out.append(r)
+        except Exception:  # noqa: BLE001 - recall must never fail a write
+            log.exception("bm25 recall failed; vector recall only")
+
+        if out:
+            return out[:_RECALL_MAX]
+        # Last resort when the vector path is off/failed and BM25 found nothing.
         return await self._lexical_search(user_id, text, _RECALL_K)
+
+    async def _bm25_recall(self, user_id: int, text: str, k: int) -> list[MemoryRow]:
+        """IDF-weighted lexical recall over bigram+unigram terms (BM25-style).
+
+        Purpose is COVERAGE, not scoring: an entity such as "用户0" appears as the
+        bigram "户0" (rare → high IDF), so this channel surfaces the same-subject
+        memory that semantic recall dropped. It deliberately does NOT decide
+        duplicate/conflict — measured, both classes overlap on this score.
+        """
+        rows = list(await self.list_for_user(user_id))
+        if not rows:
+            return []
+        qterms = _terms_bi(text)
+        if not qterms:
+            return []
+        n = len(rows)
+        doc_terms = [(r, _terms_bi(r.text)) for r in rows]
+        df: Counter[str] = Counter()
+        for _, ts in doc_terms:
+            df.update(ts)
+        scored: list[tuple[float, MemoryRow]] = []
+        for r, ts in doc_terms:
+            score = sum(math.log((n + 1) / (1 + df.get(t, 0))) for t in (qterms & ts))
+            if score > 0:
+                scored.append((score, r))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [r for _, r in scored[:k]]
 
     async def _resolve_verdict(
         self,
@@ -685,32 +737,16 @@ class MemoryRepo:
         """Decide duplicate / conflict / new for ``text`` against existing
         memories. Returns ``(verdict, conflict_memory_id)``.
 
-        Precision order: reranker+judge (best) → cosine threshold → lexical
-        Jaccard (last resort). Each stage degrades to the next on failure.
+        Precision order: judge (best, sees the whole top-k and picks the target)
+        → cosine threshold → lexical Jaccard (last resort). Each stage degrades
+        to the next on failure.
         """
-        # 1. Reranker precision stage (only when configured).
-        if self.reranker is not None:
-            try:
-                if candidates:
-                    scores = await self.reranker(user_id, text, [r.text for r in candidates])
-                    if len(scores) == len(candidates) and scores:
-                        best_i = max(range(len(scores)), key=lambda i: scores[i])
-                        if scores[best_i] >= _RERANK_DUP:
-                            best = candidates[best_i]
-                            if self.judge is not None:
-                                verdict = await self._judge(user_id, text, best.text)
-                                if verdict == "conflict":
-                                    return "conflict", best.id
-                                if verdict == "duplicate":
-                                    return "duplicate", None
-                                # "new" (or unknown) → fall through to insert
-                            else:
-                                # high relevance and no judge → treat as duplicate
-                                return "duplicate", None
-                return "new", None  # reranker found nothing close enough
-            except Exception:  # noqa: BLE001 - degrade, never fail a write
-                log.exception("rerank dedup failed; falling back to cosine")
-        # 2. Cosine threshold stage (no reranker, or reranker failed).
+        # 1. Cosine fast-path — HIGH END ONLY. A near-identical rewrite (cosine
+        #    ≥ 0.92) is safely a duplicate, so skip the judge. There is NO safe
+        #    low-end cut: measured on the real model, "conflict" (换值) sits at
+        #    0.77~0.83 while "related but different" (same template, other
+        #    instance) sits at 0.75~0.88 — they OVERLAP completely, so anything
+        #    below the duplicate band must go to the judge.
         if vec is not None:
             try:
                 hits = await self.vector_store.search(user_id, vec, k=1)
@@ -720,22 +756,37 @@ class MemoryRepo:
                     if await self._rows_by_ids(user_id, [mid]):
                         return "duplicate", None
             except Exception:  # noqa: BLE001 - degrade, never fail a write
-                log.exception("cosine dedup search failed")
-        # 3. Lexical Jaccard: fallback + safety net on top of everything above.
+                log.exception("cosine fast-path failed")
+        # 2. Judge stage: hand it the WHOLE top-k, not a single top-1. Embedding
+        # recall can rank an interfering neighbour first ("改成Go" recalls
+        # "用户1的主语言是Go" above "用户0的主语言是Rust"), so the judge must see
+        # every candidate and pick the target itself.
+        if self.judge is not None and candidates:
+            try:
+                verdict, target_idx = await self._judge(user_id, text, candidates)
+                if verdict == "conflict" and target_idx is not None and 0 <= target_idx < len(candidates):
+                    return "conflict", candidates[target_idx].id
+                if verdict == "duplicate":
+                    return "duplicate", None
+                return "new", None  # judge 是最终裁决：判 new 就写新
+            except Exception:  # noqa: BLE001 - degrade, never fail a write
+                log.exception("judge stage failed; falling back to lexical")
+        # 3. Lexical Jaccard: last resort (no judge, or judge failed).
         if await self._is_duplicate_lexical(user_id, text):
             return "duplicate", None
         return "new", None
 
-    async def _judge(self, user_id: int, new_text: str, existing_text: str) -> str:
-        """Classify (new_text, existing_text) via the injected judge. A judge
-        failure is fail-OPEN: treat as "new" (write it). A dropped write is worse
-        than an occasional duplicate - the per-user cap still bounds the damage,
-        and the judge only runs when rerank was already high-confidence."""
+    async def _judge(
+        self, user_id: int, new_text: str, candidates: list[MemoryRow]
+    ) -> tuple[str, int | None]:
+        """Classify (new_text, candidates) via the injected judge, returning
+        (verdict, target_index). A judge failure is fail-OPEN: treat as "new"
+        (write it) - a dropped write is worse than an occasional duplicate."""
         try:
-            return await self.judge(user_id, new_text, existing_text)  # type: ignore[misc]
+            return await self.judge(user_id, new_text, [r.text for r in candidates])  # type: ignore[misc]
         except Exception:  # noqa: BLE001 - a broken judge must not fail a write
             log.exception("memory judge failed; treating as new (fail-open)")
-            return "new"
+            return "new", None
 
     async def _overwrite(
         self, memory_id: int, user_id: int, text: str, vec: list[float] | None
@@ -920,10 +971,28 @@ class MemoryRepo:
 
 
 _TERM_RE = re.compile(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]")
+#: Character-level pattern for bigrams (spaces/punctuation dropped, so
+#: "用户 0" and "用户0" produce the same bigrams).
+_CHAR_RE = re.compile(r"[a-z0-9_]|[\u4e00-\u9fff]")
 
 
 def _terms(s: str) -> set[str]:
     return set(_TERM_RE.findall(s.lower()))
+
+
+def _terms_bi(s: str) -> set[str]:
+    """unigrams + character bigrams (BM25 recall only).
+
+    Bigrams are what make an ENTITY distinguishable: "用户0的主语言是Rust" and
+    "用户1的主语言是Go" share every unigram of interest ("用","户","主","语","言")
+    and differ only in a digit, so unigram IDF cannot tell them apart. The
+    bigram "户0" / "户1" carries the entity and gets a high IDF.
+    """
+    low = s.lower()
+    terms = set(_TERM_RE.findall(low))
+    chars = _CHAR_RE.findall(low)
+    terms.update(chars[i] + chars[i + 1] for i in range(len(chars) - 1))
+    return terms
 
 
 class FileRow(Base):

@@ -210,3 +210,31 @@ root 可改文件、有 DB 权限的 admin 可删行。对要合规的企业，*
 | B4 集群化 | 低（仅「app 多副本」时相关；app 单节点 + cube 独立集群时非阻塞） | 会话粘性/全局信号量/锁 fencing | ✅ |
 | B2 cube microVM 级逃逸 harness | **最高**（唯一验证生产边界；绿测≠逃不出去） | Cubelet 平台 | ✅ |
 | B5 WORM / 双控 | 低（依赖外部存储/运维） | S3 Object Lock、IAM 分离 | 部分 |
+
+---
+
+## 9. 借鉴弘则（CubeSandbox 同源参照，2026-10-03）
+
+来源：王正凯（弘则弥道 CTO）《金融投研 Agent 沙箱化》——弘则 4as 与 pi-py **同源**
+（都用 Pi coding agent SDK），是其 TS 上游的另一个生产落地，几乎每段都能对照 pi-py。
+
+**借鉴项（按性价比）：**
+
+1. **CubeEgress 出口凭据注入**（对应评审 #7，最该补）。长期 key 留在出口侧、按目标服务
+   匹配注入；guest 不存 key、template 不随 key 重建、凭据集中轮换/撤销。pi-py 现状是二态
+   （`--network none` 或全开），缺"目标白名单 + 出口注入"中间态。本机 cube 平台已带 egress
+   组件（`cube-egress` 镜像），接入配置即可，不自研。
+2. **Host Mount 只读版本化分发**（RAG/skills/共享数据集）。revision 化不可变只读挂载 +
+   挂载清单=授权清单 + 多沙箱共享宿主缓存，"未挂载即不可见"作 ACL 纵深。替代现在大资源
+   tar 进出 + MinIO 预签名重搬。
+3. **端到端数据路径自检**。`/readyz` 现在探 API+DNS，已内化"控制面≠数据面"的教训，还差
+   "真建沙箱跑 create→写→执行→回收"。补 `/readyz/deep` 或发布验收脚本，低成本立刻可做。
+
+**运维经验（记入 runbook）：**
+- pause/resume 有 seccomp 兼容问题，保守内核下关闭自动 pause、只留 idle 回收。
+- CoreDNS 抖动会传导到 Egress 策略路由，接 egress 时加周期校验。
+- Cube 大版本升级宿主配置不自动保留，需人工对照清单核对。
+
+**不照搬**：弘则把整个 loop（含模型调用）跑进 VM，威胁模型是"全隔离"；pi-py 是
+"代码执行隔离"（loop 在可信 app 进程，仅 bash/文件进 VM）。对防代码逃逸够用，激进
+下沉是战略选择，非当前必做。

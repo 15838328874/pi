@@ -87,9 +87,15 @@ reranker 高分（≥0.65）只说明"相关"，分不清是"重复"还是"冲�
 > **规模实测观察（integration/test_memory_real_scale.py，300 条）**：去重 20/20 全对；
 > 但冲突 20 条里 19 条被判 `new`、只有 1 条 `conflict`。样本是「用户0的主语言是Rust」vs
 > 「用户0的主语言改成Go」——judge 对带"改成/更新为"这类**动作动词**的冲突倾向判成
-> "新事实"而非"覆盖"，对直接矛盾的「是Rust / 是Go」才稳。**结论：judge 的 conflict
-> 判定对措辞敏感**，后续优化方向是 prompt 里明确"同一主体、同一属性换值即 conflict，
-> 无论措辞是'改成'还是'是'"。
+> "新事实"而非"覆盖"，对直接矛盾的「是Rust / 是Go」才稳。
+
+**已借鉴 mem0 的 `DEFAULT_UPDATE_MEMORY_PROMPT` 修复**（`app.py` judge prompt）：
+mem0 的精髓是**每个动作配 few-shot 示例**（不是抽象定义），并明确区分 UPDATE（同主题
+换值/更丰富 → 覆盖，保留原 id）与 DELETE（直接矛盾 → 删）。我们的 `conflict` 对应它的
+UPDATE。改进后的 prompt 加了 5 个 few-shot 示例（含「主语言改成Go = conflict」这条此前
+判错的），并把 conflict 定义写成"同一主体、同一属性换值即 conflict，无论措辞是'改成'
+还是'是'"。**真实验证待补**：DeepSeek 余额不足（402），`/tmp/probe_judge_v2.py` 的
+新旧对比跑不了，待充值后重跑。
 
 ## 4. 并发正确性：per-user 锁 + fencing token
 

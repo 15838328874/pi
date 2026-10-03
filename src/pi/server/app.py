@@ -169,16 +169,29 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         judge_provider = resolve(settings.default_model)
 
         async def judge(user_id: int, new_text: str, existing_text: str) -> str:
+            # Few-shot 结构借鉴 mem0 的 DEFAULT_UPDATE_MEMORY_PROMPT：每个动作配
+            # 具体「已有 vs 新」示例，而不是只给抽象定义。实测（规模集成测试）零示例
+            # 的 prompt 把「主语言改成Go」这类动作动词冲突 19/20 判成 new，few-shot
+            # 明确钉死「同一主体同一属性换值即 conflict，无论措辞是'改成'还是'是'」。
             prompt = (
-                "新记忆：{new}\n已有记忆：{old}\n\n"
-                "判断两者的关系，只输出一个词：duplicate（同义）、"
-                "conflict（同一件事但结论/值不同，新记忆应覆盖旧记忆）、"
-                "new（不同的事实）。"
+                "判定准则：\n"
+                "- duplicate：两者表达同一个意思（措辞不同、含义相同）→ 不新增。\n"
+                "- conflict：两者针对同一主体、同一属性/偏好，但值不同（新值应覆盖旧值）→ 覆盖。"
+                "关键：无论新记忆措辞是「是X」「改成X」「改为X」「换成X」「现在是X」，"
+                "只要它是同一属性的一个新值，就判 conflict。\n"
+                "- new：不同主体、或不同属性的事实 → 都保留。\n\n"
+                "示例：\n"
+                "1. 已有「用户0的主语言是Rust」→ 新「用户0的主语言改成Go」 = conflict\n"
+                "2. 已有「用户0的主语言是Rust」→ 新「用户0主用语言为Rust」 = duplicate\n"
+                "3. 已有「用户0的主语言是Rust」→ 新「用户1的主语言是Go」 = new\n"
+                "4. 已有「项目A用MySQL」→ 新「项目B用MySQL」 = new\n"
+                "5. 已有「用户偏好中文回答」→ 新「用户偏好英文回答」 = conflict\n\n"
+                "新记忆：{new}\n已有记忆：{old}\n只输出一个词："
             ).format(new=new_text, old=existing_text)
             parts: list[str] = []
             usage = None
             async for ev in judge_provider.stream(
-                "你是记忆去重与冲突判断器，只输出 duplicate / conflict / new 之一。",
+                "你是记忆去重与冲突判断器，判断两条记忆的关系，只输出一个词：duplicate / conflict / new。",
                 [Message(role=Role.user, blocks=[TextBlock(text=prompt)])],
                 [],
             ):

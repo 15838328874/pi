@@ -146,18 +146,19 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
         # （embedding 召回 top-1 可能选错，如「改成Go」召回「用户1的主语言是Go」）。
         cand_lines = "\n".join(f"{i}. {t}" for i, t in enumerate(candidates))
         prompt = (
-            "候选记忆（编号 0 起）：\n{cands}\n\n"
-            "新记忆：{new}\n\n"
+            "候选记忆（编号 0 起，每条带「日期 记录」前缀表示记录时间，时间早的是旧值）：\n"
+            "{cands}\n\n"
+            "新记忆：{new}（这是最新的一条）\n\n"
             "判断新记忆与候选记忆的关系，只输出一个 JSON 对象：\n"
             '{{"verdict": "duplicate"|"conflict"|"new", "target": 编号或 null}}\n\n'
             "判定准则：\n"
             "- duplicate：新记忆与某条候选同义（措辞不同、含义相同）→ target 填该候选编号\n"
-            "- conflict：新记忆与某条候选是同一主体、同一属性/偏好、但值不同 → target 填该候选编号（覆盖它）。"
-            "关键：无论措辞是「是X」「改成X」「改为X」「换成X」，同一属性换值即 conflict。\n"
+            "- conflict：新记忆与某条候选是同一件事/同一偏好、但值不同（新值应覆盖旧值）→ target 填该候选编号。"
+            "关键：无论措辞是「是X」「改成X」「改为X」「换成X」「搬到Y」，同一属性换值即 conflict。\n"
             "- new：新记忆与所有候选都不同 → target 填 null\n\n"
             "示例：\n"
-            '候选：["用户0的主语言是Rust", "用户1的主语言是Go"]\n'
-            "新记忆：用户0的主语言改成Go\n"
+            '候选：["2026-09-01 记录：我住在杭州"]\n'
+            "新记忆：我上个月搬到上海了\n"
             '输出：{{"verdict": "conflict", "target": 0}}\n'
         ).format(cands=cand_lines, new=new_text)
         parts: list[str] = []

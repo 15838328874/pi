@@ -791,9 +791,15 @@ class MemoryRepo:
     ) -> tuple[str, int | None]:
         """Classify (new_text, candidates) via the injected judge, returning
         (verdict, target_index). A judge failure is fail-OPEN: treat as "new"
-        (write it) - a dropped write is worse than an occasional duplicate."""
+        (write it) - a dropped write is worse than an occasional duplicate.
+
+        Candidates carry their ``created_at`` so the judge can tell OLD from NEW
+        (a conflict is "same subject, newer value" — the timestamp makes that
+        order explicit, e.g. 「9-01 记录:我住在杭州」 vs 「我搬到上海了」).
+        """
+        cand_texts = [f"{r.created_at[:10]} 记录：{r.text}" for r in candidates]
         try:
-            return await self.judge(user_id, new_text, [r.text for r in candidates])  # type: ignore[misc]
+            return await self.judge(user_id, new_text, cand_texts)  # type: ignore[misc]
         except Exception:  # noqa: BLE001 - a broken judge must not fail a write
             log.exception("memory judge failed; treating as new (fail-open)")
             return "new", None

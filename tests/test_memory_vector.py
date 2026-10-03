@@ -274,6 +274,35 @@ def test_add_semantic_dedup_falls_back_to_lexical_on_store_error(tmp_path):
     asyncio.run(main())
 
 
+def test_add_after_eviction_not_blocked_by_orphan_vector(tmp_path):
+    """驱逐留下的孤儿向量不应让重新 add 相同记忆被误判重。
+
+    `_enforce_limit` 只删 MySQL 行、Milvus 向量留着（注释说是无害孤儿）。
+    但语义去重若只看向量分数、不验证命中的 memory_id 是否还在 MySQL，就会
+    命中已驱逐的孤儿向量 → 高分 → 误判重 → 这条记忆再也写不回来。
+    """
+    store = FakeVectorStore()
+    embedder = FakeEmbedder()
+    db = Database(TEST_DB_URL)
+    repo = MemoryRepo(db, vector_store=store, embedder=embedder, memory_limit=2)
+
+    async def main():
+        await db.init()
+        assert await repo.add(1, "fact A") is True
+        assert await repo.add(1, "fact B") is True
+        assert await repo.add(1, "fact C") is True  # 触发驱逐：fact A 出局
+        assert "fact A" not in {r.text for r in await repo.list_for_user(1)}
+
+        # fact A 的孤儿向量仍在 Milvus（FakeVectorStore 记录了它的 memory_id）
+        a_mid = next(mid for mid, _uid, text, _vec in store.adds if text == "fact A")
+        store.scripted = [(a_mid, 0.96)]  # 语义去重命中孤儿，高分
+        assert await repo.add(1, "fact A") is True  # 不应被孤儿挡路
+        assert "fact A" in {r.text for r in await repo.list_for_user(1)}
+        await db.dispose()
+
+    asyncio.run(main())
+
+
 def test_unconfigured_repo_is_lexical_only(tmp_path):
     db = Database(TEST_DB_URL)
 

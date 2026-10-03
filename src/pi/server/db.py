@@ -556,6 +556,10 @@ class MemoryRepo:
         text = text.strip()
         if not text:
             return False
+        if not _terms(text):
+            # Pure emoji / punctuation / symbols carry no retrievable tokens: a
+            # memory nobody can ever search back is garbage. Reject like blank.
+            return False
         acquired = await self._acquire_add_lock(user_id)
         lock_key, lock_token = acquired if acquired is not None else (None, None)
         try:
@@ -618,7 +622,12 @@ class MemoryRepo:
             try:
                 hits = await self.vector_store.search(user_id, vec, k=1)
                 if hits and hits[0][1] >= _DUP_SIMILARITY:
-                    return False  # semantic duplicate: same meaning, other wording
+                    mid = hits[0][0]
+                    # The hit must STILL exist in MySQL. Eviction deletes the row
+                    # but leaves its vector behind (orphan); trusting the orphan
+                    # would make an evicted memory permanently un-writable.
+                    if await self._rows_by_ids(user_id, [mid]):
+                        return False  # semantic duplicate: same meaning, still stored
             except Exception:  # noqa: BLE001 - dedup must never fail a write
                 log.exception("semantic dedup search failed; skipping dedup (lexical still runs)")
         # Lexical Jaccard runs AFTER semantic dedup for two reasons: it is the

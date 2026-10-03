@@ -21,7 +21,7 @@ MySQL 与 Redis 使用火山引擎托管实例，通过 **VPC 私网** 访问（
 | 1 | ECS 与 RDS/Redis 同 VPC（或已打通） | ☐ 待你确认 | 在 ECS 上 `ping mysqldbe27c9b686f.rds.ivolces.com` 能解析出私网 IP 即通 |
 | 2 | RDS 安全组：3306 仅对 ECS 私网 IP 放行 | ☐ 待你确认 | 控制台 → MySQL 实例 → 安全组；公网 3306 建议关闭 |
 | 3 | Redis 安全组：6379 仅对 ECS 私网 IP 放行 | ☐ 待你确认 | 同上 |
-| 4 | MySQL 用户 `pi`（最小权限） | ✅ 已验证 | `pi`@`%`，仅 `pi_py`.* 的 DML+DDL；`pi_py` 库已建，schema 在 alembic 0002，数据为空 |
+| 4 | MySQL 用户 `pi`（最小权限） | ✅ 已验证 | `pi`@`%`，仅 `pi_py`.* 的 DML+DDL；`pi_py` 库已建（schema 随 migrate 容器推进，勿以本节历史编号为准），数据为空 |
 | 5 | ECS 安全组：对公网只开需要的端口 | ☐ 待你确认 | 用 caddy 就开 80/443；直连就开 8300 且**限定来源 IP** |
 | 6 | Docker ≥ 20.10，compose v2 | ☐ 待你确认 | `docker compose version` 有输出即可 |
 
@@ -75,8 +75,15 @@ vi .env    # 填 MYSQL_PASSWORD / REDIS_PASSWORD / PI_JWT_SECRET / OPENAI_API_KE
 docker compose -f docker-compose.cloud.yml up -d --build
 ```
 
-compose 会先跑 `migrate` 一次性容器（把 alembic 版本推进到 head，当前云端已是 0002，
-所以是幂等空跑），成功后（`service_completed_successfully`）才启动 `app`。
+compose 会先跑 `migrate` 一次性容器（把 alembic 版本推进到 head；head 随发版推进，
+例如 0008_rag 之后新部署会真实执行未应用的迁移，不是空跑——**这个容器就是迁移的
+唯一执行点，别跳过**），成功后（`service_completed_successfully`）才启动 `app`。
+
+**为什么必须走 migrate 而不是依赖应用自建表**：`db.init()` 里的
+`Base.metadata.create_all` 只建缺失的表、**不写 alembic_version**。绕过 migrate
+裸跑 `pi-py serve` 会让新表被静默创建、版本号停留在旧值，下次 migrate 撞
+"table already exists" 直接挂。裸金属部署同理：`pi-py migrate && pi-py serve`
+的顺序不可省。
 
 ### 2.4 验证清单
 

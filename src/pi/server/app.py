@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -112,10 +113,91 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
     # Cache backend (Redis or in-memory) is built before MemoryRepo so the
     # per-user add lock can be injected; it is also shared by limiter + runner.
     cache = get_backend(settings.redis_url, namespace=settings.redis_ns)
+    # Memory precision stage: a reranker (reuse RAG's rerank endpoint) scores the
+    # recalled candidates; an LLM judge then classifies duplicate/conflict/new.
+    # Both optional - absent, add falls back to cosine + lexical dedup only.
+    reranker = None
+    judge = None
+    rerank_url = os.environ.get("PI_RAG_RERANK_URL", "")
+    if rerank_url:
+        from pi.rag.defaults.http_reranker import HttpReranker
+        from pi.rag.types import RetrievedChunk
+
+        http_reranker = HttpReranker(
+            rerank_url,
+            os.environ.get("PI_RAG_RERANK_API_KEY", ""),
+            os.environ.get("PI_RAG_RERANK_MODEL", ""),
+        )
+
+        async def rerank(query: str, docs: list[str]) -> list[float]:
+            # Adapter: HttpReranker works on RetrievedChunk and returns sorted;
+            # MemoryRepo wants scores aligned to its own candidate order.
+            chunks = [
+                RetrievedChunk(chunk_id=i, doc_key="", text=d, score=0.0)
+                for i, d in enumerate(docs)
+            ]
+            scored = await http_reranker.rerank(query, chunks)
+            by_id = {c.chunk_id: c.score for c in scored}
+            return [by_id[i] for i in range(len(docs))]
+
+        reranker = rerank
+
+        from pi.llm import resolve
+        from pi.llm.base import StreamEnd, TextDelta
+        from pi.models import Message, Role, TextBlock
+
+        # Judge uses the default chat model; a dedicated cheaper model can be
+        # pinned later via a separate env var without touching MemoryRepo.
+        judge_provider = resolve(settings.default_model)
+
+        async def judge(user_id: int, new_text: str, existing_text: str) -> str:
+            prompt = (
+                "新记忆：{new}\n已有记忆：{old}\n\n"
+                "判断两者的关系，只输出一个词：duplicate（同义）、"
+                "conflict（同一件事但结论/值不同，新记忆应覆盖旧记忆）、"
+                "new（不同的事实）。"
+            ).format(new=new_text, old=existing_text)
+            parts: list[str] = []
+            usage = None
+            async for ev in judge_provider.stream(
+                "你是记忆去重与冲突判断器，只输出 duplicate / conflict / new 之一。",
+                [Message(role=Role.user, blocks=[TextBlock(text=prompt)])],
+                [],
+            ):
+                if isinstance(ev, TextDelta):
+                    parts.append(ev.text)
+                elif isinstance(ev, StreamEnd):
+                    usage = ev.usage
+            # Meter the judge's LLM spend like embedding spend (best-effort).
+            if usage is not None:
+                try:
+                    row = await users.by_id(user_id)
+                    if row is not None:
+                        await usage_tracker.record(
+                            user_id=user_id,
+                            username=row.username,
+                            session_id="",
+                            model=f"judge/{settings.default_model}",
+                            input_tokens=usage.input_tokens,
+                            output_tokens=usage.output_tokens,
+                            turns=0,
+                        )
+                except Exception:  # noqa: BLE001 - accounting must not fail a write
+                    log.exception("memory judge usage metering failed")
+            answer = "".join(parts).strip().lower()
+            if "conflict" in answer:
+                return "conflict"
+            # Guard the common refusal shape "not a duplicate" so a loquacious
+            # model cannot turn a new fact into a dropped write.
+            if "duplicate" in answer and "not duplicate" not in answer and "not a duplicate" not in answer:
+                return "duplicate"
+            return "new"
+
+        judge = judge
     users = UserRepo(db)
     sessions = SessionRepo(db)
     messages = MessageRepo(db)
-    memories = MemoryRepo(db, cache=cache)
+    memories = MemoryRepo(db, cache=cache, reranker=reranker, judge=judge)
     runs_repo = RunRepo(db)
     files_repo = FileRepo(db)
     store = ObjectStore(settings)
@@ -162,6 +244,8 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             on_embed_usage=on_embed_usage,
             on_retrieval=report_retrieval,
             cache=cache,
+            reranker=reranker,
+            judge=judge,
         )
         # mask_url: a serverless Milvus URI can embed a token in its hostname
         # section - the startup log lands in journald and must not carry it.

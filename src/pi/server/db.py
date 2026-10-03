@@ -498,6 +498,13 @@ _MEM_LOCK_TTL = 60.0
 _MEM_LOCK_WAIT = 5.0
 #: Retry interval between lock attempts.
 _MEM_LOCK_RETRY = 0.05
+#: Reranker relevance-score threshold for semantic dedup. Calibrated against
+#: the real endpoint (tools/probe_memory_threshold.py): "semantic equivalent"
+#: reranks ≥ ~0.74 while "related but different" sits ≤ ~0.59, so 0.65 is a safe
+#: split. Below this the new text is treated as a new fact.
+_RERANK_DUP = 0.65
+#: Candidate memories to recall for rerank/judge (top-k by vector or lexical).
+_RECALL_K = 3
 
 
 class MemoryRepo:
@@ -518,6 +525,8 @@ class MemoryRepo:
         on_retrieval: "Callable[[str, float], Awaitable[None]] | None" = None,
         memory_limit: int = _MEMORY_LIMIT,
         cache: CacheBackend | None = None,
+        reranker: "Callable[[str, list[str]], Awaitable[list[float]]] | None" = None,
+        judge: "Callable[[int, str, str], Awaitable[str]] | None" = None,
     ):
         self.db = db
         self.memory_limit = memory_limit
@@ -533,6 +542,12 @@ class MemoryRepo:
         # means the dedup check-then-write is NOT serialized across processes
         # (single-instance callers and unit tests pass nothing).
         self.cache = cache
+        # Optional precision dedup stage: reranker scores (query=text,
+        # documents=candidates) → relevance; judge classifies (text, candidate)
+        # into "duplicate" | "conflict" | "new". Both are injected by the app
+        # (HttpReranker + an LLM turn); absent → cosine + lexical only.
+        self.reranker = reranker
+        self.judge = judge
 
     async def add(self, user_id: int, text: str) -> bool:
         """Insert a memory. Returns True when inserted, False when it duplicated
@@ -600,43 +615,24 @@ class MemoryRepo:
             await asyncio.sleep(_MEM_LOCK_RETRY)
 
     async def _add_locked(self, user_id: int, text: str) -> bool:
-        """Dedup + insert + evict, the check-then-write body of ``add``. Callers
-        must hold the per-user add lock so the check and the write are atomic."""
-        # Embed ONCE and reuse the vector for both semantic dedup and the
-        # Milvus upsert - never bill the same text twice. ``vec is None`` means
-        # the vector path is off or the embed failed; lexical dedup still runs.
-        vec: list[float] | None = None
-        if self.embedder is not None and self.vector_store is not None:
-            try:
-                result = await self.embedder.embed([text])
-                await self._meter_embed(user_id, result.usage_tokens)
-                (vec,) = result.vectors
-            except Exception:  # noqa: BLE001 - dedup must never fail a write
-                log.exception("semantic dedup embed failed; falling back to lexical")
-                vec = None
-        if vec is not None:
-            # Semantic dedup: nearest neighbour cosine ≥ threshold means the
-            # meaning is already stored. A search failure here only SKIPS dedup
-            # (lexical still runs) - keep ``vec`` so ``_vector_add`` does not
-            # re-embed and double-bill a text that was already metered above.
-            try:
-                hits = await self.vector_store.search(user_id, vec, k=1)
-                if hits and hits[0][1] >= _DUP_SIMILARITY:
-                    mid = hits[0][0]
-                    # The hit must STILL exist in MySQL. Eviction deletes the row
-                    # but leaves its vector behind (orphan); trusting the orphan
-                    # would make an evicted memory permanently un-writable.
-                    if await self._rows_by_ids(user_id, [mid]):
-                        return False  # semantic duplicate: same meaning, still stored
-            except Exception:  # noqa: BLE001 - dedup must never fail a write
-                log.exception("semantic dedup search failed; skipping dedup (lexical still runs)")
-        # Lexical Jaccard runs AFTER semantic dedup for two reasons: it is the
-        # only dedup when the vector path is off/failed, and it is a safety net
-        # on top of a passing semantic check (catches near-verbatim repeats even
-        # when embeddings are noisy). It cannot see semantic equivalence, which
-        # is exactly why it must never be the PRIMARY check.
-        if await self._is_duplicate_lexical(user_id, text):
+        """Dedup (+conflict resolution) + insert + evict. Callers must hold the
+        per-user add lock so the check-then-write is atomic.
+
+        Pipeline (best precision first, degrading gracefully):
+          embed once → recall top-k candidates → reranker scores them →
+          (score ≥ threshold) judge classifies duplicate/conflict/new →
+          duplicate: no-op; conflict: overwrite the old row; new: insert.
+        Without a reranker the cosine threshold + lexical Jaccard take over.
+        """
+        vec = await self._embed_for_add(user_id, text)
+        candidates = await self._recall_candidates(user_id, text, vec)
+        verdict, conflict_mid = await self._resolve_verdict(user_id, text, vec, candidates)
+        if verdict == "duplicate":
             return False
+        if verdict == "conflict" and conflict_mid is not None:
+            await self._overwrite(conflict_mid, user_id, text, vec)
+            return True
+        # "new": insert a fresh row.
         async with AsyncSession(self.db.engine) as s:
             row = MemoryRow(user_id=user_id, text=text)
             s.add(row)
@@ -646,6 +642,110 @@ class MemoryRepo:
         await self._vector_add(memory_id, user_id, text, vec)
         await self._enforce_limit(user_id, self.memory_limit)
         return True
+
+    async def _embed_for_add(self, user_id: int, text: str) -> list[float] | None:
+        """Embed ONCE and reuse the vector for recall, dedup and the Milvus
+        upsert - never bill the same text twice. None when the vector path is off
+        or the embed failed (lexical dedup still runs)."""
+        if self.embedder is None or self.vector_store is None:
+            return None
+        try:
+            result = await self.embedder.embed([text])
+            await self._meter_embed(user_id, result.usage_tokens)
+            (vec,) = result.vectors
+            return vec
+        except Exception:  # noqa: BLE001 - dedup must never fail a write
+            log.exception("semantic dedup embed failed; falling back to lexical")
+            return None
+
+    async def _recall_candidates(
+        self, user_id: int, text: str, vec: list[float] | None
+    ) -> list[MemoryRow]:
+        """Top-k candidate memories for the rerank/judge stage. Vector recall
+        when the vector is available, lexical otherwise (or on failure)."""
+        if vec is not None:
+            try:
+                hits = await self.vector_store.search(user_id, vec, _RECALL_K)
+                if hits:
+                    ids = [mid for mid, _ in hits]
+                    rows = await self._rows_by_ids(user_id, ids)
+                    if rows:
+                        return rows
+            except Exception:  # noqa: BLE001 - recall must never fail a write
+                log.exception("vector recall failed; falling back to lexical")
+        return await self._lexical_search(user_id, text, _RECALL_K)
+
+    async def _resolve_verdict(
+        self,
+        user_id: int,
+        text: str,
+        vec: list[float] | None,
+        candidates: list[MemoryRow],
+    ) -> tuple[str, int | None]:
+        """Decide duplicate / conflict / new for ``text`` against existing
+        memories. Returns ``(verdict, conflict_memory_id)``.
+
+        Precision order: reranker+judge (best) → cosine threshold → lexical
+        Jaccard (last resort). Each stage degrades to the next on failure.
+        """
+        # 1. Reranker precision stage (only when configured).
+        if self.reranker is not None:
+            try:
+                if candidates:
+                    scores = await self.reranker(text, [r.text for r in candidates])
+                    if len(scores) == len(candidates) and scores:
+                        best_i = max(range(len(scores)), key=lambda i: scores[i])
+                        if scores[best_i] >= _RERANK_DUP:
+                            best = candidates[best_i]
+                            if self.judge is not None:
+                                verdict = await self._judge(user_id, text, best.text)
+                                if verdict == "conflict":
+                                    return "conflict", best.id
+                                if verdict == "duplicate":
+                                    return "duplicate", None
+                                # "new" (or unknown) → fall through to insert
+                            else:
+                                # high relevance and no judge → treat as duplicate
+                                return "duplicate", None
+                return "new", None  # reranker found nothing close enough
+            except Exception:  # noqa: BLE001 - degrade, never fail a write
+                log.exception("rerank dedup failed; falling back to cosine")
+        # 2. Cosine threshold stage (no reranker, or reranker failed).
+        if vec is not None:
+            try:
+                hits = await self.vector_store.search(user_id, vec, k=1)
+                if hits and hits[0][1] >= _DUP_SIMILARITY:
+                    mid = hits[0][0]
+                    # The hit must STILL exist in MySQL (orphan = evicted).
+                    if await self._rows_by_ids(user_id, [mid]):
+                        return "duplicate", None
+            except Exception:  # noqa: BLE001 - degrade, never fail a write
+                log.exception("cosine dedup search failed")
+        # 3. Lexical Jaccard: fallback + safety net on top of everything above.
+        if await self._is_duplicate_lexical(user_id, text):
+            return "duplicate", None
+        return "new", None
+
+    async def _judge(self, user_id: int, new_text: str, existing_text: str) -> str:
+        """Classify (new_text, existing_text) via the injected judge. A judge
+        failure is conservative: high relevance + broken judge → duplicate."""
+        try:
+            return await self.judge(user_id, new_text, existing_text)  # type: ignore[misc]
+        except Exception:  # noqa: BLE001 - a broken judge must not fail a write
+            log.exception("memory judge failed; treating as duplicate")
+            return "duplicate"
+
+    async def _overwrite(
+        self, memory_id: int, user_id: int, text: str, vec: list[float] | None
+    ) -> None:
+        """Conflict resolution: replace an existing row's text in place (keeps
+        id + created_at) and re-upsert its vector under the same key."""
+        async with AsyncSession(self.db.engine) as s:
+            row = await s.get(MemoryRow, memory_id)
+            if row is not None and row.user_id == user_id:
+                row.text = text
+                await s.commit()
+        await self._vector_add(memory_id, user_id, text, vec)
 
     async def _is_duplicate_lexical(self, user_id: int, text: str) -> bool:
         """Lexical Jaccard fallback: token overlap against existing memories.

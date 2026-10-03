@@ -97,6 +97,14 @@ UPDATE。改进后的 prompt 加了 5 个 few-shot 示例（含「主语言改�
 还是'是'"。**真实验证待补**：DeepSeek 余额不足（402），`/tmp/probe_judge_v2.py` 的
 新旧对比跑不了，待充值后重跑。
 
+**为何不区分 UPDATE 和 DELETE（保持三分类）**：mem0 是「多值集合」记忆模型（"喜欢X"
+可有多个），所以需要 UPDATE（合并）与 DELETE（矛盾删）两个不同的落库动作；我们是
+「单值原子事实」模型（一个主体一个属性一个值），"换值"即覆盖，没有"合并"，UPDATE 的
+合并语义不适用。DELETE 处理的"否定"措辞（"不是X了""不再X"）与 conflict 覆盖的落库
+结果不同，但出现概率低、后果轻（存否定义无害、检索可读）、引入成本高（第 4 动作 +
+`MemoryRepo.delete` + remember 工具支持），**暂不引入**。真正的"删除/遗忘"是显式用户
+操作，属"记忆删除/隐私（GDPR）"待办。
+
 ## 4. 并发正确性：per-user 锁 + fencing token
 
 「查重 → 写入」是 check-then-act，两个并发 add 会都通过查重、都落库。解法是 per-user

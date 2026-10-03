@@ -1317,7 +1317,7 @@ python -m pytest -q     # 测试统一连本地 MySQL（pi_py_test 库）+ Redis
 | `test_mysql_compat.py` | 3 | `engine_kwargs` 的方言分支 + 布尔默认值在 MySQL/PG/SQLite 三方言下的 DDL 兼容 |
 | `test_smoke.py` | 2 | 端到端：fake 模型驱动完整 agent 循环（write→read→edit→grep 四次工具调用）+ `on_message` 回调 |
 | `test_memory.py` | 12 | 语义记忆（P3）：跨会话长期记忆 + add 守卫（词法去重、上限驱逐、空文本、跨用户隔离、工具去重提示、per-user 锁并发串行化、锁失败 fail-open） |
-| `test_memory_precision.py` | 13 | 记忆精判：reranker 高分判重/低分写新/长度不匹配判 new/恰好阈值边界、judge 三分类（duplicate/conflict/new）、conflict 原地覆盖、reranker/judge 失败降级、judge 失败 fail-open、超长文本、并发+驱逐+精判叠加 |
+| `test_memory_precision.py` | 14 | 记忆精判：reranker 高分判重/低分写新/长度不匹配判 new/恰好阈值边界、judge 三分类（duplicate/conflict/new）、conflict 原地覆盖、reranker/judge 失败降级、judge 失败 fail-open、超长文本、并发+驱逐+精判叠加、否定措辞覆盖边界 |
 | `test_memory_edge.py` | 7 | 记忆边界：中文单字 token、纯符号文本拒绝、k=0/负数、空 query、英文大小写不敏感 |
 | `test_episodic.py` | 2 | episodic 记忆（P3）：压缩摘要落库复用 |
 | `test_compaction.py` | 1 | 压缩：摘要替换旧历史、保留尾部 |

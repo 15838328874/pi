@@ -250,6 +250,33 @@ def test_add_long_text_no_crash(tmp_path):
     asyncio.run(main())
 
 
+def test_negation_wording_conflict_overwrites(tmp_path):
+    """否定措辞（'不是X了'）被判 conflict → 覆盖成否定文本（已知边界，记录非推崇）。
+
+    这是「不区分 UPDATE 和 DELETE」的代价：否定义被当成新值覆盖，而非删除旧值。
+    后果轻（检索可读），真正的删除是显式操作（待办）。固化当前行为防意外改变。
+    """
+    db = Database(TEST_DB_URL)
+
+    async def rerank(user_id, query, docs):
+        return [0.9] * len(docs)
+
+    async def judge(user_id, new, existing):
+        return "conflict"
+
+    async def main():
+        await db.init()
+        repo = _repo(db, reranker=rerank, judge=judge)
+        assert await repo.add(1, "用户的主语言是Rust") is True
+        assert await repo.add(1, "用户的主语言不是Rust了") is True  # conflict → 覆盖
+        rows = await repo.list_for_user(1)
+        assert len(rows) == 1
+        assert rows[0].text == "用户的主语言不是Rust了"  # 否定义被当成新值（已知边界）
+        await db.dispose()
+
+    asyncio.run(main())
+
+
 def test_concurrent_add_with_reranker_and_eviction(tmp_path):
     """并发 add + reranker + 驱逐三者叠加：锁串行化，最终只留 limit 条、不崩。"""
     db = Database(TEST_DB_URL)

@@ -52,25 +52,31 @@
 
 ## B2 对抗性验证（沙箱逃逸用例集）
 
-**目标**：证明"521 个用例全绿"不等于"逃不出去"。当前 `tests/test_sandbox_pool.py` 全程
-`FakeTransport` 纯 mock，CI 无 docker，**没有一个用例真的尝试逃逸**。
+**目标**：证明"单元测试全绿"不等于"逃不出去"。单元测试里的
+`tests/test_sandbox_pool.py` 全程 `FakeTransport` 纯 mock，从没有用例真的尝试逃逸。
+
+**✅ docker 级已落地**（2026-10-03）：`tests/test_sandbox_escape.py`，对真实
+`DockerRunner` 跑 8 个逃逸用例——fork bomb（`--pids-limit`）、内存分配（`--memory` +
+无 swap）、`--network none` 断网、宿主密钥不泄漏、docker.sock 不可见、非 root uid、
+workspace 是唯一宿主可见路径、镜像可用性 smoke。`skipif` 无 docker CLI，因此 CI
+（ubuntu-latest 有 docker）自动跑、无 docker 环境自动跳过；本地可用
+`PI_TEST_SANDBOX_IMAGE` 指向预置镜像免拉取。每个用例都在显式 cgroup 上限 + `--rm`
+下运行，失败只会杀死容器，不会拖垮宿主。
 
 **能自验证的部分**（本机即可跑，见 §7 FAQ）：
 
-- **docker 级**：fork bomb、磁盘填满、`--network none` 是否真断网、symlink/挂载穿越、
-  `/proc/self`、`/dev` 设备、docker.sock 泄漏、权限提升（`--memory-swap`、`--pids`、
-  `--cpus` 限额是否生效、非 root uid）。
+- **docker 级**（已覆盖上述 8 类）：还可补——磁盘填满（需先有 disk quota，否则危险）、
+  symlink/挂载穿越、`/dev` 设备访问、`--cpus` 限额、`--memory-swap` 双重确认。
 - **microVM 级**（CubeSandbox）：本机 Cubelet 平台在跑、生产档位就是 `PI_SANDBOX=cubesandbox`，
   经 `PI_CUBE_API_URL` 建 VM 后从 VM 内打逃逸。
 
 **不能自验证的部分**：kernel CVE、供应链投毒、利用沙箱内合法组件的零日（HF 事件那一类）。
 "无法证明一个否定"——这类只能靠外部红队/持续研究，不做进仓库，但要在文档里明确边界。
 
-**落点**：
-1. `tools/sandbox_escape.py`（或扩 `tools/sandbox_bench.py`）做特权逃逸用例集，用例入库、结果不硬编码。
-2. docker 级逃逸用例进 CI（GitHub runner 有 docker，可跑 fork bomb/磁盘/网络/symlink）。
-3. microVM 级做 manual/privileged harness（GitHub runner 无嵌套虚拟化，进不了 CI），
+**剩余落点**：
+1. microVM 级逃逸用例：做 manual/privileged harness（GitHub runner 无嵌套虚拟化，进不了 CI），
    至少跑一次并把结论 + 机器规格写进 `docs/`。
+2. docker 级补充：磁盘填满（先给容器加 disk quota 才安全）、`/dev`、symlink/挂载穿越。
 
 ---
 

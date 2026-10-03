@@ -333,7 +333,7 @@ deploy/                     Caddyfiles, cloud runbook, .env template
 
 ```bash
 pip install -e ".[dev]"
-python -m pytest -q          # 520 passed, 8 skipped
+python -m pytest -q          # 521 passed, 8 skipped
 ```
 
 The suite needs no database, Redis, Docker, or API key: `tests/conftest.py` pins

@@ -21,8 +21,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# aiosqlite is test-only: the suite runs against throwaway SQLite files so it
-# needs no live database. Production requires MySQL/Postgres via PI_DATABASE_URL.
+# aiosqlite is test-only. The suite itself runs against the real local stack
+# (MySQL pi_py_test + Redis, see tests/conftest.py) - aiosqlite survives only
+# for the handful of tests that exercise a throwaway SQLite file directly.
 dev = ["pytest>=8.0", "aiosqlite>=0.20"]
 postgres = ["asyncpg>=0.29"]
 mysql = ["aiomysql>=0.2"]

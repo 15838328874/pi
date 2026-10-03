@@ -978,6 +978,7 @@ User-Agent，**不记密码**。三点注意：
 | `GET /v1/me` | 用户 | 当前用户名 |
 | `GET/POST /v1/sessions` | 用户 | 会话列表 / 创建（workspace = `workspace_root/用户名/`） |
 | `GET /v1/sessions/{id}` · `/messages` | 用户 | 会话详情 / 消息历史（仅限本人，`_owned_session` 强制属主校验） |
+| `GET /v1/sessions/{id}/files(/{path})` | 用户 | 会话产物列表 / 实时下载（2026-10-02 起；配额见 §13 `PI_WORKSPACE_MAX_BYTES`） |
 | `POST /v1/sessions/{id}/runs` | 用户 | **核心**：提交 prompt，返回 SSE 流（限流→配额→RunManager） |
 | `GET /v1/admin/users` | 管理员 | 用户列表 |
 | `PATCH /v1/admin/users/{u}` | 管理员 | 改配额 / 启停账号（禁用时顺带踢掉其所有在线 token；不能禁用自己） |
@@ -1216,6 +1217,7 @@ pi-py serve --port 8398                   # 别占用生产的 8300
 | `PI_RAG_MAX_CONCURRENT_INGESTS` | 8 | ingest 后台任务并发上限（I/O 密集，保护外部 OCR/embedding API 不被突发打满）；超出 429，稍后重试 |
 | 其余 `PI_RAG_*`（内核） | — | chunking/embedding/rerank/heavy-parser/Milvus 参数由 `RagConfig.from_env()` 读，完整表见 §21 |
 | `PI_ARCHIVE` | 1 | 会话归档开关（0=关）；`PI_ARCHIVE_DIR`（默认 ~/.pi-py/archives）、`PI_ARCHIVE_S3_*`（MinIO 惰性上传） |
+| `PI_WORKSPACE_MAX_BYTES` | 100 MiB | 每会话 workspace 磁盘配额（草稿纸，非产物仓库）：write 写前硬拦、bash 事后警告；0=不限（传输模式与地址坑见 `docs/artifact-delivery-design.md`） |
 | `PI_S3_ENDPOINT` / `PI_S3_ACCESS_KEY` / `PI_S3_SECRET_KEY` / `PI_S3_BUCKET_FILES` / `PI_S3_BUCKET_ARTIFACTS` | 空=关 | MinIO/S3 文件管线（预签名直连、sha256 用户级去重、files 表索引） |
 
 ---
@@ -1835,7 +1837,7 @@ app/trajectory/admin，已决策不搬 Vue 工程）。
 |---|---|
 | 注册/登录/会话/run(SSE)/消息/usage | 有 |
 | `DELETE /v1/me`（注销账号） | 无 |
-| `GET/POST /v1/sessions/{id}/files`（工作区文件列表/上传） | 有但形态不同：用户级 `/v1/files`（POST 预签名直传 + commit + 列表/URL/DELETE，MinIO 直连不占带宽），非会话级工作区列表 |
+| `GET/POST /v1/sessions/{id}/files`（工作区文件列表/上传） | 会话级 GET 已落地（产物列表/实时下载，2026-10-02 起，含磁盘配额）；上传仍走用户级 `/v1/files` 预签名直传 |
 | `GET/DELETE /v1/memories(/{id})`（记忆 CRUD） | 无（只有 remember/recall 工具，无 HTTP 面） |
 | `GET /v1/admin/audit?event=` | 有但过滤参数不同（user/tool vs user/event） |
 | `GET /v1/admin/traces(/{runId})`（轨迹回放查看器） | 有等价端点：`GET /v1/admin/trajectory/{run_id}`（路径名不同，随 runs 表 2026-09-28 落地） |

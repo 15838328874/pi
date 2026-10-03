@@ -676,6 +676,19 @@ class MemoryRepo:
         out: list[MemoryRow] = []
         seen: set[int] = set()
 
+        # BM25 FIRST: it groups by entity, so the same-subject memory (the one
+        # the judge must overwrite) leads the list. If vector recall led, a
+        # value-word neighbour would sit at #0 and the judge could pick IT as the
+        # conflict target — overwriting the wrong memory (measured: "用户0改成Go"
+        # led with "用户1的主语言是Go" at #0 and the judge overwrote that).
+        try:
+            for r in await self._bm25_recall(user_id, text, _RECALL_K):
+                if r.id not in seen:
+                    seen.add(r.id)
+                    out.append(r)
+        except Exception:  # noqa: BLE001 - recall must never fail a write
+            log.exception("bm25 recall failed; vector recall only")
+
         if vec is not None:
             try:
                 hits = await self.vector_store.search(user_id, vec, _RECALL_K)
@@ -686,14 +699,6 @@ class MemoryRepo:
                             out.append(r)
             except Exception:  # noqa: BLE001 - recall must never fail a write
                 log.exception("vector recall failed; falling back to lexical")
-
-        try:
-            for r in await self._bm25_recall(user_id, text, _RECALL_K):
-                if r.id not in seen:
-                    seen.add(r.id)
-                    out.append(r)
-        except Exception:  # noqa: BLE001 - recall must never fail a write
-            log.exception("bm25 recall failed; vector recall only")
 
         if out:
             return out[:_RECALL_MAX]

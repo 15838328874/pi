@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import os
-import re
 from typing import Any
+
+import regex as re
 
 from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
 
 MAX_MATCHES = 200
 MAX_FILE_BYTES = 1_000_000
+# Per-match time budget (seconds). The `regex` module interrupts catastrophic
+# backtracking (e.g. (a+)+$ on a long non-match) by raising TimeoutError, which
+# stdlib `re` cannot do. LLM-supplied patterns must not be able to hang the
+# event loop / worker thread indefinitely.
+REGEX_TIMEOUT = 0.5
 
 
 class GrepTool(Tool):
@@ -82,12 +88,18 @@ class GrepTool(Tool):
                 continue
             files_scanned += 1
             rel = str(filepath.relative_to(base_dir)).replace("\\", "/")
-            for lineno, line in enumerate(data.decode("utf-8", errors="ignore").splitlines(), 1):
-                if regex.search(line):
-                    matches.append(f"{rel}:{lineno}: {line.strip()[:400]}")
-                    if len(matches) >= MAX_MATCHES:
-                        truncated = True
-                        break
+            try:
+                for lineno, line in enumerate(data.decode("utf-8", errors="ignore").splitlines(), 1):
+                    if regex.search(line, timeout=REGEX_TIMEOUT):
+                        matches.append(f"{rel}:{lineno}: {line.strip()[:400]}")
+                        if len(matches) >= MAX_MATCHES:
+                            truncated = True
+                            break
+            except TimeoutError:
+                # Catastrophic backtracking on this file: stop scanning its
+                # remaining lines (further matches would likely time out too)
+                # and move on to the next candidate.
+                continue
 
         if not matches:
             return ToolResult(content=f"No matches for /{pattern}/ ({files_scanned} files scanned)")

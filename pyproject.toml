@@ -18,6 +18,7 @@ dependencies = [
     "uvicorn>=0.30",
     "sqlalchemy>=2.0",
     "pyjwt>=2.9",
+    "regex>=2023.0",
 ]
 
 [project.optional-dependencies]

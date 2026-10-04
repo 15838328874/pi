@@ -885,8 +885,9 @@ SANDBOX_MODES = frozenset({"", "local", "docker", "cubesandbox"})
 
 
 #: workspace tarball size cap for the sandbox load (envd files API rejects
-#: oversized uploads with HTTP 413; we fail earlier with an actionable error)
-_MAX_WS_SYNC_BYTES = 10 * 1024 * 1024
+#: oversized uploads with HTTP 413; we fail earlier with an actionable error).
+#: Override with PI_SANDBOX_WS_MAX_BYTES (bytes); default 100 MiB.
+_MAX_WS_SYNC_BYTES = int(os.environ.get("PI_SANDBOX_WS_MAX_BYTES", 100 * 1024 * 1024))
 
 
 class CubeSandboxRunner:

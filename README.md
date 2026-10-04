@@ -21,6 +21,41 @@ tools, and sandboxing (CubeSandbox microVMs in production, Docker locally). Mirr
 | `pi-coding-agent` | `pi.tools` + `pi.prompt`                              |
 | daemon / server   | `pi.server` (FastAPI + SSE), `pi.cli` (serve/migrate) |
 
+## 架构总览
+
+```mermaid
+flowchart LR
+    subgraph 入口
+        CLI[cli.py]
+        API[app.py FastAPI]
+    end
+    subgraph 编排
+        RM[runner.py RunManager<br/>锁 / 背压 / 超时 / SSE]
+    end
+    subgraph 智能体核心
+        LOOP[AgentLoop loop.py]
+        COMP[compaction.py]
+    end
+    subgraph 能力层
+        TOOLS[工具层 tools/]
+        LLM[llm/ provider + 降级链]
+    end
+    subgraph 沙箱与存储
+        SBX[沙箱 CubeSandbox VM / Docker]
+        DB[(MySQL)]
+        REDIS[(Redis)]
+        MILVUS[(Milvus)]
+    end
+    API --> RM --> LOOP
+    LOOP --> LLM
+    LOOP --> TOOLS --> SBX
+    TOOLS --> MILVUS
+    RM --> DB
+    RM --> REDIS
+```
+
+> 完整架构、Agent Loop 状态机、Memory Judge 决策树见 [ARCHITECTURE.md §3](ARCHITECTURE.md#3-整体架构)。
+
 ## Highlights
 
 精选亮点（完整叙事、设计取舍与踩坑实录都在 [ARCHITECTURE.md](ARCHITECTURE.md)）：

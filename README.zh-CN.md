@@ -85,8 +85,9 @@ PI_SKILLS_DIR=/opt/pi-py/skills
 - `<think>...</think>` 推理段会在流中自动剥离（qwen/deepseek 风格）。
 - 向量语义记忆（`remember`/`recall` 工具 + 每轮开始自动注入）：四个 `PI_EMBEDDING_*` /
   `PI_MILVUS_URI` 变量启用 Milvus 向量检索，`memories` 表是唯一事实源；不配（或缺任一）= 词法检索。
-  Milvus 故障自动降级为词法——影响的是检索质量，不是正确性。写入侧 `remember` 在
-  `PI_RAG_RERANK_*` 配置时经 reranker + LLM judge 做去重/冲突更新，否则回退 cosine + 词法
+  Milvus 故障自动降级为词法——影响的是检索质量，不是正确性。写入侧 `remember` 走
+  混合召回（向量 ∪ BM25）→ LLM judge（flash）判 duplicate/conflict/new，冲突用**版本化
+  退役**（写新行 + 旧行 `superseded_by`，历史保留可回滚）；无 judge 时回退纯词法
   （见 `docs/memory-design-notes.md`）。
 - MCP stdio server 作为应用子进程启动，但**不继承**应用环境变量（MCP SDK 传入安全白名单，
   故 `PI_JWT_SECRET` / `PI_DATABASE_URL` 不会进入 MCP 进程）；它**确实**以应用 uid / 文件系统 /

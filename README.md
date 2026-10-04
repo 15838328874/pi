@@ -98,8 +98,9 @@ Notes:
   four `PI_EMBEDDING_*` / `PI_MILVUS_URI` vars enable Milvus vector search with the
   `memories` table as source of truth; unset (or any missing) = lexical retrieval only.
   Milvus outages degrade to lexical — retrieval quality, never correctness. On write,
-  `remember` dedups/updates via reranker + LLM judge when `PI_RAG_RERANK_*` is set,
-  falling back to cosine + lexical otherwise (see `docs/memory-design-notes.md`).
+  `remember` does hybrid recall (vector ∪ BM25) → LLM judge (flash) → duplicate/conflict/
+  new, with conflict resolved by versioned supersession (history retained, reversible);
+  without a judge it falls back to lexical only (see `docs/memory-design-notes.md`).
 - MCP stdio servers are spawned as child processes of the app. They do **not** inherit
   the app's environment (the MCP SDK passes a safe allow-list, so `PI_JWT_SECRET` /
   `PI_DATABASE_URL` never reach them) but they **do** run unsandboxed with the app's

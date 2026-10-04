@@ -9,28 +9,28 @@
 ```
 add(user_id, text)  —— per-user 锁内串行
   1. 输入守卫：strip 非空、且 _terms(text) 非空（纯 emoji/标点 = 垃圾，拒绝）
-  2. embed 一次（向量路径开时），复用给「召回 + 判重 + Milvus upsert」，绝不重复计费
+  2. embed 一次（向量路径开时），复用给「召回 + Milvus upsert」，绝不重复计费
   3. 混合召回：向量 top-8 ∪ BM25/IDF top-8，去重后 ≤12 条（§3.2）
-  4. 快速判重（免费）：cosine ≥0.92 → duplicate，省 LLM
-  5. 精判（LLM judge，用 flash）：判 duplicate / conflict / new，自己从候选里挑 target
-  6. 写新 / conflict 原地覆盖（保 id + created_at，Milvus 同键 upsert）
-  7. 每用户上限驱逐（_MEMORY_LIMIT=500，最旧优先）
+  4. LLM judge（flash）看候选列表自己挑 target，判 duplicate / conflict / new
+  5. 写新 / conflict 版本化退役（写新行 + 旧行 superseded_by，历史保留）
+  6. 每用户上限驱逐（_MEMORY_LIMIT=500，最旧优先）
 ```
 
-## 2. 判重/冲突的降级链（廉价优先，层层兜底）
+## 2. 判重/冲突（对齐 mem0：召回 → 全量 judge）
 
 ```
-cosine ≥0.92（同义改写，免费）→ duplicate，省 LLM
-      │ 否则（0.92 以下，conflict 与 new 重叠，必须语义判断）
-      ▼
-LLM judge（flash）看混合召回的候选列表，自己挑 target：
+混合召回（向量 ∪ BM25）→ 候选列表全给 judge
    ├─ duplicate → 不写
-   ├─ conflict  → 原地覆盖 target 行
+   ├─ conflict  → 版本化退役（写新行 + 旧行 superseded_by → 新行）
    └─ new       → 写新
       │ judge 挂了 / 没配
       ▼
-cosine 0.92 判重 + 词法 Jaccard 0.85（最后的兜底）
+词法 Jaccard 0.85（最后的兜底，只抓逐字重复）
 ```
+
+**没有廉价信号分流**。实测（§3.1）证明：cosine/reranker/词法都分不清「同义改写 /
+换值冲突 / 同模板不同主体」，三者在 0.86~0.95 重叠，任何阈值要么丢记忆要么漏重复。
+所以判重唯一可靠的是 LLM 语义判断，廉价信号只用于**召回**（把候选捞全），不用于**判重**。
 
 **核心原则（贯穿全链）**：`宁可重复，不丢记忆` —— 丢一条用户明确记住的记忆**不可恢复**；
 多一条重复有 500 上限 + 检索 top-k 兜底，代价极低。要做到"既不重复又不丢"需要 DB
@@ -39,22 +39,25 @@ fail-open：每一档失败都往「更可能写」的方向降级。
 
 ## 3. 关键发现（实测，不是推断）
 
-### 3.1 廉价信号分不清 conflict 和 new —— 单一阈值死路
+### 3.1 廉价信号分不清三类 —— 单一阈值彻底死路
 
-用真实 embedding（`qwen3.7-text-embedding`）和 reranker（`qwen3.7-text-rerank`）对
-三类样本打分，结论一致：**duplicate 可以靠高分可靠判重，但 conflict（换值）和 new
-（不同主体但共享主题词）在廉价信号上完全重叠**：
+用真实 embedding（`qwen3.7-text-embedding`）对四类样本打分，结论：**任何廉价信号
+（cosine/reranker/词法）都分不清「同义改写 / 换值冲突 / 同模板不同主体」，它们在
+0.86~0.95 完全重叠**：
 
-| 信号 | duplicate | conflict | new |
-|---|---|---|---|
-| cosine | 0.96+ | 0.77~0.83 | 0.75~0.88（甚至更高） |
-| rerank | 0.78+ | 0.35~0.60 | 0.05~0.54 |
+| 样本对 | cosine |
+|---|---|
+| 同义改写「我住在杭州」vs「我现在住在杭州」 | 0.99 |
+| 同模板不同主体「项目prj0是阿里云」vs「项目prj3是阿里云」 | 0.89 |
+| 换值冲突「项目prj3是阿里云」vs「项目prj3改成腾讯云」 | 0.88 |
 
-「用户偏好中文 vs 英文」（conflict）和「项目A用MySQL vs 项目B用MySQL」（new）在 cosine
-上分别是 0.85 和 0.87 —— **区分不了**。因为记忆池主题集中（都含"模块/配置/主语言"），
-embedding 对"相关但不同"和"同一对象换值"给一样高的分。**结论：cosine/reranker 只能做
-「高分判 duplicate」这个免费快速路径，conflict vs new 必须交给 LLM 语义判断。**
-（这也推翻了早期"reranker 能取代 LLM 判重"的设想——reranker 同样分不清，且已删除。）
+**这推翻了"cosine 高分判 duplicate 安全"的早期结论**：0.88 阈值想抓弱同义，却把
+「同模板不同主体」（0.89）和「换值冲突」（0.88）一并误杀——add 池子时"项目prj3是
+阿里云"被"项目prj0是阿里云"误判 duplicate、根本没写入，后续 judge 召回不到 target
+只能判 new（这正是 conflict 一度 80% 的根因）。
+
+**结论：廉价信号只用于召回（把候选捞全），判重唯一可靠的是 LLM 语义判断。**
+（早期"reranker 能取代 LLM 判重"的设想同样被推翻——reranker 也分不清，已删除。）
 
 ### 3.2 真正的瓶颈是「召回」，不是 judge —— 混合召回
 

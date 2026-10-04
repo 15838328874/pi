@@ -275,7 +275,10 @@ def build_runtime(
         index would look healthy while returning nothing across workers.
     """
     cfg = config or RagConfig.from_env()
-    store, backend = _make_store(cfg, db, create_schema=create_schema and db is None)
+    # create_schema stays True even when db is injected (server mode): the DDL is
+    # idempotent (CREATE TABLE IF NOT EXISTS), so a fresh DB where alembic 0008_rag
+    # never ran self-heals on first use instead of silently serving 500s.
+    store, backend = _make_store(cfg, db, create_schema=create_schema)
 
     if hooks is None:
         hooks = NoopHooks()

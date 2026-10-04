@@ -169,6 +169,13 @@ class SpawnSubagentsTool(Tool):
         )
         if ctx.runner is not None:
             child.ctx.runner = ctx.runner
+            # Share the parent's sandbox filesystem so the child's file tools
+            # (read/write/edit/grep/find/ls) act inside the VM, not on the host
+            # workspace. Deliberately do NOT re-run set_host_root: the parent
+            # loop already bound the shared SandboxFS to the session cwd, and
+            # re-binding here would clobber the parent's view (shared mutable
+            # state on the runner).
+            child.ctx.fs = getattr(ctx.runner, "fs", None)
 
         # Communication: task (+ optional context) is the child's whole input.
         prompt = task if not context else f"{task}\n\n<context>\n{context}\n</context>"

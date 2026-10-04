@@ -224,19 +224,21 @@ def test_vector_hits_from_other_user_are_skipped(tmp_path):
     asyncio.run(main())
 
 
-def test_add_semantic_dedup_wording_differs(tmp_path):
-    """措辞不同但语义相同 → 向量相似度 ≥ 阈值 → 去重（词法 Jaccard 会漏）。"""
+def test_semantic_dedup_requires_judge(tmp_path):
+    """措辞不同但语义相同，无 judge 时无法去重（词法 Jaccard 漏判 → 写重）。
+
+    语义去重（"回答请用中文" vs "用户偏好中文回答"）需要 judge；无 judge 时
+    只剩词法（只抓逐字重复），措辞差异大的同义改写会写重——宁可重复不丢。
+    """
     store = FakeVectorStore()
     db, repo = _repo(str(tmp_path / "v.db"), store, FakeEmbedder())
 
     async def main():
         await db.init()
         assert await repo.add(1, "用户偏好中文回答") is True
-        row = (await repo.list_for_user(1))[0]
-        # 措辞完全不同，但向量命中原记忆且相似度 0.96 ≥ 0.92
-        store.scripted = [(row.id, 0.96)]
-        assert await repo.add(1, "回答请用中文") is False
-        assert len(await repo.list_for_user(1)) == 1
+        # 无 judge：措辞不同语义相同 → 词法漏判 → 写重（语义去重需 judge）
+        assert await repo.add(1, "回答请用中文") is True
+        assert len(await repo.list_for_user(1)) == 2
         await db.dispose()
 
     asyncio.run(main())

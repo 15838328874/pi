@@ -489,17 +489,10 @@ class MessageRepo:
             ).scalar_one_or_none()
 
 
-#: Lexical Jaccard threshold above which a new memory is treated as a duplicate
-#: of an existing one (short facts, so token overlap is reliable).
+#: Lexical Jaccard threshold for the NO-JUDGE fallback duplicate check (short
+#: facts, so token overlap is reliable). It only runs when the judge is absent
+#: or failed, and only catches near-verbatim repeats.
 _DUP_JACCARD = 0.85
-#: Cosine-similarity threshold for SEMANTIC dedup (the fast, free path). Below
-#: this two memories are treated as distinct even if they share words.
-#: Calibrated on real-style memories (probe_balance): "duplicate" (同义改写)
-#: cosine sits at 0.862~0.988 while "conflict" (换值) tops out at 0.867 — a gap
-#: at ~0.87. 0.88 captures 18/20 duplicates with ZERO conflict mis-kills and a
-#: 0.013 safety margin (0.85 already mis-kills 1 conflict; 0.92 only catches
-#: 14/20). Anything below the band still goes to the judge.
-_DUP_SIMILARITY = 0.88
 #: Per-user cap on memories. Keeps the pool bounded and top-k retrieval clean.
 _MEMORY_LIMIT = 500
 #: Redis lock TTL for the per-user ``add`` lock. Must outlive the whole add -
@@ -636,15 +629,14 @@ class MemoryRepo:
         """Dedup (+conflict resolution) + insert + evict. Callers must hold the
         per-user add lock so the check-then-write is atomic.
 
-        Pipeline (best precision first, degrading gracefully):
-          embed once → recall top-k candidates → reranker scores them →
-          (score ≥ threshold) judge classifies duplicate/conflict/new →
-          duplicate: no-op; conflict: overwrite the old row; new: insert.
-        Without a reranker the cosine threshold + lexical Jaccard take over.
+        Pipeline: embed once → hybrid recall (vector ∪ BM25) → judge classifies
+        duplicate/conflict/new against the whole candidate list →
+          duplicate: no-op; conflict: supersede (new row + retire old); new: insert.
+        No judge → lexical Jaccard fallback (near-verbatim repeats only).
         """
         vec = await self._embed_for_add(user_id, text)
         candidates = await self._recall_candidates(user_id, text, vec)
-        verdict, conflict_mid = await self._resolve_verdict(user_id, text, vec, candidates)
+        verdict, conflict_mid = await self._resolve_verdict(user_id, text, candidates)
         if verdict == "duplicate":
             return False
         if verdict == "conflict" and conflict_mid is not None:
@@ -750,33 +742,18 @@ class MemoryRepo:
         self,
         user_id: int,
         text: str,
-        vec: list[float] | None,
         candidates: list[MemoryRow],
     ) -> tuple[str, int | None]:
         """Decide duplicate / conflict / new for ``text`` against existing
         memories. Returns ``(verdict, conflict_memory_id)``.
 
-        Precision order: judge (best, sees the whole top-k and picks the target)
-        → cosine threshold → lexical Jaccard (last resort). Each stage degrades
-        to the next on failure.
+        The judge sees the WHOLE top-k and decides all three classes — there is
+        NO cheap score split. Measured on real data, "同义改写" (0.95+), "换值"
+        (~0.88) and "同模板不同主体" (~0.89) OVERLAP in cosine, so any threshold
+        either drops memories or leaks duplicates. Only the LLM can tell them
+        apart (mem0-style: recall then hand everything to the model).
         """
-        # 1. Cosine fast-path — HIGH END ONLY. A near-identical rewrite (cosine
-        #    ≥ 0.92) is safely a duplicate, so skip the judge. There is NO safe
-        #    low-end cut: measured on the real model, "conflict" (换值) sits at
-        #    0.77~0.83 while "related but different" (same template, other
-        #    instance) sits at 0.75~0.88 — they OVERLAP completely, so anything
-        #    below the duplicate band must go to the judge.
-        if vec is not None:
-            try:
-                hits = await self.vector_store.search(user_id, vec, k=1)
-                if hits and hits[0][1] >= _DUP_SIMILARITY:
-                    mid = hits[0][0]
-                    # The hit must STILL exist in MySQL (orphan = evicted).
-                    if await self._rows_by_ids(user_id, [mid]):
-                        return "duplicate", None
-            except Exception:  # noqa: BLE001 - degrade, never fail a write
-                log.exception("cosine fast-path failed")
-        # 2. Judge stage: hand it the WHOLE top-k, not a single top-1. Embedding
+        # 1. Judge stage: hand it the WHOLE top-k, not a single top-1. Embedding
         # recall can rank an interfering neighbour first ("改成Go" recalls
         # "用户1的主语言是Go" above "用户0的主语言是Rust"), so the judge must see
         # every candidate and pick the target itself.
@@ -786,16 +763,11 @@ class MemoryRepo:
                 if verdict == "conflict" and target_idx is not None and 0 <= target_idx < len(candidates):
                     return "conflict", candidates[target_idx].id
                 if verdict == "duplicate":
-                    # Fallback: a judge "duplicate" is UNRELIABLE here. The cosine
-                    # fast-path already returned every ≥0.92 near-identical rewrite
-                    # above, so reaching the judge means top-1 cosine < 0.92 — the
-                    # judge's "duplicate" is then more likely a conflict it misread.
-                    # 宁可重复不丢：write it as new instead of dropping a value.
-                    return "new", None
+                    return "duplicate", None  # judge 可靠：判重就真的不写
                 return "new", None  # judge 是最终裁决：判 new 就写新
             except Exception:  # noqa: BLE001 - degrade, never fail a write
                 log.exception("judge stage failed; falling back to lexical")
-        # 3. Lexical Jaccard: last resort (no judge, or judge failed).
+        # 2. Lexical Jaccard: last resort (no judge, or judge failed).
         if await self._is_duplicate_lexical(user_id, text):
             return "duplicate", None
         return "new", None

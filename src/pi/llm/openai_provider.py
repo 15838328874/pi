@@ -90,7 +90,36 @@ class OpenAIProvider(LLMProvider):
                         for c in calls
                     ]
                 wire.append(entry)
-        return wire
+        return OpenAIProvider._repair_tool_sequence(wire)
+
+    @staticmethod
+    def _repair_tool_sequence(wire: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """补全残缺序列：assistant 带 tool_calls 但后面缺对应 tool 消息时，
+        补一个空 tool 消息兜底，避免下轮发给 LLM 触发 400
+        "insufficient tool messages following tool_calls message"。
+        残缺序列来自 run 中断/超时——assistant 已落库、tool 结果未落库。"""
+        out: list[dict[str, Any]] = []
+        pending: list[str] = []
+        for entry in wire:
+            role = entry.get("role")
+            if role == "tool":
+                out.append(entry)
+                tid = entry.get("tool_call_id")
+                if tid in pending:
+                    pending.remove(tid)
+            elif role == "assistant" and entry.get("tool_calls"):
+                for cid in pending:
+                    out.append({"role": "tool", "tool_call_id": cid, "content": ""})
+                pending = [c["id"] for c in entry["tool_calls"]]
+                out.append(entry)
+            else:
+                for cid in pending:
+                    out.append({"role": "tool", "tool_call_id": cid, "content": ""})
+                pending = []
+                out.append(entry)
+        for cid in pending:
+            out.append({"role": "tool", "tool_call_id": cid, "content": ""})
+        return out
 
     async def stream(
         self,

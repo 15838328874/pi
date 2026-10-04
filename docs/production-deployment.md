@@ -414,6 +414,60 @@ curl -s http://127.0.0.1:3000/sandboxes \
   -H "Content-Type: application/json" -d '{"templateID":"tpl-xxx"}'   # API 层能建沙箱
 ```
 
+### 5.1 启动 / 重启 / 自启（★ 别逐个 start，用 control.target 一键拉起）
+
+平台装好后是 13 个 `cube-sandbox-*.service`，聚合在 `cube-sandbox-control.target` 下。
+**重启后恢复、日常起停，用这一个 target 就够了，不要逐个 `systemctl start`**：
+
+```bash
+# 完整启动（拉起全部控制面 + 数据面组件）
+sudo systemctl start cube-sandbox-control.target
+
+# 完整停止
+sudo systemctl stop cube-sandbox-control.target
+
+# 开机自启（装完做一次）
+sudo systemctl enable cube-sandbox-control.target
+```
+
+**为什么不能逐个 start**：control.target 的 `Wants=` 里有一批"不起眼但必需"的组件，
+手动逐个启极易漏——实测漏过 `cube-sandbox-dns`（数据面 DNS 路由）和
+`cube-sandbox-cube-proxy` + `cube-sandbox-cube-lifecycle-manager`（沙箱入站代理，监听 `:443`）。
+漏掉后 `/readyz` **照样返回 `sandbox:"ok"`**（它只探控制面 `/health` 和 `*.cube.app` 能解析，
+不探 443 端口），但一跑 bash 就 `ConnectError: [Errno 111] Connection refused`——现象是
+"readyz 全绿，沙箱却连不上"。
+
+**启动后自检（数据面要真连，不能只看 readyz）**：
+
+```bash
+# 1) 所有 control 面服务 active（coredns/cube-api/cubelet/cube-proxy/egress/... 都要 running 或 exited，不能有 inactive）
+systemctl list-units 'cube-sandbox-*' --no-legend --no-pager
+
+# 2) 443 必须有人监听（cube-proxy 的入站 nginx）；169.254.254.53:53 是 coredns
+sudo ss -tlnp | grep -E ':443 |:3000 |:8089 '
+
+# 3) 数据面域名能解析到节点 IP（10.0.0.8 是 CUBE_SANDBOX_NODE_IP）
+getent hosts 49983-probe.cube.app
+
+# 4) 真跑一条命令（等价于 pi-py 里的 bash 工具，能通才算数）
+PI_SANDBOX_TEMPLATE=tpl-xxx /opt/pi-venv/bin/python - <<'PY'
+import os
+os.environ.setdefault("PI_CUBE_API_URL", "http://127.0.0.1:3000")
+os.environ.setdefault("PI_CUBE_API_KEY", "e2b_000000")
+os.environ.setdefault("PI_CUBE_DOMAIN", "cube.app")
+os.environ.setdefault("PI_SANDBOX_CA_FILE", "<你的 cube-ca-bundle.pem 路径>")
+from pi.tools.sandbox import CubeSandboxRunner
+import asyncio, pathlib
+r = CubeSandboxRunner(template=os.environ["PI_SANDBOX_TEMPLATE"])
+res = asyncio.run(r.run("echo HELLO_FROM_SANDBOX", pathlib.Path("."), 30))
+print("EXIT=", res.exit_code, "OUT=", res.output)
+PY
+```
+
+> `cube-sandbox-cube-templatecenter` / `cube-sandbox-webui` 也归 control.target 管：
+> 前者是 §6 建模板必需（做镜像时才需要），后者是平台控制台（可选）。
+> 若只跑 pi-py 会话沙箱、不现场建模板，二者 inactive 不影响 bash。
+
 ---
 
 ## 6. 沙箱镜像制作（完整流程，一条条照抄）
@@ -1133,6 +1187,7 @@ docker exec cube-sandbox-mysql mysql -ucube -pcube_pass cube_mvp \
 | **coredns 没跑 → `*.cube.app` 整个解析不了** | 与上一行同样的 `Name or service not known`，但**根因不同**：`cube-sandbox-coredns` 未运行 | `systemctl status cube-sandbox-coredns cube-sandbox-dns`，**两个都要 active**：前者答 `*.cube.app → 节点IP`（Corefile 里写死 10.0.0.8），后者把 `~cube.app` 路由到 169.254.254.53。⚠️ **coredns 是 cubesandbox 模式的必需组件**，不是"可选/闲置"——只有不启用 cubesandbox 时才可不管它。`cube-sandbox-dns` 因 `Requires=coredns` 会连带起不来 |
 | **coredns 起不来：`bind: permission denied`** | `Listen: listen tcp 169.254.254.53:53: bind: permission denied`，容器反复重启 | 镜像自带 `USER nonroot`，非 root 无 `CAP_NET_BIND_SERVICE` 绑不了 53；vendor 脚本又没留 `--cap-add` 口子。加 `/etc/sysctl.d/99-cube-coredns.conf`：`net.ipv4.ip_unprivileged_port_start = 53`（容器用 `--network host`，故对其生效），`sysctl --system` 后重启服务。**回滚时别忘了显式设回 1024**——删配置文件不会回退运行时值 |
 | **`PI_SANDBOX_CA_FILE` 指向 `/root/...` 读不到** | 非 root 服务沙箱连接/TLS 失败，或 CA 静默缺失 | 默认值 `/root/.local/share/mkcert/rootCA.pem` 位于 `/root`（700），非 root 服务读不了。复制到可读路径再设 `PI_SANDBOX_CA_FILE`。**必须是「平台 CA + 系统 CA 合并」**：只放平台 CA 会让 `SSL_CERT_FILE` 覆盖系统信任链，**直接打断模型与 embedding 的 HTTPS**。<br>`cat /root/.local/share/mkcert/rootCA.pem /etc/ssl/certs/ca-certificates.crt > <可读路径>/cube-ca-bundle.pem` |
+| **cube-proxy 没起 → readyz 绿但 bash 连不上沙箱** | `/readyz` 返回 `sandbox:"ok"`，但一跑 bash 工具就 `ConnectError: [Errno 111] Connection refused`（e2b SDK 连 `https://49983-<id>.cube.app:443` 被拒） | **根因不是 DNS**：`cube-sandbox-cube-proxy`（沙箱入站代理，监听 `:443`）及其依赖 `cube-sandbox-cube-lifecycle-manager` 处于 inactive，443 没人监听。`readyz` 只探控制面 `/health` + `*.cube.app` 能解析，**不探 443**，所以它绿了不代表数据面通。修复：`sudo systemctl start cube-sandbox-cube-lifecycle-manager cube-sandbox-cube-proxy`；更稳的是直接用 `sudo systemctl start cube-sandbox-control.target` 一键拉起全部（见 §5.1），并在启动后真跑一条 bash 验证（§5.1 自检第 4 步） |
 | **embedding 端点形态与客户端不一致**（现已从设计上消除） | 日志 `vector memory search failed (embed); falling back to lexical`，栈里 `KeyError`（原生客户端收到 OpenAI 应答是 `'output'`；反之是 `'data'`）| 历史坑：客户端曾只认 DashScope 原生契约（`{"input":{"texts":[...]}}` / `{"output":{"embeddings":[...]}}`），而 Aliyun MaaS 同时提供 `/compatible-mode` 的 OpenAI 形状，**填错不会报错**，只静默降级、表现为"记忆检索时而好用时而不好用"。现已统一为 **OpenAI 形状**（见 §4.4），`PI_RAG_EMBED_STYLE` 一并移除——**style 与端点不一致这个失效模式不再存在**。升级后若沿用原生 URL 会立刻 4xx/解析失败（响亮而非静默），改 URL 为 `/compatible-mode/v1/embeddings` 即可 |
 | **换 embedding 模型后检索变差**（未重建向量） | 换了 `PI_EMBEDDING_MODEL` 后检索质量骤降，但**没有任何报错** | 不同模型的向量空间不可比，旧向量全部失效。RAG 侧重建：`pi-py rag rebuild-index --user <id>`（SQL 是真相源、Milvus 是可重建投影）；**记忆向量（`pi_memories`）目前没有重建命令**，换模型前需留意（`ROADMAP.md` §3 已记待办）|
 | **向量召回"有命中反而失败"（`KeyError: 'id'`）** | 记忆条数从 0 变 1 后，向量检索开始恒抛错并被降级吞掉 | pymilvus 3.x 主键挂在 `Hit.id` 属性上，`Hit.entity` 只含请求的 `output_fields`；旧写法 `h["id"]` 在**空结果时不触发**（列表推导式不执行）故长期潜伏。改用 `h.id` |

@@ -18,8 +18,11 @@ def _repo(db, judge=None):
     return MemoryRepo(db, judge=judge)
 
 
-def test_judge_conflict_overwrites_target(tmp_path):
-    """judge 判 conflict + target → 原地覆盖对应候选（id 不变，text 更新）。"""
+def test_judge_conflict_supersedes_target(tmp_path):
+    """judge 判 conflict + target → 版本化：写新行 + 旧行退役（superseded_by）。
+
+    检索只返回新行（当前有效）；旧行仍在表里（历史保留，可回滚）。
+    """
     db = Database(TEST_DB_URL)
 
     async def judge(user_id, new, candidates):
@@ -30,11 +33,22 @@ def test_judge_conflict_overwrites_target(tmp_path):
         repo = _repo(db, judge=judge)
         assert await repo.add(1, "用户偏好中文回答") is True
         old = (await repo.list_for_user(1))[0]
-        assert await repo.add(1, "用户偏好英文回答") is True  # conflict → 覆盖
+        assert await repo.add(1, "用户偏好英文回答") is True  # conflict → 版本化
         rows = await repo.list_for_user(1)
-        assert len(rows) == 1
-        assert rows[0].id == old.id
+        assert len(rows) == 1  # 只有当前有效的（新行）
+        assert rows[0].id != old.id  # 是新行，不是原地覆盖
         assert rows[0].text == "用户偏好英文回答"
+        # 旧行仍在表里且被退役（历史保留）
+        async with db.engine.connect() as c:
+            from sqlalchemy import text as sqltext
+            old_text = (await c.execute(
+                sqltext("SELECT text FROM memories WHERE id = :i"), {"i": old.id}
+            )).scalar_one()
+            assert old_text == "用户偏好中文回答"
+            sup = (await c.execute(
+                sqltext("SELECT superseded_by FROM memories WHERE id = :i"), {"i": old.id}
+            )).scalar_one()
+            assert sup == rows[0].id  # 旧行指向新行
         await db.dispose()
 
     asyncio.run(main())

@@ -303,8 +303,8 @@ def test_add_after_eviction_not_blocked_by_orphan_vector(tmp_path):
     asyncio.run(main())
 
 
-def test_conflict_overwrite_updates_milvus_same_id(tmp_path):
-    """judge 判 conflict → 原地覆盖（id 不变）+ Milvus 同 id 二次 upsert。"""
+def test_conflict_supersedes_with_new_milvus_vector(tmp_path):
+    """judge 判 conflict → 版本化：新行 id 入 Milvus，旧行退役（不再二次 upsert）。"""
     store = FakeVectorStore()
     embedder = FakeEmbedder()
     db = Database(TEST_DB_URL)
@@ -318,15 +318,17 @@ def test_conflict_overwrite_updates_milvus_same_id(tmp_path):
         await db.init()
         assert await repo.add(1, "用户偏好中文回答") is True
         old = (await repo.list_for_user(1))[0]
-        # 让向量召回命中旧行，触发 judge→conflict
-        store.scripted = [(old.id, 0.9)]
+        # 让向量召回命中旧行（cosine 0.8，低于 0.88 判重阈值），触发 judge→conflict
+        store.scripted = [(old.id, 0.8)]
         assert await repo.add(1, "用户偏好英文回答") is True
         rows = await repo.list_for_user(1)
         assert len(rows) == 1
-        assert rows[0].id == old.id  # 原地更新，不新增行
+        assert rows[0].id != old.id  # 新行，不是原地覆盖
         assert rows[0].text == "用户偏好英文回答"
-        # Milvus 收到同 id 的两次 upsert，最后一次是新文本（覆盖旧向量）
-        assert [mid for mid, _u, _t, _v in store.adds].count(old.id) == 2
+        # Milvus：旧行 id 一次（初次 add），新行 id 一次（版本化写入），各一次
+        mids = [mid for mid, _u, _t, _v in store.adds]
+        assert mids.count(old.id) == 1
+        assert mids.count(rows[0].id) == 1
         assert store.adds[-1][2] == "用户偏好英文回答"
         await db.dispose()
 

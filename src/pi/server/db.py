@@ -93,6 +93,12 @@ class MemoryRow(Base):
     the agent (or user) explicitly wants to keep across sessions. Retrieval is
     lexical today; a vector/embedding backend can slot in behind MemoryRepo later
     without changing the tool or the runner.
+
+    ``superseded_by`` implements fact succession (Zep/Graphiti-style): a value
+    change writes a NEW row and points the old row at it, instead of overwriting
+    in place. Retrieval filters to ``superseded_by IS NULL`` (current truth);
+    history stays in the table, so the past is answerable and a wrong overwrite
+    is reversible.
     """
 
     __tablename__ = "memories"
@@ -101,6 +107,9 @@ class MemoryRow(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
     text: Mapped[str] = mapped_column(Text)
     created_at: Mapped[str] = mapped_column(String(32), default=_now)
+    superseded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("memories.id", ondelete="SET NULL"), nullable=True
+    )
 
 
 class CompactionRow(Base):
@@ -483,9 +492,14 @@ class MessageRepo:
 #: Lexical Jaccard threshold above which a new memory is treated as a duplicate
 #: of an existing one (short facts, so token overlap is reliable).
 _DUP_JACCARD = 0.85
-#: Cosine-similarity threshold for SEMANTIC dedup (the preferred path). Below
+#: Cosine-similarity threshold for SEMANTIC dedup (the fast, free path). Below
 #: this two memories are treated as distinct even if they share words.
-_DUP_SIMILARITY = 0.92
+#: Calibrated on real-style memories (probe_balance): "duplicate" (同义改写)
+#: cosine sits at 0.862~0.988 while "conflict" (换值) tops out at 0.867 — a gap
+#: at ~0.87. 0.88 captures 18/20 duplicates with ZERO conflict mis-kills and a
+#: 0.013 safety margin (0.85 already mis-kills 1 conflict; 0.92 only catches
+#: 14/20). Anything below the band still goes to the judge.
+_DUP_SIMILARITY = 0.88
 #: Per-user cap on memories. Keeps the pool bounded and top-k retrieval clean.
 _MEMORY_LIMIT = 500
 #: Redis lock TTL for the per-user ``add`` lock. Must outlive the whole add -
@@ -634,7 +648,7 @@ class MemoryRepo:
         if verdict == "duplicate":
             return False
         if verdict == "conflict" and conflict_mid is not None:
-            await self._overwrite(conflict_mid, user_id, text, vec)
+            await self._supersede(conflict_mid, user_id, text, vec)
             return True
         # "new": insert a fresh row.
         async with AsyncSession(self.db.engine) as s:
@@ -804,17 +818,25 @@ class MemoryRepo:
             log.exception("memory judge failed; treating as new (fail-open)")
             return "new", None
 
-    async def _overwrite(
+    async def _supersede(
         self, memory_id: int, user_id: int, text: str, vec: list[float] | None
     ) -> None:
-        """Conflict resolution: replace an existing row's text in place (keeps
-        id + created_at) and re-upsert its vector under the same key."""
+        """Conflict resolution as fact succession: write the NEW value as a fresh
+        row and retire the old one (``superseded_by`` → new id) instead of
+        overwriting in place. History is retained (the old row stays, only
+        filtered out of retrieval), so the past is answerable and a wrong
+        overwrite is reversible by clearing ``superseded_by``.
+        """
         async with AsyncSession(self.db.engine) as s:
-            row = await s.get(MemoryRow, memory_id)
-            if row is not None and row.user_id == user_id:
-                row.text = text
-                await s.commit()
-        await self._vector_add(memory_id, user_id, text, vec)
+            new_row = MemoryRow(user_id=user_id, text=text)
+            s.add(new_row)
+            await s.flush()  # capture the new id
+            new_id = new_row.id
+            old = await s.get(MemoryRow, memory_id)
+            if old is not None and old.user_id == user_id:
+                old.superseded_by = new_id
+            await s.commit()
+        await self._vector_add(new_id, user_id, text, vec)
 
     async def _is_duplicate_lexical(self, user_id: int, text: str) -> bool:
         """Lexical Jaccard fallback: token overlap against existing memories.
@@ -856,11 +878,17 @@ class MemoryRepo:
             await s.commit()
 
     async def list_for_user(self, user_id: int, limit: int = 500) -> Sequence[MemoryRow]:
+        """Current (non-superseded) memories, newest first. Superseded rows are
+        history — excluded from every retrieval surface so the agent only sees
+        the latest truth, while the past stays in the table."""
         async with AsyncSession(self.db.engine) as s:
             return (
                 await s.execute(
                     select(MemoryRow)
-                    .where(MemoryRow.user_id == user_id)
+                    .where(
+                        MemoryRow.user_id == user_id,
+                        MemoryRow.superseded_by.is_(None),
+                    )
                     .order_by(MemoryRow.id.desc())
                     .limit(limit)
                 )
@@ -957,12 +985,16 @@ class MemoryRepo:
 
     async def _rows_by_ids(self, user_id: int, ids: list[int]) -> list[MemoryRow]:
         """Re-fetch rows in vector-hit order, skipping ids missing from the DB
-        (stale Milvus entries) and ids not owned by this user (safety)."""
+        (stale Milvus entries), ids not owned by this user (safety), and
+        SUPERSEDED rows (a retired value must never surface as a recall
+        candidate, or the judge would re-conflict against dead history)."""
         async with AsyncSession(self.db.engine) as s:
             rows = (
                 await s.execute(
                     select(MemoryRow).where(
-                        MemoryRow.id.in_(ids), MemoryRow.user_id == user_id
+                        MemoryRow.id.in_(ids),
+                        MemoryRow.user_id == user_id,
+                        MemoryRow.superseded_by.is_(None),
                     )
                 )
             ).scalars().all()

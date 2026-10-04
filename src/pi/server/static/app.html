@@ -121,6 +121,8 @@
   .rag-row .rag-status.pending, .rag-row .rag-status.index_pending { color: var(--muted); }
   .rag-row .rag-status.failed { color: var(--error); }
   .rag-row button.danger { color: var(--error); border-color: var(--error); }
+  #ragList { overflow-y: auto; }
+  #ragList .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
   #fileList { overflow-y: auto; }
   #fileList .empty { color: var(--muted); font-size: 13px; padding: 10px 0; }
   #fileMsg { color: var(--muted); font-size: 12px; margin-top: 8px; min-height: 16px; word-break: break-all; }
@@ -570,6 +572,26 @@ async function openSession(id) {
   $("chatModel").textContent = s && s.model ? s.model : "";
   const data = await apiJson(`/v1/sessions/${id}/messages`);
   renderMessages(data.messages || []);
+  refreshRunningState();
+}
+
+// 会话是否还有回答在跑：刷新页面后前端 streaming 状态丢失，但后端锁还在。
+// 打开会话时查一次，锁着就锁住输入，避免用户一发就撞「another turn is
+// already running for this session」。
+async function refreshRunningState() {
+  if (!sid) return;
+  try {
+    const r = await apiJson(`/v1/sessions/${sid}/running`);
+    setComposerLocked(!!r.running);
+  } catch (_) {
+    setComposerLocked(false);
+  }
+}
+
+function setComposerLocked(locked) {
+  streaming = locked;
+  $("send").disabled = locked;
+  $("send").textContent = locked ? "生成中…" : "发送";
 }
 
 function renderMessages(messages) {
@@ -817,7 +839,13 @@ async function sendPrompt() {
           bubble?.insertAdjacentHTML("beforeend",
             `<div class="meta">本轮 ${u.input_tokens} in / ${u.output_tokens} out · ${d.turns} turns${cache}</div>`);
         } else if (evt === "error") {
-          showBanner("运行错误：" + d.message);
+          const msg = d.message || "";
+          if (msg.includes("another turn is already running")) {
+            showBanner("上一个回答还在生成中，请稍候再发送");
+            refreshRunningState();
+          } else {
+            showBanner("运行错误：" + msg);
+          }
         }
       }
     }
@@ -828,8 +856,7 @@ async function sendPrompt() {
 }
 
 function finishRun() {
-  streaming = false;
-  $("send").disabled = false;
+  setComposerLocked(false);
   if (sid) {
     // 以服务端落库为准重拉历史（流式只是预览），顺带刷新用量。
     // 失败必须可见，不能静默吞掉——之前 blocks 形状 bug 就是这样藏了三天

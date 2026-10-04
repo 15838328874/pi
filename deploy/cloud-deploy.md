@@ -243,6 +243,11 @@ curl -s http://127.0.0.1:3000/v1/models -H "Authorization: Bearer sk-<令牌>"
   （`PI_CUBE_API_URL`/`PI_CUBE_DOMAIN` 有默认值）；**配一半 = fail-closed**——模板或
   key 缺失时每次 bash 调用都报错、`/readyz` 翻 503，绝无静默回退。平台本身（coredns
   等）挂掉时同理（§2.5 的硬检查）。
+  > ⚠️ **`docker-compose.cloud.yml` 只起 app + 中间件（llm-gateway / caddy），不含
+  > CubeSandbox 平台本身。** 那套是独立安装包（`cubetoolbox`，13 个 `cube-sandbox-*`
+  > systemd 服务：coredns / cube-api / cubelet / cube-proxy / cube-egress / cubemaster…），
+  > 需按 [`production-deployment.md`](production-deployment.md) §2.1 / §5.1 单独部署到
+  > 宿主机。compose 里只有 `PI_CUBE_API_URL` 等连接参数，不是平台本体。
 - **`PI_SANDBOX=local`（为什么不再是默认）**：bash 在 app 容器内以非特权用户 `pi`
   （uid 10001）执行。有容器这层隔离（碰不到宿主机），但所有用户共享同一个 app 容器
   环境——**包括应用的全部环境变量**。任何注册用户都能 `echo $PI_JWT_SECRET` 拿到签发

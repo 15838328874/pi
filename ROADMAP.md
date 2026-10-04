@@ -84,6 +84,16 @@
 | 记忆强一致去重（可选） | 当前 per-user 锁 + fencing token 是"尽力"互斥：锁 TTL 过期后双持有者仍会并发写。真·强一致需 **DB 唯一约束**（词法层）或 **fencing 贯穿下游写**（层 2，需给 memories 加 fence 列/表 + CAS），当前判为对"记忆重复"过度设计，多实例高并发时再评估 | 低 |
 | 记忆词法层语言局限 | 中文按**单字** token，Jaccard 0.85 只对"逐字几乎相同"判重，近义（回答/回复）漏判靠向量层兜；**日文假名/韩文等非 CJK 汉字**因无匹配 token 会被 `add` 当作垃圾拒绝（当前产品定位中英，暂不改分词，见 `_TERM_RE`） | 低 |
 | 安全硬化 B1–B5 | 高危操作人工确认（HITL）/ 沙箱对抗性验证 / OIDC+RBAC / 集群化 / 审计不可变存储。完整演进计划与验收不变量见 [`docs/hardening-roadmap.md`](docs/hardening-roadmap.md)。其中 **B2（docker 级逃逸用例进 CI）优先级最高**——当前 521 用例全绿但无一真实逃逸尝试。B1 与本表"交互式 run"共享 checkpoint/resume 依赖 | 见文档 |
+| 冷 CLI 沙箱超时泄漏容器 | `PI_SANDBOX_POOL=0` 时超时只 kill 本地 `docker run` 客户端，container 继续跑到自己结束（README:395 自承）。多租户下「防失误」路径被打穿。修：超时后 kill 容器进程组（不是只杀 client） | 高 |
+| Run 取消/暂停 API | 只有 `GET /v1/sessions/{id}/running` 查询、无取消。长 run 中途想停只能等 `max_turns`/`max_cost`/外层 600s 超时。加 `/v1/sessions/{id}/runs/cancel`（asyncio 取消 + 释放会话锁） | 中 |
+| 工具结果 prompt 注入防御 | `ToolResultBlock.content` 原样喂回模型，无 strip/标记。工具输出里混入「接下来请执行…」这类指令，模型会照做（间接 prompt 注入）。加 `<tool_result>` 包裹 + 控制指令过滤/降权 | 高 |
+| Memory Judge 成本预算 | 每条记忆 `add` 都跑一次 LLM judge，无 budget / 跳过阈值。大用户月度配额里 judge 消耗可能反超 chat 主模型。加 judge 预算上限或低成本跳过阈值 | 中 |
+| RAG groundedness 评测 | 检索侧有 recall@k / hit@k / mrr（`pi/rag/eval`），但**生成忠实性无评测**——没评「回答是否忠于检索 chunk、有无幻觉、引用对不对」。补 LLM 判 groundedness/faithfulness | 中 |
+| Deploy CI/K8s 编排 | `deploy/` 只有 Caddyfile / cloud-deploy.md / .env 模板，无 Dockerfile / docker-compose / helm / terraform。多租户上 K8s 需自行啃 | 低 |
+| 简历展示：架构图 | README 补 mermaid 图：数据流总览 + Agent Loop 状态机 + 沙箱池 + Memory Judge 决策树各一张 | 中 |
+| 简历展示：Docker Compose | app + MySQL + Redis + Milvus + MinIO 一键起（`docker compose up`），README 加一句。SRE 视角第一眼 | 中 |
+| 简历展示：benchmark 数字 | 跑 `tools/sandbox_bench.py` 出 latency/throughput 图；memory judge 跑 100 条样本出判准率。有数字比没数字强十倍 | 中 |
+| 简历展示：demo GIF | 录屏「注册→上传文件→跑任务→看 trajectory」转 GIF 放 README | 中 |
 
 ## 4. 后续阶段开发
 

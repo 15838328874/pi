@@ -25,6 +25,9 @@ class CacheBackend(Protocol):
     async def release_lock(self, key: str) -> None:
         """Release a previously acquired lock."""
 
+    async def has_lock(self, key: str) -> bool:
+        """Whether a lock for ``key`` is currently held (for UI running-state)."""
+
     async def acquire_lock_owned(self, key: str, ttl_seconds: float) -> str | None:
         """Acquire a lock and return a unique ownership token, or None if not
         acquired. The token must be passed to ``release_lock_owned`` so a holder
@@ -77,6 +80,9 @@ class MemoryBackend:
 
     async def release_lock(self, key: str) -> None:
         self._locks.discard(key)
+
+    async def has_lock(self, key: str) -> bool:
+        return key in self._locks
 
     async def acquire_lock_owned(self, key: str, ttl_seconds: float) -> str | None:
         if key in self._owned_locks:
@@ -139,6 +145,9 @@ class RedisBackend:
         lock_key = f"{self._ns}:lock:{key}"
         await self._redis.delete(lock_key)
         self._lock_names.discard(lock_key)
+
+    async def has_lock(self, key: str) -> bool:
+        return bool(await self._redis.exists(f"{self._ns}:lock:{key}"))
 
     async def acquire_lock_owned(self, key: str, ttl_seconds: float) -> str | None:
         lock_key = f"{self._ns}:lock:{key}"

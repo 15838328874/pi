@@ -976,15 +976,35 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             ]
         }
 
+    @app.get("/v1/sessions/{session_id}/running")
+    async def session_running(session_id: str, username: str = Depends(current_user)) -> dict:
+        """Whether this session has a turn in flight (distributed lock held).
+
+        Lets the frontend disable the composer after a page reload, so the user
+        isn't hit with the bare "another turn is already running" rejection."""
+        await _owned_session(session_id, username)
+        running = await cache.has_lock(f"session:{session_id}")
+        return {"running": running}
+
     @app.get("/v1/sessions/{session_id}/trajectory")
     async def get_trajectory(session_id: str, username: str = Depends(current_user)) -> dict:
-        """Latest stored run of this session. DB (runs table) first, then the
-        jsonl fallback for rows written before the table existed. Ownership
-        check first - a 404 leaks nothing."""
+        """Merged timeline: every run of this session, oldest first, so opening
+        a session shows the full conversation history instead of only the latest
+        run. DB (runs table) first, then the jsonl fallback for rows written
+        before the table existed. Ownership check first - a 404 leaks nothing."""
         await _owned_session(session_id, username)
-        row = await runs_repo.latest_for_session(session_id)
-        if row is not None:
-            return json.loads(row.trajectory)
+        rows = await runs_repo.list_for_session(session_id)
+        if rows:
+            merged_events: list[dict] = []
+            for row in rows:
+                traj = json.loads(row.trajectory)
+                merged_events.extend(traj.get("events", []))
+            if merged_events:
+                # Keep the first run's metadata (run_id/session/model/cwd...);
+                # the merged event list spans every run in chronological order.
+                base = json.loads(rows[0].trajectory)
+                base["events"] = merged_events
+                return base
         if settings.trajectory_path is None:  # PI_TRAJECTORY_PATH="" disables storage
             raise HTTPException(status_code=404, detail="no trajectory for this session")
         traj = latest_trajectory(settings.trajectory_path, session_id)

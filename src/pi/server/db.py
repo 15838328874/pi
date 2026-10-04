@@ -415,6 +415,17 @@ class RunRepo:
                 )
             ).scalar_one_or_none()
 
+    async def list_for_session(self, session_id: str) -> list[RunRow]:
+        """All runs of a session, oldest first (for merged timeline view)."""
+        async with AsyncSession(self.db.engine) as s:
+            return (
+                await s.execute(
+                    select(RunRow)
+                    .where(RunRow.session_id == session_id)
+                    .order_by(RunRow.created_at.asc())
+                )
+            ).scalars().all()
+
 
 class MessageRepo:
     def __init__(self, db: Database):

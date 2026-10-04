@@ -97,7 +97,7 @@ class TestPersistence:
 
 
 class TestEndpoint:
-    def test_owner_gets_latest_trajectory(self, server, tmp_path):
+    def test_owner_gets_merged_trajectory(self, server, tmp_path):
         h, sid = _register_and_session(server, "alice")
         _run(server, h, sid)
         _run(server, h, sid)
@@ -106,8 +106,10 @@ class TestEndpoint:
         assert r.status_code == 200
         body = r.json()
         assert body["session_id"] == sid
-        # two runs for the session are stored; the scan returns the latest line
-        assert len(body["events"]) >= 2
+        # both runs are merged into one chronological timeline
+        run_starts = [e for e in body["events"] if e["type"] == "RunStarted"]
+        assert len(run_starts) == 2
+        assert len(body["events"]) >= 4
 
     def test_cross_user_404(self, server):
         h_alice, sid = _register_and_session(server, "alice")

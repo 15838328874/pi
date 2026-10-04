@@ -24,7 +24,13 @@ class BashTool(Tool):
             "command": {"type": "string", "description": "The shell command to run."},
             "timeout": {
                 "type": "integer",
-                "description": "Timeout in seconds (default 120, max 600).",
+                "description": (
+                    "Timeout in seconds (default 120, max 600). Long commands "
+                    "like pip install or builds can exceed 120s — pass 600 "
+                    "explicitly. For jobs longer than 600s, background them "
+                    "with 'setsid nohup ... > /tmp/x.log 2>&1 &' and poll the "
+                    "log in follow-up calls."
+                ),
                 "default": 120,
             },
         },

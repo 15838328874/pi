@@ -1048,7 +1048,15 @@ class CubeSandboxRunner:
             if timeout and timeout > 0:
                 wrapped = f"timeout {int(timeout)}s bash -lc {shlex.quote(command)}"
             handle = await asyncio.to_thread(
-                lambda: sbx.commands.run(wrapped, cwd=self.WORKSPACE)
+                lambda: sbx.commands.run(
+                    wrapped,
+                    cwd=self.WORKSPACE,
+                    # e2b SDK defaults to a 60s connection deadline, which would
+                    # kill a long `pip install` before the in-VM `timeout(1)`
+                    # wrapper ever fires. Align the SDK deadline to the tool
+                    # timeout (+30s headroom for envd to ship the result back).
+                    timeout=(timeout + 30) if (timeout and timeout > 0) else 0,
+                )
             )
             code = int(handle.exit_code or 0)
             timed_out = code == 124

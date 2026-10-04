@@ -154,21 +154,17 @@ def create_app(settings: ServerSettings | None = None) -> FastAPI:
             "候选记忆（编号 0 起，每条带「日期 记录」前缀，时间早的是旧值）：\n"
             "{cands}\n\n"
             "新记忆：{new}（这是最新的一条）\n\n"
-            "先按两步判断，再输出 JSON：\n"
-            "第一步：新记忆与每条候选是不是「同一件事、同一属性」？主体相同、属性相同才算同一件事。\n"
-            "第二步：\n"
-            "  - 同一件事且值相同 → duplicate（同义，不新增）\n"
-            "  - 同一件事但值不同 → conflict（新值覆盖旧值，因为新记忆时间更新）\n"
-            "  - 都不是同一件事 → new\n\n"
-            "关键：时间是判断新旧的关键——候选日期是过去，新记忆是最新。"
-            "「改成X/换成X/搬到Y/迁移到Z/更新为」这类措辞 = 同一件事的值从旧变新 = conflict。\n\n"
+            "判断新记忆与候选记忆的关系，只输出一个 JSON 对象：\n"
+            '{{"verdict": "duplicate"|"conflict"|"new", "target": 编号或 null}}\n\n'
+            "判定准则：\n"
+            "- duplicate：新记忆与某条候选同义（措辞不同、含义相同）→ target 填该候选编号\n"
+            "- conflict：新记忆与某条候选是同一件事/同一偏好、但值不同（新值应覆盖旧值）→ target 填该候选编号。"
+            "关键：无论措辞是「是X」「改成X」「改为X」「换成X」「搬到Y」，同一属性换值即 conflict。\n"
+            "- new：新记忆与所有候选都不同 → target 填 null\n\n"
             "示例：\n"
             '候选：["2026-09-01 记录：我住在杭州"]\n'
             "新记忆：我上个月搬到上海了\n"
-            "分析：同一件事（住址），值从杭州变上海，新记忆更新 → conflict\n"
-            '输出：{{"verdict": "conflict", "target": 0}}\n\n'
-            "最后只输出一个 JSON 对象（不要输出分析过程）：\n"
-            '{{"verdict": "duplicate"|"conflict"|"new", "target": 编号或 null}}'
+            '输出：{{"verdict": "conflict", "target": 0}}\n'
         ).format(cands=cand_lines, new=new_text)
         parts: list[str] = []
         usage = None

@@ -1271,9 +1271,9 @@ class SandboxFS:
             rel = self._rel(path)
             parent = "/".join(rel.split("/")[:-1]) if "/" in rel else ""
             if not rel.startswith("/") and parent:
-                sbx.commands.run(f"mkdir -p {self._ws(parent)}", timeout=30)
+                sbx.commands.run(f"mkdir -p {shlex.quote(self._ws(parent))}", timeout=30)
             elif parent:
-                sbx.commands.run(f"mkdir -p {self._ws(parent)}", timeout=30)
+                sbx.commands.run(f"mkdir -p {shlex.quote(self._ws(parent))}", timeout=30)
             sbx.files.write(self._ws(rel), data)
 
         await asyncio.to_thread(_write)
@@ -1284,7 +1284,7 @@ class SandboxFS:
             if p is None:
                 return False
             r = self._sbx().commands.run(
-                f"test -e {p} && echo yes || echo no", timeout=30
+                f"test -e {shlex.quote(p)} && echo yes || echo no", timeout=30
             )
             return "yes" in str(r.stdout or "")
 
@@ -1296,7 +1296,7 @@ class SandboxFS:
             if p is None:
                 return False
             r = self._sbx().commands.run(
-                f"test -d {p} && echo yes || echo no", timeout=30
+                f"test -d {shlex.quote(p)} && echo yes || echo no", timeout=30
             )
             return "yes" in str(r.stdout or "")
 

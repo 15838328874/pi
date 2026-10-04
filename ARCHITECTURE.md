@@ -176,6 +176,63 @@ pi-py serve --host 0.0.0.0 --port 8300
 
 ## 3. 整体架构
 
+### 3.0 架构图（mermaid，GitHub 可渲染）
+
+```mermaid
+flowchart LR
+    subgraph 入口
+        CLI[cli.py]
+        API[app.py FastAPI]
+    end
+    subgraph 编排
+        RM[runner.py RunManager<br/>锁/背压/超时/SSE]
+    end
+    subgraph 智能体核心
+        LOOP[AgentLoop loop.py]
+        COMP[compaction.py]
+    end
+    subgraph 能力层
+        TOOLS[工具层 tools/]
+        LLM[llm/ provider + 降级链]
+    end
+    subgraph 沙箱与存储
+        SBX[沙箱 CubeSandbox VM / Docker]
+        DB[(MySQL)]
+        REDIS[(Redis)]
+        MILVUS[(Milvus)]
+    end
+    API --> RM --> LOOP
+    LOOP --> LLM
+    LOOP --> TOOLS --> SBX
+    TOOLS --> MILVUS
+    RM --> DB
+    RM --> REDIS
+```
+
+```mermaid
+stateDiagram-v2
+    [*] --> 追加用户消息
+    追加用户消息 --> 压缩检查
+    压缩检查 --> 调LLM: 超阈值则先压缩
+    调LLM --> 收流式事件
+    收流式事件 --> 结束: 无工具调用
+    收流式事件 --> 逐工具执行: 有 tool_calls
+    逐工具执行 --> 结果回喂
+    结果回喂 --> 调LLM
+    调LLM --> 结束: max_turns / 超预算 / 连续拒绝熔断
+    结束 --> [*]
+```
+
+```mermaid
+flowchart TD
+    A[新记忆 add] --> B[混合召回 向量 ∪ BM25]
+    B --> C[候选 top-k]
+    C --> D[LLM Judge 判重<br/>候选带时间戳]
+    D -->|duplicate| E[去重跳过]
+    D -->|conflict| F[版本化退役<br/>写新行 + 旧行 superseded_by]
+    D -->|new| G[插入新行]
+```
+
 ### 3.1 分层图
 
 ```

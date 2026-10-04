@@ -41,6 +41,7 @@ tools, and sandboxing (CubeSandbox microVMs in production, Docker locally). Mirr
 > | `README.md` | 门面 | 这是什么、怎么装、怎么跑（快速上手入口） |
 > | `ARCHITECTURE.md` | 技术手册 + 叙事 | 每个模块每个函数、配置全表（§13）、坑清单（§17）、差距清单（§19）；设计取舍、测试样例、术语表、实测数据 |
 > | `ROADMAP.md` | 状态与路线图 | 什么做完了、什么没做、下一步做什么（含环境区分表） |
+> | `docs/adr.md` | 设计取舍索引 | 关键决策一页扫读：每条「选了 A · 没选 B · 为什么 · 代价」，收敛自各设计笔记 |
 > | `docs/`（三件） | CubeSandbox 专项 | 沙箱设计笔记 / 生产部署手册 / 生产就绪审计——专项文档，不重复核心文档内容 |
 >
 > **推荐阅读路径**：先看本页 `## Highlights` 建立全局印象 → 想深入了解设计取舍、踩坑故事、实测细节 → 直接读 [**ARCHITECTURE.md**](ARCHITECTURE.md)（技术手册 + 叙事）；对照代码逐模块也看它；做没做、下一步 → [ROADMAP.md](ROADMAP.md)。

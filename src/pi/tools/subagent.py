@@ -167,6 +167,12 @@ class SpawnSubagentsTool(Tool):
             user_id=getattr(ctx, "user_id", ""),
             tracer=getattr(ctx, "tracer", None),
         )
+        # 父沙箱是懒加载的：纯聊天回合 runner 还是 None。此时 spawn 子 agent，
+        # 直接继承会拿到 None 的 fs，子 agent 的 file 工具会回退 LocalFS（宿主），
+        # 绕过沙箱。先触发父的 ensure_runner 把沙箱建好，再继承 runner + fs。
+        # 幂等：runner 已存在时立即返回，纯聊天不 spawn 子 agent 仍零 VM。
+        if getattr(ctx, "ensure_runner", None) is not None:
+            await ctx.ensure_runner()
         if ctx.runner is not None:
             child.ctx.runner = ctx.runner
             # Share the parent's sandbox filesystem so the child's file tools

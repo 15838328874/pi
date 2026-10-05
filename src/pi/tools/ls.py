@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
+from pi.tools.base import Tool, ToolContext, ToolResult, ensure_fs, resolve_path
 
 MAX_ENTRIES = 500
 
@@ -25,7 +25,7 @@ class LsTool(Tool):
 
     async def execute(self, args: dict[str, Any], ctx: ToolContext) -> ToolResult:
         root = resolve_path(ctx, str(args.get("path", ".")))
-        fs = get_fs(ctx)
+        fs = await ensure_fs(ctx)
         if not await fs.exists(root):
             return ToolResult(content=f"Error: path not found: {args.get('path')}", is_error=True)
         if not await fs.is_dir(root):

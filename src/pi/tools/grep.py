@@ -7,7 +7,7 @@ from typing import Any
 
 import regex as re
 
-from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
+from pi.tools.base import Tool, ToolContext, ToolResult, ensure_fs, resolve_path
 
 MAX_MATCHES = 200
 MAX_FILE_BYTES = 1_000_000
@@ -53,7 +53,7 @@ class GrepTool(Tool):
 
         include = args.get("include") or None
         root = resolve_path(ctx, str(args.get("path", ".")))
-        fs = get_fs(ctx)
+        fs = await ensure_fs(ctx)
         if not await fs.exists(root):
             return ToolResult(content=f"Error: path not found: {args.get('path')}", is_error=True)
 

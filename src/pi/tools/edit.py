@@ -5,7 +5,7 @@ from __future__ import annotations
 import difflib
 from typing import Any
 
-from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
+from pi.tools.base import Tool, ToolContext, ToolResult, ensure_fs, resolve_path
 
 MAX_DIFF_LINES = 60
 
@@ -52,7 +52,7 @@ class EditTool(Tool):
             )
 
         path = resolve_path(ctx, raw)
-        fs = get_fs(ctx)
+        fs = await ensure_fs(ctx)
         if not await fs.exists(path) or await fs.is_dir(path):
             return ToolResult(content=f"Error: file not found: {raw}", is_error=True)
 

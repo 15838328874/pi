@@ -6,7 +6,7 @@ import os
 from fnmatch import fnmatch
 from typing import Any
 
-from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path
+from pi.tools.base import Tool, ToolContext, ToolResult, ensure_fs, resolve_path
 
 MAX_RESULTS = 500
 
@@ -37,7 +37,7 @@ class FindTool(Tool):
             return ToolResult(content="Error: pattern is required", is_error=True)
 
         root = resolve_path(ctx, str(args.get("path", ".")))
-        fs = get_fs(ctx)
+        fs = await ensure_fs(ctx)
         if not await fs.exists(root) or not await fs.is_dir(root):
             return ToolResult(
                 content=f"Error: directory not found: {args.get('path')}", is_error=True

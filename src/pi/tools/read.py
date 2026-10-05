@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path, truncate
+from pi.tools.base import Tool, ToolContext, ToolResult, ensure_fs, resolve_path, truncate
 
 MAX_LINES = 2000
 MAX_LINE_LEN = 2000
@@ -47,7 +47,7 @@ class ReadTool(Tool):
         if not raw:
             return ToolResult(content="Error: path is required", is_error=True)
         path = resolve_path(ctx, raw)
-        fs = get_fs(ctx)
+        fs = await ensure_fs(ctx)
 
         if not await fs.exists(path):
             return ToolResult(content=f"Error: file not found: {raw}", is_error=True)

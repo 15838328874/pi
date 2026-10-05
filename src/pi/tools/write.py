@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pi.tools.base import Tool, ToolContext, ToolResult, get_fs, resolve_path, workspace_size
+from pi.tools.base import Tool, ToolContext, ToolResult, ensure_fs, resolve_path, workspace_size
 
 
 class WriteTool(Tool):
@@ -36,7 +36,7 @@ class WriteTool(Tool):
             return ToolResult(content="Error: content must be a string", is_error=True)
 
         path = resolve_path(ctx, raw)
-        fs = get_fs(ctx)
+        fs = await ensure_fs(ctx)
         if await fs.is_dir(path):
             return ToolResult(content=f"Error: {raw} is a directory", is_error=True)
 

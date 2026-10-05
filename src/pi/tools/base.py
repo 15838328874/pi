@@ -125,6 +125,19 @@ def get_fs(ctx: ToolContext) -> WorkspaceFS:
     return ctx.fs if ctx.fs is not None else LocalFS()
 
 
+async def ensure_fs(ctx: ToolContext) -> WorkspaceFS:
+    """File tools' entry to the workspace filesystem.
+
+    In sandbox mode the runner is created lazily (first bash call). Without this
+    guard, a `read`/`write`/`edit`/`grep`/`find`/`ls` issued BEFORE any bash call
+    would silently fall back to LocalFS (the HOST workspace), bypassing the
+    sandbox. Trigger the lazy sandbox first so the file tool acts inside the VM.
+    """
+    if ctx.runner is None and ctx.ensure_runner is not None:
+        await ctx.ensure_runner()
+    return ctx.fs if ctx.fs is not None else LocalFS()
+
+
 @dataclass
 class ToolContext:
     cwd: Path = field(default_factory=Path.cwd)

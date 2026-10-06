@@ -28,7 +28,7 @@
 | 多实例（Redis 锁/限流/撤销） | `server/cache.py` | 本地 Redis 实测 |
 | Multi-Agent（递归子代理 + max_depth） | `tools/subagent.py` | 单测 |
 | P1 统一轨迹（canonical 事件日志 + ts 墙钟） | `agent/trajectory.py` | 单测 |
-| P2 durable execution（checkpoint + resume） | `agent/loop.py` | 单测 |
+| P2 断点重放就绪（loop 侧 checkpoint + resume；**server 侧未接 resume 端点，无崩溃自动恢复触发器**） | `agent/loop.py` | 单测 |
 | P3 记忆：episodic（压缩落库）+ semantic（memories 表 + 向量检索 Milvus/embedding，词法兜底） | `server/db.py` `server/vectorstore.py` `llm/embedding.py` | 单测 + 本地 Milvus 实测 |
 | P4 eval harness（任务集/判分/报告/A-B/CLI） | `evals/` | 单测 |
 | **RL 数据飞轮**（rollout → reward → filter → SFT/RLVR JSONL 导出） | `evals/rollout.py` 等 + `pi-py eval rollout` | 单测 |
@@ -94,6 +94,7 @@
 | 简历展示：Docker Compose | app + MySQL + Redis + Milvus + MinIO 一键起（`docker compose up`），README 加一句。SRE 视角第一眼 | 中 |
 | 简历展示：benchmark 数字 | 跑 `tools/sandbox_bench.py` 出 latency/throughput 图；memory judge 跑 100 条样本出判准率。有数字比没数字强十倍 | 中 |
 | 简历展示：demo GIF | 录屏「注册→上传文件→跑任务→看 trajectory」转 GIF 放 README | 中 |
+| 文件上传按类型分流 | 现在所有上传文件都走 MinIO 独立管线，模型要用得 fetch_file 拉回 workspace，多一层中转。改成：**项目文件**（代码/要改的文档）直接进 workspace，**参考资料**（大 pdf/数据集/跨 session 复用/不想被模型改）走知识库/对象存储。依赖集群化方案 A（会话级持久卷）让 workspace 能装下大文件 | 低 |
 
 ## 4. 后续阶段开发
 
@@ -171,3 +172,18 @@ provider，工具照样走 policy / audit / tracing / 配额，但宿主工具�
 
 启动见 `deploy/local-dev.md`；测试：`.venv/bin/python -m pytest`（自动连本地 MySQL/Redis）；
 真实栈集成测试：`PI_INTEGRATION=1 pytest integration/`（见 integration/conftest.py）。
+
+### 5.1 实测数据速查（面试口径，数据源 `production-deployment.md` §①-④）
+
+| 项 | 值 |
+|---|---|
+| 机器 | 8 逻辑核（4 核 × 2 线程）/ 61GB 云主机 |
+| 沙箱模板配额 | `cpu=1000m`（1 核）+ `mem=256Mi` + `writable-layer=1Gi` |
+| 空载密度 | 放开配额后**同时存活 1000 个 VM**，只吃 15.2GB（单 VM 均摊 **15.2MB**，CoW 共享） |
+| 并发算力上限 | 真跑 pandas 只能并行 **8~16** 个（物理核是硬顶，不是配额） |
+| 吞吐 | 峰值 ~100 回合/min；24 并发实测 24/24 成功 |
+
+**⚠️ 面试最容易被追问的点，别答错**：
+- 1000 是「**空载持有密度**」，**不是**「能同时干 1000 个活」——两者混了必被拆穿；
+- 单实例 CPU 是 **1000m（1 核）**，不是 0.5 核（"生产模板不要低于 500m"是建议下限，不是默认值）；
+- 1000 是「同时创建/存活」，不是「同时跑任务」。

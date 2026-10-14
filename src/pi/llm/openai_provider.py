@@ -94,19 +94,26 @@ class OpenAIProvider(LLMProvider):
 
     @staticmethod
     def _repair_tool_sequence(wire: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """补全残缺序列：assistant 带 tool_calls 但后面缺对应 tool 消息时，
-        补一个空 tool 消息兜底，避免下轮发给 LLM 触发 400
-        "insufficient tool messages following tool_calls message"。
-        残缺序列来自 run 中断/超时——assistant 已落库、tool 结果未落库。"""
+        """修复残缺的 tool_calls/tool 配对，避免下一轮发给 LLM 触发 400。
+
+        两个方向都会坏，两个都得兜：
+        - **缺 tool 消息**（"insufficient tool messages"）：run 中断/超时让
+          assistant 落了库、tool 结果没落 → 补一个空 tool 消息。
+        - **孤儿 tool 消息**（"tool must be a response to a preceding tool_calls"）：
+          上下文压缩的切分点落在 assistant(tool_calls) 与 tool 结果之间，前置
+          被压成摘要 → 该 tool 消息无主 → 直接丢弃（实测：一旦出现，之后每轮
+          都 400，整个 session 报废）。
+        """
         out: list[dict[str, Any]] = []
         pending: list[str] = []
         for entry in wire:
             role = entry.get("role")
             if role == "tool":
-                out.append(entry)
                 tid = entry.get("tool_call_id")
-                if tid in pending:
-                    pending.remove(tid)
+                if tid not in pending:
+                    continue  # 孤儿：前置 tool_calls 已被压缩掉，丢弃这条
+                pending.remove(tid)
+                out.append(entry)
             elif role == "assistant" and entry.get("tool_calls"):
                 for cid in pending:
                     out.append({"role": "tool", "tool_call_id": cid, "content": ""})

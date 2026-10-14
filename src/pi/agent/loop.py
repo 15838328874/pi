@@ -427,14 +427,30 @@ class AgentLoop:
         )
         yield TurnEndEvent(usage=total, turns=turns)
 
+    def _aligned_keep_last(self) -> int:
+        """保留尾部的条数，且保证切分点不落在 assistant(tool_calls) 与 tool 结果之间。
+
+        朴素地按 `compact_keep` 切会把一个 tool 结果留在尾部、把它的
+        assistant(tool_calls) 压进摘要——加载后该 tool 消息没有前置工具调用，
+        OpenAI 兼容端点直接 400（实测：一次压缩后整个 session 每轮都失败）。
+        起点落在 tool 结果上时往前扩，把配对的 assistant 一起留住。
+        """
+        start = max(0, len(self.messages) - self.compact_keep)
+        while start > 0 and any(
+            isinstance(b, ToolResultBlock) for b in self.messages[start].blocks
+        ):
+            start -= 1
+        return len(self.messages) - start
+
     async def _maybe_compact(self) -> AsyncIterator[AgentEvent]:
         """Compact history if it exceeds the threshold (summary + recent tail)."""
         size = estimate_size(self.messages)
         if size <= self.compact_threshold:
             return
+        keep_last = self._aligned_keep_last()
         try:
             new_messages, dropped = await compact(
-                self.provider, self.messages, keep_last=self.compact_keep
+                self.provider, self.messages, keep_last=keep_last
             )
         except Exception as exc:  # noqa: BLE001
             yield ErrorEvent(f"compaction failed: {type(exc).__name__}: {exc}")
@@ -445,12 +461,10 @@ class AgentLoop:
         old_idx = self.message_idx
         # The summary covers the dropped head; report the DB idx of its last
         # message so the caller can reload [summary] + [messages after that idx].
-        covered_upto_idx = (
-            old_idx[-self.compact_keep - 1] if len(old_idx) > self.compact_keep else None
-        )
+        covered_upto_idx = old_idx[len(old_idx) - keep_last - 1] if len(old_idx) > keep_last else None
         self.messages = new_messages
         # New list = [summary marker (no idx)] + [kept tail (keeps its idxs)].
-        self.message_idx = [None] + old_idx[-self.compact_keep:]
+        self.message_idx = [None] + old_idx[len(old_idx) - keep_last :]
         if self.on_compact is not None:
             try:
                 self.on_compact(new_messages, covered_upto_idx)

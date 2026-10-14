@@ -70,3 +70,32 @@ class TestCompaction:
         size1, size2 = asyncio.run(main())
         assert size1 == 4
         assert size2 == 4  # summary marker + tool result + assistant + user2 + assistant2 kept
+
+
+def test_aligned_keep_last_never_splits_tool_pair(tmp_path: Path):
+    """保留窗口的起点若落在 tool 结果上，必须往前扩，把配对的 assistant 一起留住。
+
+    否则压缩后 [摘要] + [tool 结果] 没有前置 tool_calls，OpenAI 兼容端点 400，
+    且之后每轮都失败（实测 50 轮长程测试里整个 session 报废）。
+    """
+    from pi.models import Message, Role, ToolResultBlock
+
+    agent = AgentLoop(
+        provider=FakeProvider(model="demo", responses=[]),
+        tools=all_tools(),
+        system_prompt="sys",
+        cwd=tmp_path,
+        compact_keep=2,
+    )
+    # [..., assistant(tool_calls), user(tool 结果)] —— 朴素切法会把 tool 结果留在尾部
+    agent.messages = [
+        Message(role=Role.user, blocks=[TextBlock(text="q1")]),
+        Message(role=Role.assistant, blocks=[ToolCallBlock(id="A", name="bash", arguments="{}")]),
+        Message(role=Role.user, blocks=[ToolResultBlock(tool_use_id="A", content="ok")]),
+    ]
+    # compact_keep=2 → 朴素 start=1（assistant）；起点不是 tool 结果，保持 2
+    assert agent._aligned_keep_last() == 2
+
+    # compact_keep=1 → 朴素 start=2（tool 结果）→ 必须前移到 1，保住配对的 assistant
+    agent.compact_keep = 1
+    assert agent._aligned_keep_last() == 2

@@ -938,6 +938,33 @@ class CubeSandboxRunner:
 
         return Sandbox
 
+    @staticmethod
+    def _sandbox_envs() -> dict[str, str] | None:
+        """Env vars injected into every sandbox.
+
+        The template image ships pandas/openpyxl/... but NOT pytest, and the VM
+        has no pip.conf — so `pip install` from inside the sandbox defaults to
+        pypi.org, which measured 125 kB/s here (the model once burned 600s+575s
+        retrying an install before it thought to benchmark mirrors itself).
+        Pointing pip at a fast mirror makes the same install take ~10s.
+
+        Override with PI_SANDBOX_PIP_INDEX_URL (empty string disables).
+        """
+        index = os.environ.get(
+            "PI_SANDBOX_PIP_INDEX_URL", "https://mirrors.aliyun.com/pypi/simple/"
+        ).strip()
+        if not index:
+            return None
+        envs = {"PIP_INDEX_URL": index}
+        # https mirrors need their host trusted (or a valid CA); derive it
+        # instead of hardcoding a second knob that can drift out of sync.
+        from urllib.parse import urlparse
+
+        host = urlparse(index).hostname
+        if host:
+            envs["PIP_TRUSTED_HOST"] = host
+        return envs
+
     def _new_sandbox(self):
         Sandbox = self._sdk()
         t0 = time.monotonic()
@@ -949,6 +976,7 @@ class CubeSandboxRunner:
                 api_url=os.environ.get("PI_CUBE_API_URL", "http://127.0.0.1:3000"),
                 api_key=os.environ.get("PI_CUBE_API_KEY", "e2b_000000"),
                 domain=os.environ.get("PI_CUBE_DOMAIN", "cube.app"),
+                envs=self._sandbox_envs(),
             )
         except Exception:
             if self.metrics is not None:
